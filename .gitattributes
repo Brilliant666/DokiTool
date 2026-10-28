@@ -1,0 +1,11 @@
+* text=auto
+*.sh text eol=lf
+*.php text eol=lf
+*.json text eol=lf
+*.conf text eol=lf
+*.caddy text eol=lf
+*.svg text eol=lf
+
+# Preserve upstream license bytes exactly as imported.
+backend/LICENSE -text
+frontend/LICENSE -text

@@ -1,0 +1,7 @@
+# Fail-closed default. Scope: only snap.example.com. Do not use for other sites.
+# After user chooses private vs public access, replace this named route with
+# reviewed basic_auth/identity gating (private) or reviewed abuse controls (public).
+# Keep this route first so API, HTML and assets are all covered.
+route {
+    respond "DokiTool access policy has not been configured." 503
+}

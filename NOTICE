@@ -1,0 +1,20 @@
+DokiTool contains adapted code from:
+
+1. jiuhunwl/short_videos
+   https://github.com/jiuhunwl/short_videos
+   Snapshot: 72e5b6e72ab21e695d510e1c4c45213ce9a25f0f
+   Original MIT license and copyright: backend/LICENSE
+
+2. jiuhunwl/shortvideo-html
+   https://github.com/jiuhunwl/shortvideo-html
+   Snapshot: cd16011960fe90b53dd87f57714d1a096e986e5a (package version 4.1.0)
+   Original MIT license and copyright: frontend/LICENSE
+
+Original source notices remain applicable. The root MIT license covers the
+new DokiTool adaptation; it does not replace upstream or dependency licenses.
+
+Bundled frontend dependency notices are retained in frontend/public/licenses/.
+Font Awesome Free 6.7.2 includes separately licensed icons (CC BY 4.0), fonts
+(SIL OFL 1.1), and code (MIT); see its full license file. Swiper 11.2.10 is MIT.
+Other dependency notices are collected in third-party-notices.txt. Preserve
+these notices when distributing built assets.

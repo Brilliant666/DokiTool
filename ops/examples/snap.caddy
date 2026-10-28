@@ -1,0 +1,54 @@
+# Review-only site fragment. Merge into the existing Caddy configuration.
+# Never replace the fleet Caddyfile. Verify 9081 and socket paths before use.
+snap.example.com {
+    @api path /api/short_videos /api/douyin /api/ksjx /api/bilibili /api/xhsjx /api/toutiao
+    @source path *.php /backend/* /internal/* /ops/* /.git/* /.env*
+    # Preserve ordering: Caddy otherwise sorts handle before route.
+    route {
+    # This file MUST exist. The supplied example fails closed until access is decided.
+    import /etc/caddy/snap-access.caddy
+    encode zstd gzip
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy no-referrer
+
+    handle @api {
+        root * /srv/dokitool/current/backend/public
+        rewrite * /index.php
+        php_fastcgi unix//run/php/snap-public.sock {
+            resolve_root_symlink
+        }
+    }
+    handle /api/* {
+        header Content-Type application/json
+        respond `{"code":404,"msg":"Unknown API route","data":[]}` 404
+    }
+    handle @source {
+        respond 404
+    }
+    handle {
+        root * /srv/dokitool/current/frontend/dist
+        try_files {path} /index.html
+        file_server
+    }
+    }
+}
+
+# Only the aggregator can call these routes over loopback. Different FPM pool:
+# public requests must never consume all workers needed to answer a self-request.
+http://:9081 {
+    bind 127.0.0.1
+    @parser {
+        host snap.example.com
+        path /parse/douyin /parse/kuaishou /parse/bilibili /parse/xiaohongshu /parse/toutiao /parse/weibo /parse/pipixia /parse/pipigx /parse/zuiyou
+    }
+    handle @parser {
+        root * /srv/dokitool/current/backend/internal
+        rewrite * /index.php
+        php_fastcgi unix//run/php/snap-internal.sock {
+            resolve_root_symlink
+        }
+    }
+    handle {
+        respond 404
+    }
+}
