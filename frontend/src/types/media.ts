@@ -134,7 +134,7 @@ export interface ToastMessage {
   type: ToastType;
 }
 export type DownloadStatus =
-  "preparing" | "downloading" | "completed" | "cancelled" | "failed";
+  "preparing" | "downloading" | "completed" | "cancelled" | "failed" | "handed-off";
 export interface DownloadTask {
   id: number;
   filename: string;
@@ -144,6 +144,14 @@ export interface DownloadTask {
   loaded: number;
   total: number;
   speed: number;
+  /** Seconds from the beginning of this attempt, including preparation/waiting. */
+  elapsed?: number;
+  averageSpeed?: number;
+  /** Bytes actually received, including failed routes when retried. */
+  transferred?: number;
+  progressKind?: "bytes" | "segments" | "archive";
+  /** Only complete files may be handed to the browser; never HLS/segment URLs. */
+  nativeAvailable?: boolean;
   error: string | null;
   statusText: string;
   show: boolean;

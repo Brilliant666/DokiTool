@@ -69,6 +69,7 @@
 /backend/internal/*
 !/backend/internal/index.php
 /backend/lib/*
+!/backend/lib/douyin-media-probe.php
 !/backend/lib/gateway.php
 !/backend/lib/runtime.php
 !/backend/lib/weibo-media.php
@@ -77,6 +78,7 @@
 /backend/tests/*
 !/backend/tests/cli-request.php
 !/backend/tests/contract.php
+!/backend/tests/douyin-media-contract.php
 !/backend/tests/http-smoke.php
 !/backend/tests/mock-internal.php
 !/backend/tests/parser-contract.php
@@ -86,6 +88,9 @@
 !/backend/tests/weibo-contract.php
 !/backend/tests/weibo-media-contract.php
 /frontend/public/*
+!/frontend/public/dokitool-favicon.png
+!/frontend/public/dokitool-icon.svg
+!/frontend/public/dokitool-wordmark.png
 !/frontend/public/dokitool.svg
 !/frontend/public/licenses/
 /frontend/src/*
@@ -101,6 +106,7 @@
 !/frontend/src/types/
 !/frontend/src/utils/
 /frontend/tests/*
+!/frontend/tests/media-sources.test.mjs
 !/frontend/tests/parser-contract.test.mjs
 !/frontend/tests/ui-download-contract.test.mjs
 /ops/examples/*
@@ -165,6 +171,7 @@
 !/frontend/src/utils/antiReplay.js
 !/frontend/src/utils/downloadFilename.ts
 !/frontend/src/utils/mediaSource.ts
+!/frontend/src/utils/mediaSources.ts
 !/frontend/src/utils/platforms.ts
 !/frontend/src/utils/rateLimit.js
 !/frontend/src/utils/segmentDownload.ts

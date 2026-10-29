@@ -110,10 +110,11 @@ const selectPlatform = (key) => {
             v-for="tab in getPlatformTabs(locale)"
             :key="tab.key"
             @click="selectPlatform(tab.key)"
+            :aria-pressed="currentPlatform === tab.key"
             :class="[
               'px-3 py-1.5 rounded-lg font-medium text-xs transition-all flex items-center gap-1.5',
               currentPlatform === tab.key
-                ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/25'
+                ? 'bg-indigo-600 bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg shadow-indigo-500/25'
                 : 'bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-slate-300 hover:bg-indigo-100 dark:hover:bg-slate-700 border border-indigo-200 dark:border-slate-700'
             ]"
           >

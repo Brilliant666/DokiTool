@@ -5,8 +5,7 @@ defineProps({
 
 const content = {
   'zh-CN': {
-    brand: 'DokiTool',
-    version: 'Based on BK-SV v4.1',
+    version: '由Daiobs维护',
     desc: '简单易用的短视频解析工具，支持多平台无水印视频与图集解析，让分享更自由。',
     quickLinks: '快速链接',
     home: '首页',
@@ -15,17 +14,11 @@ const content = {
     help: '帮助与支持',
     faq: '常见问题',
     about: '关于我们',
-    contact: '联系我们',
-    service: '在线客服',
-    copyright: '© 2026 BugPk & JH-Ahua · 保留所有权利',
-    poweredBy: 'Powered by BugPk',
-    madeWith: '用心打造',
-    starUs: '给我们 Star',
-    issues: '问题反馈'
+    contact: '项目信息',
+    starUs: '给我们 Star'
   },
   'en': {
-    brand: 'DokiTool',
-    version: 'Based on BK-SV v4.1',
+    version: 'Maintained by Daiobs',
     desc: 'Simple & easy video parsing tool. Support multi-platform watermark-free video & album extraction.',
     quickLinks: 'Quick Links',
     home: 'Home',
@@ -34,25 +27,18 @@ const content = {
     help: 'Help & Support',
     faq: 'FAQ',
     about: 'About',
-    contact: 'Contact Us',
-    service: 'Online Support',
-    copyright: '© 2026 BugPk & JH-Ahua · All Rights Reserved',
-    poweredBy: 'Powered by BugPk',
-    madeWith: 'Made with care',
-    starUs: 'Star Us',
-    issues: 'Report Issues'
+    contact: 'Project',
+    starUs: 'Star Us'
   }
 }
 
 const getContent = (locale) => content[locale] || content['zh-CN']
 
-const socialLinks = [
-  { icon: 'fab fa-github', url: 'https://github.com/jiuhunwl/shortvideo-html', label: 'GitHub', color: '#333' },
-  { icon: 'fas fa-globe', url: 'https://www.jiuhunwl.cn', label: 'Blog', color: '#6366f1' },
-  { icon: 'fas fa-envelope', url: 'mailto:admin@bugpk.com', label: 'Email', color: '#ef4444' },
-]
+const repositoryUrl = 'https://github.com/Brilliant666/DokiTool'
+const socialLinks = [{ icon: 'fab fa-github', url: repositoryUrl, label: 'DokiTool on GitHub' }]
 
-const currentYear = new Date().getFullYear()
+// Keep the project promotion controls available for a future display option.
+const showProjectPromotions = false
 </script>
 
 <template>
@@ -64,21 +50,18 @@ const currentYear = new Date().getFullYear()
         <div class="footer-brand">
           <div class="flex items-center gap-3 mb-5">
             <div class="brand-icon">
-              <div class="w-12 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
-                <img src="/dokitool.svg" alt="DokiTool" class="w-8 h-8 object-contain" />
+              <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
+                <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
-            <div>
-              <h4 class="font-bold text-lg text-slate-800 dark:text-white">{{ getContent(locale).brand }}</h4>
-              <p class="text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
-            </div>
+            <p class="translate-y-1 text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
           </div>
           <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-5">
             {{ getContent(locale).desc }}
           </p>
 
-          <div class="flex items-center gap-3">
+          <div v-if="showProjectPromotions" class="flex items-center gap-3">
             <a
               v-for="social in socialLinks"
               :key="social.label"
@@ -106,15 +89,15 @@ const currentYear = new Date().getFullYear()
               </a>
             </li>
             <li>
-              <a href="#course" class="footer-link">
-                <i class="fas fa-book text-xs mr-2"></i>
-                {{ getContent(locale).course }}
-              </a>
-            </li>
-            <li>
               <a href="#Supported_Platforms" class="footer-link">
                 <i class="fas fa-th text-xs mr-2"></i>
                 {{ getContent(locale).platforms }}
+              </a>
+            </li>
+            <li>
+              <a href="#course" class="footer-link">
+                <i class="fas fa-book text-xs mr-2"></i>
+                {{ getContent(locale).course }}
               </a>
             </li>
           </ul>
@@ -138,12 +121,6 @@ const currentYear = new Date().getFullYear()
                 {{ getContent(locale).about }}
               </a>
             </li>
-            <li>
-              <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
-                <i class="fab fa-github text-xs mr-2"></i>
-                {{ getContent(locale).issues }}
-              </a>
-            </li>
           </ul>
         </div>
 
@@ -155,21 +132,15 @@ const currentYear = new Date().getFullYear()
           <ul class="space-y-3">
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-user text-xs text-indigo-400"></i>
-              <span>BugPk & Jh-Ahua</span>
-            </li>
-            <li>
-              <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
-                <i class="fab fa-github text-xs mr-2"></i>
-                <span class="truncate">jiuhunwl/shortvideo-html</span>
-              </a>
+              <span>Daiobs</span>
             </li>
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-globe text-xs text-emerald-400"></i>
-              <span>api.bugpk.com</span>
+              <a href="https://snap.dokitool.com/" class="footer-link">snap.dokitool.com</a>
             </li>
           </ul>
 
-          <div class="mt-5 flex items-center gap-2">
+          <div v-if="showProjectPromotions" class="mt-5 flex items-center gap-2">
             <a
               :href="socialLinks[0].url"
               target="_blank"
@@ -185,22 +156,16 @@ const currentYear = new Date().getFullYear()
 
       <div class="footer-divider"></div>
 
-      <div class="flex flex-col sm:flex-row items-center justify-center md:justify-between gap-4 pt-8 text-center footer-bottom">
-        <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-sm text-slate-500 dark:text-slate-400">
-          <p>{{ getContent(locale).copyright }}</p>
+      <div class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-4 pt-8 text-center footer-bottom">
+        <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-sm text-slate-500 dark:text-slate-400 shrink-0">
+          <p>© 2026 DokiTool</p>
+          <p class="md:hidden">{{ getContent(locale).version }}</p>
         </div>
 
-        <div class="flex items-center gap-4">
-          <p class="text-sm text-slate-500 dark:text-slate-400">
-            {{ getContent(locale).poweredBy }}
-          </p>
-          <a
-            :href="socialLinks[0].url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-sm font-medium text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors flex items-center gap-1"
-          >
-            <i class="fab fa-github text-xs"></i>
+        <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 text-sm leading-relaxed">
+          <span class="text-slate-500 dark:text-slate-400">Powered by jiuhunwl</span>
+          <a href="https://github.com/jiuhunwl" target="_blank" rel="noopener noreferrer" class="footer-credit-link inline-flex items-center gap-1.5">
+            <i class="fab fa-github" aria-hidden="true"></i>
             <span>GitHub</span>
           </a>
         </div>
@@ -240,6 +205,20 @@ const currentYear = new Date().getFullYear()
 .brand-icon {
   position: relative;
   display: inline-block;
+  flex-shrink: 0;
+}
+
+.footer-credit-link {
+  color: #6366f1;
+  text-underline-offset: 3px;
+}
+
+.footer-credit-link:hover {
+  text-decoration: underline;
+}
+
+.dark .footer-credit-link {
+  color: #a5b4fc;
 }
 
 .brand-icon-glow {
@@ -282,6 +261,11 @@ const currentYear = new Date().getFullYear()
   text-decoration: none;
   transition: all 0.2s ease;
   padding: 0.25rem 0;
+}
+
+/* Temporarily simplify link rows while keeping their labels and destinations. */
+.footer-link > i {
+  display: none;
 }
 
 .dark .footer-link {

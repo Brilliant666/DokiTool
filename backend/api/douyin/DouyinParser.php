@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../lib/runtime.php';
+require_once __DIR__ . '/../../lib/douyin-media-probe.php';
 /**
  * @Author: JH-Ahua
  * @CreateTime: 2026/2/12 下午9:47
@@ -13,6 +14,13 @@ require_once __DIR__ . '/../../lib/runtime.php';
 
 class DouyinParser
 {
+    private $mediaProbe;
+
+    public function __construct(?callable $mediaProbe = null)
+    {
+        $this->mediaProbe = $mediaProbe ?? static fn (string $url): ?array => (new SnapDouyinMediaProbe())->probe($url);
+    }
+
     /** 详情接口：免 Cookie、免签名，视频返回 play_addr.uri + bit_rate，图集返回 images[].url_list，实况另含 images[].video */
     private const DETAIL_ENDPOINT = 'https://api.amemv.com/aweme/v1/aweme/detail/';
 
@@ -315,13 +323,28 @@ class DouyinParser
                 $main = $this->toHttps(str_replace('playwm', 'play', $main));
             }
 
-            // The "original" redirect can be 720p. Keep the best metadata-backed
-            // source; the unmeasured play endpoint is only an alternate/fallback.
+            // The original endpoint may return either a low-quality rendition or
+            // the real high-bitrate source. Rank its measured video track, not its name.
             $fallback = $this->buildOriginalPlayUrl($playUri);
-            if (!$main && $fallback) {
-                $main = $this->resolveOriginalVideoUrl($playUri);
-            } elseif ($fallback && $fallback !== $main) {
-                $videoInfo['backup'][] = ['url' => $fallback, 'label' => '备用播放源', 'quality' => 'unknown'];
+            if ($fallback) {
+                try { $probed = ($this->mediaProbe)($fallback); }
+                catch (Throwable $error) { $probed = null; } // Optional enhancement must not break parsing.
+                $originalUrl = $probed['url'] ?? $fallback;
+                $originalMetadata = $probed['metadata'] ?? [];
+                $originalQuality = isset($originalMetadata['width'], $originalMetadata['height'])
+                    ? min($originalMetadata['width'], $originalMetadata['height']) . 'p' : 'unknown';
+                if ($originalMetadata) $originalMetadata['is_original'] = true;
+                $currentPixels = ($videoInfo['metadata']['width'] ?? 0) * ($videoInfo['metadata']['height'] ?? 0);
+                $originalPixels = ($originalMetadata['width'] ?? 0) * ($originalMetadata['height'] ?? 0);
+                $better = $originalPixels > $currentPixels || ($originalPixels > 0 && $originalPixels === $currentPixels
+                    && ($originalMetadata['bit_rate'] ?? 0) > ($videoInfo['metadata']['bit_rate'] ?? 0));
+                if (!$main || $better) {
+                    if ($main && $main !== $originalUrl) array_unshift($videoInfo['backup'], array_merge($videoInfo['metadata'],
+                        ['url' => $main, 'quality' => $videoInfo['gearName'], 'label' => $videoInfo['gearName']]));
+                    $main = $originalUrl; $videoInfo['metadata'] = $originalMetadata; $videoInfo['gearName'] = $originalQuality;
+                } elseif ($originalUrl !== $main) {
+                    $videoInfo['backup'][] = array_merge($originalMetadata, ['url' => $originalUrl, 'label' => $originalQuality, 'quality' => $originalQuality]);
+                }
             }
             $result['quality'] = $videoInfo['gearName'];
             foreach ($videoInfo['metadata'] as $key => $value) {

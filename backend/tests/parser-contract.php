@@ -9,7 +9,7 @@ function expect(string $name, bool $passed): void { global $checks; $checks[] = 
 switch ($suite) {
 case 'douyin':
     require __DIR__ . '/../api/douyin/DouyinParser.php';
-    $parser = new DouyinParser();
+    $parser = new DouyinParser(static fn () => null);
     $format = new ReflectionMethod($parser, 'formatData');
     $source = ['desc' => 'Quality fixture', 'create_time' => 1786603757,
         'statistics' => ['digg_count' => 0, 'comment_count' => 12, 'aweme_id' => '1'],

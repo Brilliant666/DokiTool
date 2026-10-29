@@ -25,6 +25,12 @@ const content = {
 }
 
 const getContent = (locale) => content[locale] || content['zh-CN']
+
+const iconPaths = {
+  'fa-copy': 'M9 9h11v12H9z M15 9V3H4v12h5',
+  'fa-paste': 'M9 5H5v16h14V5h-4 M9 3h6v4H9z M8 12h8 M8 16h6',
+  'fa-download': 'M12 3v12 m-5-5 5 5 5-5 M4 16v5h16v-5',
+}
 </script>
 
 <template>
@@ -39,8 +45,10 @@ const getContent = (locale) => content[locale] || content['zh-CN']
     <div class="grid md:grid-cols-3 gap-6">
       <div v-for="step in getContent(locale).steps" :key="step.title" 
            class="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center hover:shadow-xl transition-all">
-        <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
-          <i :class="['fas', step.icon, 'text-white text-xl']"></i>
+        <div class="tutorial-step-icon w-14 h-14 mx-auto mb-4 rounded-full flex items-center justify-center">
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path :d="iconPaths[step.icon]" />
+          </svg>
         </div>
         <h4 class="font-semibold mb-2">{{ step.title }}</h4>
         <p class="text-sm text-gray-500 dark:text-gray-400">{{ step.body }}</p>
@@ -48,3 +56,19 @@ const getContent = (locale) => content[locale] || content['zh-CN']
     </div>
   </section>
 </template>
+
+<style scoped>
+.tutorial-step-icon {
+  color: #fff;
+  background-color: #4f46e5;
+  background-image: linear-gradient(135deg, #6366f1, #a855f7);
+}
+
+@media (forced-colors: active) {
+  .tutorial-step-icon {
+    color: CanvasText;
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
+}
+</style>

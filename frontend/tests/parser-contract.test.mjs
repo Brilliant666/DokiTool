@@ -338,6 +338,20 @@ test('a lazy part response from the previous input is discarded', async () => {
   assert.equal(await resolving, null);
 });
 
+test('cancelling a lazy download aborts its Bilibili API request', async () => {
+  const { instance } = harness();
+  const controller = new AbortController();
+  let requestSignal;
+  globalThis.fetch = async (_url, { signal }) => new Promise((_resolve, reject) => {
+    requestSignal = signal;
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  });
+  const resolving = instance.resolveBilibiliPage({ index: 2 }, controller.signal);
+  controller.abort();
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(await resolving, null);
+});
+
 test('part metadata stays with its source and retry keeps the original work after a new parse', async () => {
   const original = 'https://www.bilibili.com/video/BV1234567890?p=1';
   const result = parser.normalizeResponse(good({url: media, quality: '1080p', width: 1920, height: 1080,

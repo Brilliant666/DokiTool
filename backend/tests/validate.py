@@ -28,7 +28,7 @@ for suite in ['douyin', 'pipigx', 'bilibili', 'zuiyou', 'weibo']:
     checked = run([str(backend / 'tests/parser-contract.php'), suite])
     payload = json.loads(checked.stdout)
     parser_checks.append(dict(payload, successful=checked.returncode == 0))
-for suite in ['weibo', 'toutiao', 'pipixia', 'weibo-media']:
+for suite in ['weibo', 'toutiao', 'pipixia', 'weibo-media', 'douyin-media']:
     checked = run([str(backend / f'tests/{suite}-contract.php')])
     payload = json.loads(checked.stdout)
     parser_checks.append(dict(payload, successful=checked.returncode == 0

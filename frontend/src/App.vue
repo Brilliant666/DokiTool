@@ -53,8 +53,8 @@ const showToast = (message, type = 'success', duration = 3000) => {
 }
 
 // B 站懒解析（多 P / 合集分集）：封装解析器的 resolveBilibiliVideo，供下载/选集复用
-const resolveVideoUrl = async (video) => {
-  const resolved = await resolveBilibiliPage(video)
+const resolveVideoUrl = async (video, signal) => {
+  const resolved = await resolveBilibiliPage(video, signal)
   if (!resolved) return null
   return { ...resolved, video_backup: resolved.video_backup ?? [] }
 }
@@ -74,6 +74,7 @@ const {
   downloadImage,
   handleCancelDownload,
   handleRetryDownload,
+  handleBrowserDownload,
   handleClearCompleted
 } = useMediaDownload({
   videoStore,
@@ -187,6 +188,7 @@ onMounted(() => {
       :downloads="videoStore.downloads"
       @cancel="handleCancelDownload"
       @retry="handleRetryDownload"
+      @handoff="handleBrowserDownload"
       @clear-completed="handleClearCompleted"
     />
 
@@ -211,6 +213,7 @@ onMounted(() => {
 
       <ResultSection
         :result-data="videoStore.resultData"
+        :result-version="videoStore.resultVersion"
         :is-downloading="isDownloading"
         :show-backup="showBackup"
         :locale="locale"

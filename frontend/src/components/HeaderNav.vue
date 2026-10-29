@@ -89,8 +89,8 @@ const handleKeydown = (e) => {
           class="flex items-center gap-3 group ux-focus"
           aria-label="DokiTool 短视频解析"
         >
-          <div class="w-10 h-10 rounded-xl flex items-center justify-center overflow-hidden">
-            <img src="/dokitool.svg" alt="DokiTool" class="w-8 h-8 object-contain" />
+          <div class="w-24 h-10 rounded-xl flex items-center justify-center overflow-hidden shrink-0">
+            <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
           </div>
           <div class="hidden xs:block">
             <h1 class="font-bold text-lg text-slate-800 dark:text-white tracking-tight">
