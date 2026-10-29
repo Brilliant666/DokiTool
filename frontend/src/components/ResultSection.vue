@@ -562,12 +562,6 @@ const toggleSection = (key) => {
       </div>
     </div>
 
-    <!-- ════════════════════════════════════════════════════════
-         TITLE ROW
-         ════════════════════════════════════════════════════════ -->
-    <div class="rs-title-row">
-      <h2 class="rs-title">{{ resultData.title || t(locale, 'unknownTitle') }}</h2>
-    </div>
     <div v-if="playbackFailed" class="rs-playback-error" role="alert">
       <span>{{ t(locale, 'playbackFailed') }}</span>
       <a v-if="originalPageUrl" :href="originalPageUrl" target="_blank" rel="noopener noreferrer">{{ t(locale, 'openOriginal') }}</a>
@@ -577,7 +571,10 @@ const toggleSection = (key) => {
          MAIN GRID: media-left + info-right (desktop)
                      stacked on mobile/tablet
          ════════════════════════════════════════════════════════ -->
-    <div class="rs-main">
+    <div
+      class="rs-main"
+      :class="{ 'rs-main--align-details': activeTab === 'info' && hasVideo && !isMulti && !hasImages && !hasLivePhotos }"
+    >
       <!-- ============================================================
            LEFT COLUMN: Media Content
            ============================================================ -->
@@ -1413,9 +1410,8 @@ const toggleSection = (key) => {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   TITLE ROW
+   PLAYBACK ERROR
    ═══════════════════════════════════════════════════════════════ */
-.rs-title-row { margin-bottom: 1.25rem; }
 .rs-playback-error {
   display: flex;
   flex-wrap: wrap;
@@ -1431,14 +1427,6 @@ const toggleSection = (key) => {
 }
 .rs-playback-error a { color: inherit; font-weight: 600; text-decoration: underline; }
 :global(.dark) .rs-playback-error { background: #3b2d14; color: #fde68a; border-color: #a16207; }
-.rs-title {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 700;
-  line-height: 1.45;
-  color: var(--c-fg);
-  word-break: break-word;
-}
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN GRID — responsive: stack → side-by-side
@@ -1651,6 +1639,28 @@ const toggleSection = (key) => {
 }
 @media (min-width: 641px) and (max-width: 1039px) {
   .rs-video { max-height: 400px; }
+}
+
+/* Match the details column without stretching the player for other tabs or media lists. */
+@media (min-width: 1040px) {
+  .rs-main--align-details .rs-media-col {
+    align-self: stretch;
+  }
+  .rs-main--align-details .rs-card--video {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+  .rs-main--align-details .rs-video-stage {
+    flex: 1;
+    min-height: 0;
+  }
+  .rs-main--align-details .rs-video {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+    max-height: none;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2705,7 +2715,6 @@ const toggleSection = (key) => {
     margin-bottom: 2.5rem;
     --gap: 1rem;
   }
-  .rs-title { font-size: 1rem; }
   .rs-header {
     border-radius: var(--r-md);
     padding: .5rem .75rem;
