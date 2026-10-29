@@ -1,9 +1,8 @@
 <script setup>
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, defineAsyncComponent, h, ref, onMounted, watch } from 'vue'
 import { useVideoStore } from './stores/video'
 import HeaderNav from './components/HeaderNav.vue'
 import HeroSection from './components/HeroSection.vue'
-import ResultSection from './components/ResultSection.vue'
 import PlatformGrid from './components/PlatformGrid.vue'
 import TutorialSection from './components/TutorialSection.vue'
 import FaqSection from './components/FaqSection.vue'
@@ -16,6 +15,25 @@ import { useVideoParser } from './composables/useVideoParser'
 import { useMediaDownload } from './composables/useMediaDownload'
 import { useVideoSelection } from './composables/useVideoSelection'
 import { selectMediaSource } from './utils/mediaSource'
+
+// Share the preload with the async component, but allow a later parse to retry
+// after a transient chunk-loading failure.
+let resultSectionModule
+const loadResultSection = () => resultSectionModule ??= import('./components/ResultSection.vue').catch(error => {
+  resultSectionModule = undefined
+  throw error
+})
+const ResultSection = defineAsyncComponent({
+  loader: loadResultSection,
+  loadingComponent: {
+    setup: () => () => h('p', { role: 'status', class: 'py-6 text-center text-sm text-slate-500 dark:text-slate-400' },
+      locale.value === 'en' ? 'Preparing the result…' : '正在显示解析结果…'),
+  },
+  errorComponent: {
+    setup: () => () => h('p', { role: 'alert', class: 'py-6 text-center text-sm text-rose-600 dark:text-rose-400' },
+      locale.value === 'en' ? 'The result could not be displayed. Please parse again.' : '结果暂时无法显示，请重新解析。'),
+  },
+})
 
 const videoStore = useVideoStore()
 const isDark = ref(false)
@@ -35,6 +53,12 @@ const { inputUrl, parseError, currentPlatform, parseButton, parseVideo, selectPl
   currentVideoUrl,
   showToast: (message, type, duration) => videoStore.addToast(message, type, duration)
 })
+
+// Start fetching the result UI alongside a valid parse request, not on the
+// initial visit and not only after the API has finished.
+watch(() => parseButton.isLoading.value, loading => {
+  if (loading) void loadResultSection().catch(() => {})
+}, { flush: 'sync' })
 
 const selection = useVideoSelection({ videoStore })
 
@@ -212,6 +236,7 @@ onMounted(() => {
       />
 
       <ResultSection
+        v-if="videoStore.resultData"
         :result-data="videoStore.resultData"
         :result-version="videoStore.resultVersion"
         :is-downloading="isDownloading"

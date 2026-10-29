@@ -1,0 +1,83 @@
+{
+  "purpose": "Platform identification; ownership stays with respective rightsholders.",
+  "assets": [
+    {
+      "platform": "douyin",
+      "source": "https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/2025_0313_logo.png",
+      "file": "douyin.png",
+      "bytes": 3244,
+      "sha256": "13cad6617f4f88c4477db7ce5e0fc7b8e50b0df681622fc4e744fe29ba6ee9e9",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "kuaishou",
+      "source": "https://p4-plat.wskwai.com/kos/nlav111422/ks-web/favicon.ico",
+      "file": "kuaishou.ico",
+      "bytes": 4286,
+      "sha256": "b41bf5fb2d4ac584399902bb5b342f4b41e48c875053d962d3fe3d8a95abb4b3",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "bilibili",
+      "source": "https://www.bilibili.com/favicon.ico",
+      "file": "bilibili.ico",
+      "bytes": 4286,
+      "sha256": "2681561eb24e7435fea1acf26f3af95e4efc9f7d451587b58bef62f030f337e9",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "xhs",
+      "source": "https://www.xiaohongshu.com/favicon.ico",
+      "file": "xhs.ico",
+      "bytes": 4286,
+      "sha256": "33b25a8e2b0a67d2fc58eb6739a608211af9e62b3fdd935e7ce7e1ce12963372",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "toutiao",
+      "source": "https://www.toutiao.com/favicon.ico",
+      "file": "toutiao.ico",
+      "bytes": 7888,
+      "sha256": "dc7b9705741e9fbc9a1a201cdc29d5e4de01329d09403df0a537f3c9599e0f85",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "weibo",
+      "source": "@fortawesome/fontawesome-free@6.7.2/svgs/brands/weibo.svg",
+      "retrieved": "2026-10-29",
+      "original_source": "https://weibo.com/favicon.ico",
+      "file": "weibo.svg",
+      "license": "CC BY 4.0; frontend/public/licenses/fontawesome-free-6.7.2.txt",
+      "modification": "fill set to #e6162d",
+      "bytes": 1227,
+      "sha256": "dc262a42603afc586219421f71bd9266fafbf1d87c6649ffdf0b3567f1f6c889"
+    },
+    {
+      "platform": "pipixia",
+      "source": "https://lf-toutiao-ug-dns.toutiaocdn.com/obj/toutiao-ug-tos/ppx/mp/static/media/favicon.9cfbabbf.ico",
+      "file": "pipixia.png",
+      "bytes": 4373,
+      "sha256": "2b2ebe21da89899a62e149ebd081621f0dd4e20c0004d50d43c0348a982dc43d",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "pipigx",
+      "source": "https://www.pipigx.com/favicon.ico",
+      "file": "pipigx.ico",
+      "bytes": 4286,
+      "sha256": "0dac04e54d4f4df91a50a0de6a90366e0d70b73880c40b6bd74df9f4f47799c8",
+      "retrieved": "2026-10-29"
+    },
+    {
+      "platform": "zuiyou",
+      "source": "https://www.izuiyou.com/favicon.ico",
+      "file": "zuiyou.png",
+      "retrieved": "2026-10-29",
+      "original_sha256": "57c14649ffed0d17c422622d613762f8159cde3c00cc9478e8fc2e29743fc261",
+      "original_bytes": 69601,
+      "modification": "web-size PNG; original retained in brand-originals/platforms/zuiyou.png",
+      "bytes": 7992,
+      "sha256": "f5db5d8444d0dcebd25d27ebf980799ee2cb1f3cb061e823d6eb1ec14e6f8440"
+    }
+  ]
+}

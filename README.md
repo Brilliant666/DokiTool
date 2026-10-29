@@ -40,11 +40,14 @@ cd frontend
 npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm test
 npm run build
+npm run check:load-budget
 cd ..
 python scripts/third-party-notices.py
 ```
 
 构建产物在 `frontend/dist/`，不会提交到 Git。锁文件固定依赖版本和完整性信息；部分上游锁定下载地址使用 npm 镜像，命令行 registry 不会替换所有锁定地址。
+
+首屏使用本地 SVG 图标和带 hash 的小尺寸品牌素材；原图保存在 `frontend/brand-originals/`，可用 `npm run assets:brand` 重新生成网页 PNG。结果区在解析期间加载，JSZip 在打包操作时加载。加载预算只检查构建体积与依赖拆分；[浏览器性能验收与缓存发布要求](docs/DEPLOYMENT.md#静态资源缓存与首次加载) 另行记录。
 
 默认 `VITE_API_MODE=php`、`VITE_API_BASE_URL` 为空，浏览器请求同源 `/api/*`。可参考 `frontend/.env.example`。设置 API origin 不会自动启用加密协议；仅显式 `secure` 模式使用另行实现的 `/api/v1` 协议，基础 PHP 后端不提供该协议。
 
@@ -64,7 +67,7 @@ Windows 的 `--php` 可使用 PHP 可执行文件的完整路径。`validate.py`
 
 ## 适配与边界
 
-默认 API 由本站 PHP 提供；修复了 HTTP 200 业务失败误判、B 站失败分 P 借用其他视频地址、选 P 定位与重复懒解析等问题。字体与轮播资源本地打包；部分平台展示图标仍来自外站。
+默认 API 由本站 PHP 提供；修复了 HTTP 200 业务失败误判、B 站失败分 P 借用其他视频地址、选 P 定位与重复懒解析等问题。界面图标使用本地 SVG，平台展示图标与品牌图片随构建发布；不再加载图标字体和 Swiper。
 
 除微博外，播放和下载直接使用解析结果的媒体地址，仍受媒体站点的 CORS、防盗链、地区限制和链接时效影响。微博通过本站限定来源的签名媒体服务播放与下载，需要配置共享密钥和独立媒体池，详见 [部署说明](docs/DEPLOYMENT.md#微博播放与下载)。当前公开入口不包含开放媒体代理、需要 Cookie 的抖音主页、网易云 Python 服务或其他可选上游脚本。
 

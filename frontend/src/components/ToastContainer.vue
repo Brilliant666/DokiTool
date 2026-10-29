@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { useVideoStore } from '../stores/video'
 
 const videoStore = useVideoStore()
@@ -35,7 +36,7 @@ const getToastClass = (type) => {
         role="status"
         aria-live="polite"
       >
-        <i :class="['fas mt-0.5 shrink-0', getIcon(toast.type)]"></i>
+        <AppIcon :class="['fas mt-0.5 shrink-0', getIcon(toast.type)]"></AppIcon>
         <span class="text-sm leading-5 min-w-0 flex-1 break-words">{{ toast.message }}</span>
         <button
           type="button"
@@ -43,7 +44,7 @@ const getToastClass = (type) => {
           aria-label="关闭提示"
           @click="videoStore.removeToast(toast.id)"
         >
-          <i class="fas fa-times text-xs"></i>
+          <AppIcon class="fas fa-times text-xs"></AppIcon>
         </button>
       </div>
     </TransitionGroup>

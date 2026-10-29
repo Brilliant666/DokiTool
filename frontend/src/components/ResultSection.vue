@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import VideoPlaylist from './VideoPlaylist.vue'
 import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaSources, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
@@ -537,13 +538,13 @@ const toggleSection = (key) => {
           </div>
           <span class="rs-header-title">{{ t(locale, 'resultTitle') }}</span>
           <span class="rs-header-badge" :class="'rs-header-badge--' + mediaTypeBadge.style">
-            <i :class="['fas', mediaTypeBadge.icon]"></i>
+            <AppIcon :class="['fas', mediaTypeBadge.icon]"></AppIcon>
             {{ mediaTypeBadge.text }}
           </span>
         </div>
         <div class="rs-header-right">
           <span class="rs-header-hint">
-            <i class="fas fa-link rs-header-hint-icon"></i>
+            <AppIcon class="fas fa-link rs-header-hint-icon"></AppIcon>
             <span class="rs-header-hint-text">{{ sourceHint }}</span>
           </span>
         </div>
@@ -575,7 +576,7 @@ const toggleSection = (key) => {
           <div class="rs-card rs-card--video">
             <div class="rs-card-hd">
               <div class="rs-card-hd-left">
-                <i class="fas fa-play-circle rs-card-icon"></i>
+                <AppIcon class="fas fa-play-circle rs-card-icon"></AppIcon>
                 <span>{{ t(locale, 'videoSource') }}</span>
               </div>
               <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
@@ -610,7 +611,7 @@ const toggleSection = (key) => {
                 class="rs-btn rs-btn--primary"
                 :disabled="isDownloading"
               >
-                <i class="fas fa-download"></i>
+                <AppIcon class="fas fa-download"></AppIcon>
                 <span>{{ t(locale, 'downloadSingle') }}</span>
               </button>
               <template v-if="selectedCount > 0">
@@ -619,7 +620,7 @@ const toggleSection = (key) => {
                   class="rs-btn rs-btn--accent"
                   :disabled="isDownloading"
                 >
-                  <i class="fas fa-layer-group"></i>
+                  <AppIcon class="fas fa-layer-group"></AppIcon>
                   <span>{{ t(locale, 'downloadSelected') }}（{{ selectedCount }}）</span>
                 </button>
                 <button
@@ -627,7 +628,7 @@ const toggleSection = (key) => {
                   class="rs-btn rs-btn--ghost"
                   :disabled="isDownloading"
                 >
-                  <i class="fas fa-file-archive"></i>
+                  <AppIcon class="fas fa-file-archive"></AppIcon>
                   <span>{{ t(locale, 'downloadSelectedZip') }}</span>
                 </button>
               </template>
@@ -637,7 +638,7 @@ const toggleSection = (key) => {
                   class="rs-btn rs-btn--accent"
                   :disabled="isDownloading"
                 >
-                  <i class="fas fa-download"></i>
+                  <AppIcon class="fas fa-download"></AppIcon>
                   <span>{{ t(locale, 'downloadAllVideos') }}</span>
                 </button>
                 <button
@@ -645,7 +646,7 @@ const toggleSection = (key) => {
                   class="rs-btn rs-btn--ghost"
                   :disabled="isDownloading"
                 >
-                  <i class="fas fa-file-archive"></i>
+                  <AppIcon class="fas fa-file-archive"></AppIcon>
                   <span>{{ t(locale, 'downloadAllZip') }}</span>
                 </button>
               </template>
@@ -653,7 +654,7 @@ const toggleSection = (key) => {
                 @click="emit('copy-url', selectedVideoUrl)"
                 class="rs-btn rs-btn--ghost-light"
               >
-                <i class="fas fa-copy"></i>
+                <AppIcon class="fas fa-copy"></AppIcon>
                 <span>{{ t(locale, 'copyVideo') }}</span>
               </button>
             </div>
@@ -662,7 +663,7 @@ const toggleSection = (key) => {
           <div class="rs-card rs-card--playlist">
             <div class="rs-card-hd">
               <div class="rs-card-hd-left">
-                <i class="fas fa-list rs-card-icon"></i>
+                <AppIcon class="fas fa-list rs-card-icon"></AppIcon>
                 <span>{{ t(locale, 'episodes') }}（{{ visibleVideos.length }}）</span>
               </div>
               <span v-if="collections.length > 1" class="rs-count-tag">
@@ -692,7 +693,7 @@ const toggleSection = (key) => {
         <div v-else-if="hasVideo" class="rs-card rs-card--video">
           <div class="rs-card-hd">
             <div class="rs-card-hd-left">
-              <i class="fas fa-play-circle rs-card-icon"></i>
+              <AppIcon class="fas fa-play-circle rs-card-icon"></AppIcon>
               <span>{{ t(locale, 'videoSource') }}</span>
             </div>
             <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
@@ -715,7 +716,7 @@ const toggleSection = (key) => {
           </div>
           <div class="rs-card-actions">
             <button @click="emit('download-main')" class="rs-btn rs-btn--primary">
-              <i class="fas fa-download"></i>
+              <AppIcon class="fas fa-download"></AppIcon>
               <span>{{ isLive ? t(locale, 'downloadLive') : t(locale, 'downloadSingle') }}</span>
             </button>
             <button
@@ -723,11 +724,11 @@ const toggleSection = (key) => {
               @click="emit('download-all')"
               class="rs-btn rs-btn--accent"
             >
-              <i class="fas fa-layer-group"></i>
+              <AppIcon class="fas fa-layer-group"></AppIcon>
               <span>{{ t(locale, 'downloadAll') }}</span>
             </button>
             <button @click="emit('copy-url', currentVideoUrl || resultData.url)" class="rs-btn rs-btn--ghost-light">
-              <i class="fas fa-copy"></i>
+              <AppIcon class="fas fa-copy"></AppIcon>
               <span>{{ t(locale, 'copyVideo') }}</span>
             </button>
           </div>
@@ -737,7 +738,7 @@ const toggleSection = (key) => {
         <div v-if="hasImages" class="rs-card rs-card--gallery">
           <div class="rs-card-hd">
             <div class="rs-card-hd-left">
-              <i class="fas fa-images rs-card-icon"></i>
+              <AppIcon class="fas fa-images rs-card-icon"></AppIcon>
               <span>{{ t(locale, 'imageSource') }}</span>
             </div>
             <span class="rs-count-tag">{{ t(locale, 'imagesCount').replace('{count}', resultData.images.length) }}</span>
@@ -761,14 +762,14 @@ const toggleSection = (key) => {
             >
               <img :src="img" class="rs-gallery-img" :alt="`${t(locale, 'imagesTitle')} ${idx + 1}`" loading="lazy" />
               <div class="rs-gallery-mask">
-                <i class="fas fa-search-plus"></i>
+                <AppIcon class="fas fa-search-plus"></AppIcon>
               </div>
             </button>
           </div>
 
           <div class="rs-card-actions">
             <button @click="emit('download-images')" class="rs-btn rs-btn--primary">
-              <i class="fas fa-download"></i>
+              <AppIcon class="fas fa-download"></AppIcon>
               <span>{{ t(locale, 'allImages') }} ({{ resultData.images.length }})</span>
             </button>
           </div>
@@ -789,7 +790,7 @@ const toggleSection = (key) => {
                   class="rs-live-toggle-btn"
                   :class="{ 'rs-live-toggle-btn--on': liveViewMode === 'video' }"
                 >
-                  <i class="fas fa-video"></i>
+                  <AppIcon class="fas fa-video"></AppIcon>
                   {{ t(locale, 'overlayVideo') }}
                 </button>
                 <button
@@ -797,7 +798,7 @@ const toggleSection = (key) => {
                   class="rs-live-toggle-btn"
                   :class="{ 'rs-live-toggle-btn--on': liveViewMode === 'cover' }"
                 >
-                  <i class="fas fa-image"></i>
+                  <AppIcon class="fas fa-image"></AppIcon>
                   {{ t(locale, 'overlayCover') }}
                 </button>
               </div>
@@ -811,14 +812,14 @@ const toggleSection = (key) => {
                 class="rs-live-nav rs-live-nav--prev"
                 :disabled="totalLivePhotos <= 1"
               >
-                <i class="fas fa-chevron-left"></i>
+                <AppIcon class="fas fa-chevron-left"></AppIcon>
               </button>
               <button
                 @click="activeLiveIndex = (activeLiveIndex + 1) % totalLivePhotos"
                 class="rs-live-nav rs-live-nav--next"
                 :disabled="totalLivePhotos <= 1"
               >
-                <i class="fas fa-chevron-right"></i>
+                <AppIcon class="fas fa-chevron-right"></AppIcon>
               </button>
 
               <!-- 视频/图片展示 -->
@@ -850,14 +851,14 @@ const toggleSection = (key) => {
                 @click="emit('download-live-video', resultData.live_photo[activeLiveIndex])"
                 class="rs-btn rs-btn--ghost rs-btn--sm"
               >
-                <i class="fas fa-video"></i>
+                <AppIcon class="fas fa-video"></AppIcon>
                 {{ t(locale, 'overlayVideo') }}
               </button>
               <button
                 @click="emit('download-live-cover', resultData.live_photo[activeLiveIndex])"
                 class="rs-btn rs-btn--ghost rs-btn--sm"
               >
-                <i class="fas fa-image"></i>
+                <AppIcon class="fas fa-image"></AppIcon>
                 {{ t(locale, 'overlayCover') }}
               </button>
             </div>
@@ -866,11 +867,11 @@ const toggleSection = (key) => {
           <!-- 底部批量下载 -->
           <div class="rs-live-bulk-bar">
             <button @click="emit('download-all-live')" class="rs-btn rs-btn--primary rs-btn--block">
-              <i class="fas fa-download"></i>
+              <AppIcon class="fas fa-download"></AppIcon>
               {{ t(locale, 'downloadAllLive') }} ({{ totalLivePhotos }} {{ t(locale, 'live') }})
             </button>
             <button @click="emit('download-all-live-covers')" class="rs-btn rs-btn--ghost rs-btn--block">
-              <i class="fas fa-images"></i>
+              <AppIcon class="fas fa-images"></AppIcon>
               {{ t(locale, 'downloadAllCovers') }} ({{ totalLivePhotos }})
             </button>
           </div>
@@ -893,7 +894,7 @@ const toggleSection = (key) => {
                 @error="$event.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect fill=%22%23e2e8f0%22 width=%2248%22 height=%2248%22/><text x=%2224%22 y=%2228%22 text-anchor=%22middle%22 fill=%22%2394a3b8%22 font-size=%2216%22>?</text></svg>'"
               />
               <div v-else class="rs-author-avatar-fb">
-                <i class="fas fa-user"></i>
+                <AppIcon class="fas fa-user"></AppIcon>
               </div>
             </div>
             <div class="rs-author-detail">
@@ -911,7 +912,7 @@ const toggleSection = (key) => {
                 @{{ author.id }}
               </div>
               <div v-if="author.likeCountNum !== null" class="rs-author-likes">
-                <i class="fas fa-heart"></i>
+                <AppIcon class="fas fa-heart"></AppIcon>
                 {{ t(locale, 'infoLikes').replace('{count}', author.likeCountNum) }}
               </div>
             </div>
@@ -928,7 +929,7 @@ const toggleSection = (key) => {
               class="rs-tab"
               :class="{ 'rs-tab--on': activeTab === tab.key }"
             >
-              <i :class="['fas', tab.icon]"></i>
+              <AppIcon :class="['fas', tab.icon]"></AppIcon>
               <span>{{ tab.label }}</span>
             </button>
           </nav>
@@ -943,7 +944,7 @@ const toggleSection = (key) => {
                 @click="copyToClipboard(card.value)"
               >
                 <div class="rs-info-icon">
-                  <i :class="['fas', card.icon]"></i>
+                  <AppIcon :class="['fas', card.icon]"></AppIcon>
                 </div>
                 <div class="rs-info-text">
                   <span class="rs-info-key">{{ card.label }}</span>
@@ -958,7 +959,7 @@ const toggleSection = (key) => {
             <div class="rs-stat-grid">
               <div v-for="(stat, idx) in stats" :key="idx" class="rs-stat-cell">
                 <div class="rs-stat-icon">
-                  <i :class="['fas', stat.icon]"></i>
+                  <AppIcon :class="['fas', stat.icon]"></AppIcon>
                 </div>
                 <div class="rs-stat-num" :aria-describedby="stat.unverified ? 'rs-play-count-note' : undefined">{{ stat.unverified ? '—' : formatNumber(stat.value) }}</div>
                 <div class="rs-stat-label">{{ stat.label }}</div>
@@ -983,29 +984,29 @@ const toggleSection = (key) => {
                 >
                   <div class="rs-backup-hd">
                     <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityLabel(backup) }}</span>
-                    <i v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></i>
+                    <AppIcon v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></AppIcon>
                   </div>
                   <div class="rs-backup-meta">
                     <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
                     <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
                     <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
-                      <i class="fas fa-wave-square"></i>{{ formatBitrate(backup.bit_rate) }}
+                      <AppIcon class="fas fa-wave-square"></AppIcon>{{ formatBitrate(backup.bit_rate) }}
                     </span>
                     <span v-if="backup.width && backup.height" class="rs-backup-meta-tag">
-                      <i class="fas fa-arrows-alt"></i>{{ backup.width }}×{{ backup.height }}
+                      <AppIcon class="fas fa-arrows-alt"></AppIcon>{{ backup.width }}×{{ backup.height }}
                     </span>
                     <span v-if="backup.codec" class="rs-backup-meta-tag">
-                      <i class="fas fa-microchip"></i>{{ backup.codec }}
+                      <AppIcon class="fas fa-microchip"></AppIcon>{{ backup.codec }}
                     </span>
                   </div>
                   <div v-if="backup.active" class="rs-backup-playing">
-                    <i class="fas fa-headphones"></i> {{ t(locale, 'currentPlaying') }}
+                    <AppIcon class="fas fa-headphones"></AppIcon> {{ t(locale, 'currentPlaying') }}
                   </div>
                 </button>
               </div>
             </template>
             <div v-else class="rs-empty">
-              <i class="fas fa-inbox"></i>
+              <AppIcon class="fas fa-inbox"></AppIcon>
               <span>{{ t(locale, 'noBackups') }}</span>
             </div>
           </div>
@@ -1027,7 +1028,7 @@ const toggleSection = (key) => {
                 class="rs-tag rs-tag--vt rs-copyable-tag"
                 @click="copyToClipboard(tag.name)"
               >
-                <i class="fas fa-tag"></i> {{ tag.name }}
+                <AppIcon class="fas fa-tag"></AppIcon> {{ tag.name }}
               </span>
             </div>
           </div>
@@ -1044,7 +1045,7 @@ const toggleSection = (key) => {
                   @error="$event.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 80 80%22><rect fill=%22%23e2e8f0%22 width=%2280%22 height=%2280%22 rx=%2240%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%2394a3b8%22 font-size=%2228%22>♪</text></svg>'"
                 />
                 <div v-else class="rs-music-cover-fb">
-                  <i class="fas fa-music"></i>
+                  <AppIcon class="fas fa-music"></AppIcon>
                 </div>
                 <div class="rs-music-disc"></div>
               </div>
@@ -1056,7 +1057,7 @@ const toggleSection = (key) => {
                 <track kind="captions" :src="undefined" />
               </audio>
               <button @click="emit('download-music', resultData.music)" class="rs-btn rs-btn--primary rs-btn--sm rs-btn--block">
-                <i class="fas fa-download"></i>
+                <AppIcon class="fas fa-download"></AppIcon>
                 <span>{{ locale === 'zh-CN' ? '下载音乐' : 'Download' }}</span>
               </button>
             </div>
@@ -1079,7 +1080,7 @@ const toggleSection = (key) => {
           :aria-label="t(locale, 'preview')"
         >
           <button @click="closeImageModal" class="rs-modal-close" :aria-label="t(locale, 'close')">
-            <i class="fas fa-times"></i>
+            <AppIcon class="fas fa-times"></AppIcon>
           </button>
 
           <button
@@ -1087,14 +1088,14 @@ const toggleSection = (key) => {
             @click="prevImage"
             class="rs-modal-nav rs-modal-nav--prev"
           >
-            <i class="fas fa-chevron-left"></i>
+            <AppIcon class="fas fa-chevron-left"></AppIcon>
           </button>
           <button
             v-if="resultData.images?.length > 1"
             @click="nextImage"
             class="rs-modal-nav rs-modal-nav--next"
           >
-            <i class="fas fa-chevron-right"></i>
+            <AppIcon class="fas fa-chevron-right"></AppIcon>
           </button>
 
           <div class="rs-modal-body">
@@ -1106,7 +1107,7 @@ const toggleSection = (key) => {
           </div>
 
           <button class="rs-btn rs-btn--primary" @click="emit('download-image', resultData.images[activeImageIndex])">
-            <i class="fas fa-download"></i>{{ locale === 'en' ? 'Download image' : '下载图片' }}
+            <AppIcon class="fas fa-download"></AppIcon>{{ locale === 'en' ? 'Download image' : '下载图片' }}
           </button>
           <div v-if="resultData.images?.length > 1" class="rs-modal-pager">
             <button
@@ -1131,7 +1132,7 @@ const toggleSection = (key) => {
       <Transition name="rs-toast">
         <div v-if="showCopyToast" class="rs-copy-toast">
           <div class="rs-copy-toast-icon">
-            <i class="fas fa-check"></i>
+            <AppIcon class="fas fa-check"></AppIcon>
           </div>
           <div class="rs-copy-toast-content">
             <div class="rs-copy-toast-title">{{ locale === 'zh-CN' ? '复制成功' : 'Copied' }}</div>

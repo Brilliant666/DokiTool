@@ -1,5 +1,7 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
+import BrandWordmark from './BrandWordmark.vue'
 
 defineProps({
   isDark: Boolean,
@@ -90,7 +92,7 @@ const handleKeydown = (e) => {
           aria-label="DokiTool 短视频解析"
         >
           <div class="w-24 h-10 rounded-xl flex items-center justify-center overflow-hidden shrink-0">
-            <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
+            <BrandWordmark />
           </div>
           <div class="hidden xs:block">
             <h1 class="font-bold text-lg text-slate-800 dark:text-white tracking-tight">
@@ -124,7 +126,7 @@ const handleKeydown = (e) => {
               <option value="zh-CN">中文</option>
               <option value="en">EN</option>
             </select>
-            <i class="fas fa-chevron-down absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none"></i>
+            <AppIcon class="fas fa-chevron-down absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none"></AppIcon>
           </div>
 
           <button
@@ -132,7 +134,7 @@ const handleKeydown = (e) => {
             class="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all duration-200 ux-focus"
             :aria-label="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
           >
-            <i :class="['fas text-sm transition-transform duration-300', isDark ? 'fa-sun' : 'fa-moon']"></i>
+            <AppIcon :class="['fas text-sm transition-transform duration-300', isDark ? 'fa-sun' : 'fa-moon']"></AppIcon>
           </button>
 
           <button
@@ -142,7 +144,7 @@ const handleKeydown = (e) => {
             aria-controls="mobile-menu"
             :aria-label="getLabel(locale, isMobileMenuOpen ? 'close' : 'menu')"
           >
-            <i :class="['fas text-sm transition-transform duration-300', isMobileMenuOpen ? 'fa-times' : 'fa-bars']"></i>
+            <AppIcon :class="['fas text-sm transition-transform duration-300', isMobileMenuOpen ? 'fa-times' : 'fa-bars']"></AppIcon>
           </button>
         </div>
       </div>

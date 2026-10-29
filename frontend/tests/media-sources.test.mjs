@@ -27,6 +27,7 @@ before(async () => {
   const module = { exports: {} };
   new Function('require', 'module', 'exports', compiled.code)((id) => {
     if (id === './VideoPlaylist.vue') return { __esModule: true, default: { render: () => null } };
+    if (id === './AppIcon.vue') return { __esModule: true, default: { render: () => h('i') } };
     if (id === '../utils/mediaSources') return sources;
     return require(id);
   }, module, module.exports);

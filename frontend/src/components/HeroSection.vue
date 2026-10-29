@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { computed } from 'vue'
 import { platformTabs } from '../utils/platforms'
 
@@ -79,7 +80,7 @@ const selectPlatform = (key) => {
 
     <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 relative">
       <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-xs sm:text-sm font-medium mb-6 sm:mb-8 ux-animate-fade-in">
-        <i class="fas fa-sparkles"></i>
+        <AppIcon class="fas fa-wand-magic-sparkles"></AppIcon>
         <span>{{ getContent(locale).badge }}</span>
       </div>
 
@@ -99,7 +100,7 @@ const selectPlatform = (key) => {
           :key="index"
           class="flex items-center gap-2 text-sm sm:text-base text-slate-600 dark:text-slate-300"
         >
-          <i :class="['fas', feature.icon, feature.color]"></i>
+          <AppIcon :class="['fas', feature.icon, feature.color]"></AppIcon>
           <span>{{ feature.label }}</span>
         </div>
       </div>
@@ -118,7 +119,7 @@ const selectPlatform = (key) => {
                 : 'bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-slate-300 hover:bg-indigo-100 dark:hover:bg-slate-700 border border-indigo-200 dark:border-slate-700'
             ]"
           >
-            <i :class="['fas', tab.icon]"></i>
+            <AppIcon :class="['fas', tab.icon]"></AppIcon>
             <span>{{ tab.label }}</span>
           </button>
         </div>
@@ -145,7 +146,7 @@ const selectPlatform = (key) => {
                   ? 'bg-rose-600 hover:bg-rose-700 dark:bg-rose-700 dark:hover:bg-rose-800 text-white shadow-lg shadow-rose-500/20 dark:shadow-rose-900/30 border border-rose-500/30 dark:border-rose-600/30 error-state-btn'
                   : 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-600 dark:hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/25 dark:shadow-indigo-900/40 border border-indigo-500/40 dark:border-indigo-500/30 parse-state-btn'"
             >
-              <i :class="['fas text-xs sm:text-sm transition-transform duration-300', isLoading ? 'fa-spinner fa-spin' : isError ? 'fa-exclamation-circle' : 'fa-bolt']"></i>
+              <AppIcon :class="['fas text-xs sm:text-sm transition-transform duration-300', isLoading ? 'fa-spinner fa-spin' : isError ? 'fa-exclamation-circle' : 'fa-bolt']"></AppIcon>
               <span class="hidden sm:inline text-sm">{{ isLoading ? getContent(locale).loading : isError ? getContent(locale).error : getContent(locale).button }}</span>
               <span class="sm:hidden text-sm">{{ isLoading ? '...' : isError ? '!' : '>' }}</span>
             </button>
@@ -160,7 +161,7 @@ const selectPlatform = (key) => {
             aria-live="assertive"
           >
             <div class="parse-error-icon">
-              <i class="fas fa-circle-exclamation"></i>
+              <AppIcon class="fas fa-circle-exclamation"></AppIcon>
             </div>
             <div class="parse-error-copy">
               <p class="parse-error-title">{{ getContent(locale).errorTitle }}</p>
@@ -171,7 +172,7 @@ const selectPlatform = (key) => {
         </Transition>
 
         <p class="text-xs text-slate-400 dark:text-slate-500 mt-3 px-2">
-          <i class="fas fa-info-circle mr-1"></i>
+          <AppIcon class="fas fa-info-circle mr-1"></AppIcon>
           {{ locale === 'zh-CN' ? '支持抖音、快手、B站、小红书等平台' : 'Support Douyin, Kuaishou, Bilibili, Xiaohongshu & more' }}
         </p>
       </div>

@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { platformTabs } from '../utils/platforms'
 defineProps({
   currentPlatform: String,
@@ -24,7 +25,7 @@ const getPlatforms = (locale) => platformTabs(locale)
             : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700'
         ]"
       >
-        <i :class="['fas', tab.icon]" :style="tab.iconColor ? { color: tab.iconColor } : {}"></i>
+        <AppIcon :class="['fas', tab.icon]" :style="tab.iconColor ? { color: tab.iconColor } : {}"></AppIcon>
         <span>{{ tab.label }}</span>
       </button>
     </div>
