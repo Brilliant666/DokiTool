@@ -55,7 +55,7 @@ const showProjectPromotions = false
               </div>
               <div class="brand-icon-glow"></div>
             </div>
-            <p class="text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
+            <p class="pl-3 text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
           </div>
           <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-5">
             {{ getContent(locale).desc }}
