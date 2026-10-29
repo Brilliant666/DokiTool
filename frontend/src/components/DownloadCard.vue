@@ -111,9 +111,6 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
             已用 {{ formatElapsed(item.elapsed) }}
             <template v-if="item.progressKind === 'bytes' && item.transferred"> · 平均 {{ formatSpeed(item.averageSpeed) }}（含等待）</template>
           </div>
-          <div v-if="item.progressKind === 'bytes' && item.transferred > item.loaded" class="text-xs text-slate-400 mt-1">
-            累计接收 {{ formatBytes(item.transferred) }}，含重试线路
-          </div>
           <div v-if="item.status === 'handed-off'" class="text-xs text-slate-500 mt-2">
             请在浏览器下载列表确认进度和结果，本站无法追踪。
           </div>

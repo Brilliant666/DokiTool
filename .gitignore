@@ -97,9 +97,14 @@
 !/frontend/public/dokitool-icon.svg
 !/frontend/public/dokitool.svg
 !/frontend/public/licenses/
+!/frontend/public/robots.txt
+!/frontend/public/sitemap.xml
+!/frontend/public/social/
 /frontend/scripts/*
 !/frontend/scripts/check-load-budget.mjs
 !/frontend/scripts/generate-brand-assets.mjs
+!/frontend/scripts/generate-social-image.mjs
+!/frontend/scripts/prerender.mjs
 /frontend/src/*
 !/frontend/src/App.vue
 !/frontend/src/assets/
@@ -108,6 +113,7 @@
 !/frontend/src/main.ts
 !/frontend/src/router/
 !/frontend/src/services/
+!/frontend/src/ssr/
 !/frontend/src/stores/
 !/frontend/src/style.css
 !/frontend/src/types/
@@ -116,6 +122,9 @@
 !/frontend/tests/icons.test.mjs
 !/frontend/tests/media-sources.test.mjs
 !/frontend/tests/parser-contract.test.mjs
+!/frontend/tests/prerender.test.mjs
+!/frontend/tests/result-layout.test.mjs
+!/frontend/tests/seo-contract.test.mjs
 !/frontend/tests/ui-download-contract.test.mjs
 /ops/examples/*
 !/ops/examples/snap-access.caddy.example
@@ -141,6 +150,8 @@
 !/frontend/public/licenses/swiper-11.2.10.txt
 !/frontend/public/licenses/third-party-notices.txt
 !/frontend/public/licenses/vue-devtools-api-MIT.txt
+/frontend/public/social/*
+!/frontend/public/social/dokitool-share-v1.png
 /frontend/src/assets/*
 !/frontend/src/assets/brand/
 !/frontend/src/assets/design-system.css
@@ -175,6 +186,10 @@
 !/frontend/src/services/operationLogger.js
 !/frontend/src/services/retryManager.js
 !/frontend/src/services/secureApiClient.ts
+/frontend/src/ssr/*
+!/frontend/src/ssr/createHomeApp.ts
+!/frontend/src/ssr/entry-server.ts
+!/frontend/src/ssr/initialState.ts
 /frontend/src/stores/*
 !/frontend/src/stores/video.ts
 /frontend/src/types/*

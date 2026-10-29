@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineAsyncComponent, h, ref, onMounted, watch } from 'vue'
+import { computed, defineAsyncComponent, h, inject, ref, onMounted, watch } from 'vue'
 import { useVideoStore } from './stores/video'
 import HeaderNav from './components/HeaderNav.vue'
 import HeroSection from './components/HeroSection.vue'
@@ -15,6 +15,12 @@ import { useVideoParser } from './composables/useVideoParser'
 import { useMediaDownload } from './composables/useMediaDownload'
 import { useVideoSelection } from './composables/useVideoSelection'
 import { selectMediaSource } from './utils/mediaSource'
+import { homeInitialStateKey, readBrowserPreferences, persistPreference } from './ssr/initialState'
+
+const initialState = inject(homeInitialStateKey, {
+  prerendered: false, locale: 'zh-CN', isDark: false, inputUrl: '',
+})
+const isReady = ref(!initialState.prerendered)
 
 // Share the preload with the async component, but allow a later parse to retry
 // after a transient chunk-loading failure.
@@ -36,7 +42,7 @@ const ResultSection = defineAsyncComponent({
 })
 
 const videoStore = useVideoStore()
-const isDark = ref(false)
+const isDark = ref(initialState.isDark)
 
 const isDownloading = computed(() =>
   videoStore.downloads.some((task) =>
@@ -44,7 +50,7 @@ const isDownloading = computed(() =>
   )
 )
 const showBackup = ref(false)
-const locale = ref(localStorage.getItem('lang') || (navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'))
+const locale = ref(initialState.locale)
 const currentVideoUrl = ref('')
 const { inputUrl, parseError, currentPlatform, parseButton, parseVideo, selectPlatform, resolveBilibiliPage } = useVideoParser({
   videoStore,
@@ -53,6 +59,7 @@ const { inputUrl, parseError, currentPlatform, parseButton, parseVideo, selectPl
   currentVideoUrl,
   showToast: (message, type, duration) => videoStore.addToast(message, type, duration)
 })
+inputUrl.value = initialState.inputUrl
 
 // Start fetching the result UI alongside a valid parse request, not on the
 // initial visit and not only after the API has finished.
@@ -181,25 +188,28 @@ const formatDuration = (seconds) => {
 
 const toggleTheme = () => {
   isDark.value = !isDark.value
-  localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+  persistPreference('theme', isDark.value ? 'dark' : 'light')
   document.documentElement.classList.toggle('dark', isDark.value)
+  document.documentElement.style.colorScheme = isDark.value ? 'dark' : 'light'
 }
 
 const setLocale = (lang) => {
   locale.value = lang
-  localStorage.setItem('lang', lang)
+  persistPreference('lang', lang)
   document.documentElement.lang = lang
 }
 
 onMounted(() => {
-  const savedTheme = localStorage.getItem('theme')
-  if (savedTheme) {
-    isDark.value = savedTheme === 'dark'
-  } else {
-    isDark.value = window.matchMedia('(prefers-color-scheme: dark)').matches
-  }
+  // Static HTML and the first client render use the same language and controls.
+  // Restore preferences only after hydration; the head bootstrap already applied
+  // the background theme before CSS, without mutating the hydrated subtree.
+  const preferences = readBrowserPreferences()
+  isDark.value = preferences.isDark
+  locale.value = preferences.locale
   document.documentElement.classList.toggle('dark', isDark.value)
+  document.documentElement.style.colorScheme = isDark.value ? 'dark' : 'light'
   document.documentElement.lang = locale.value
+  isReady.value = true
 })
 </script>
 
@@ -207,7 +217,9 @@ onMounted(() => {
   <div class="min-h-screen">
     <ParticlesCanvas />
     <ToastContainer />
-    <ProgressModal />
+    <!-- Body teleports are created after hydration; the static page has no
+         teleport targets, so Vue must not hydrate them against body content. -->
+    <ProgressModal v-if="isReady" />
     <DownloadCard
       :downloads="videoStore.downloads"
       @cancel="handleCancelDownload"
@@ -226,6 +238,7 @@ onMounted(() => {
     <main class="max-w-7xl mx-auto px-4 pb-8 pt-0 relative z-10">
       <HeroSection
         v-model:input-url="inputUrl"
+        :is-ready="isReady"
         :is-loading="parseButton.isLoading.value"
         :is-error="!!parseError || parseButton.state.value === 'error'"
         :parse-error="parseError"

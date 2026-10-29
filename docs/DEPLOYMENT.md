@@ -2,6 +2,16 @@
 
 此文档与 `ops/examples/` 都是通用示例，不包含生产配置、账号或凭据。仓库提交不会触发线上更新。
 
+## 首页预渲染与 SEO 文件
+
+生产必须使用 `cd frontend && npm ci && npm run build`，不要仅运行 `vite build`。构建会先生成客户端资源，再使用同一套 Vue 组件输出真实首页 HTML，并执行预渲染契约检查。仅发布 `frontend/dist/`；临时 `.ssg/` 不进入发布包，也不需要常驻 Node 渲染服务。
+
+首页固定输出中文，客户端通过 hydration 接管后恢复语言偏好；英文偏好用户会在接管后切换文字。主题在样式加载前读取，输入框允许提前输入，解析及平台按钮在功能就绪前禁用并显示准备状态。粒子保持原视觉，在客户端挂载后启动。
+
+`dist/robots.txt`、`dist/sitemap.xml` 和 `dist/social/dokitool-share-v1.png` 必须随包发布。Caddy 示例的精确文件路由让缺失文件返回 404，不能回退首页；部署维护方应将这些规则局部合入现有站点，校验配置后确认内容类型与实际内容。sitemap 当前仅包含真实首页，canonical、分享元数据和结构化数据使用 `https://snap.dokitool.com/`；部署到其他正式域名时需同步修改。
+
+验收需确认 HTML 响应本身含主要内容、浏览器接管无 hydration 错误、提前输入未丢失、主题/语言偏好可恢复、解析正常。构建测试和本地延后加载脚本的功能验证不等同于真实弱网或 CPU 降速测试。
+
 ## 静态资源缓存与首次加载
 
 `ops/examples/snap.caddy` 的前端路由为现存、文件名带 Vite hash 的 `/assets/` 文件设置一年 immutable 缓存；HTML 和其他文件使用 `no-cache` 校验更新。缺失的 `/assets/` 文件必须返回 404，不能返回并缓存 SPA HTML。API、微博签名媒体、认证与访问控制不纳入此缓存规则。已有 gzip 保留；不要对媒体响应添加压缩。

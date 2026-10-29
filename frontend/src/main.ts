@@ -1,7 +1,8 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
+import { createHomeApp } from './ssr/createHomeApp'
+import { getClientInitialState } from './ssr/initialState'
 import './style.css'
 import './assets/design-system.css'
 
-createApp(App).use(createPinia()).mount('#app')
+const root = document.getElementById('app')
+if (!root) throw new Error('Missing application root')
+createHomeApp(getClientInitialState(root)).mount(root)

@@ -248,7 +248,7 @@ test('quality names and decimal file sizes distinguish original 4K from compress
     assert.match(view.text(), /画质原画/);
     await view.showQualities();
     assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p']);
-    assert.deepEqual(view.elements('rs-variant-name').map(view.textOf), ['大小未知 · hevc']);
+    assert.equal(view.elements('rs-backup-variants').length, 0);
     assert.match(view.text(), /2 条线路/);
     view.choices()[1].props.onClick(); await nextTick();
     assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '2160p');
@@ -260,34 +260,45 @@ test('quality names and decimal file sizes distinguish original 4K from compress
   } finally { view.app.unmount(); }
 });
 
-test('one card per resolution retains manual codec choices and exact selected-source details', async () => {
+test('one card per resolution hides variant controls while retaining source data and strict fallback', async () => {
   const hd = { quality: '1080p', width: 1080, height: 1920, codec: 'h264', bit_rate: 919000 };
   const small = { quality: '720p', width: 720, height: 1280, codec: 'h264', bit_rate: 801000 };
-  const view = await mount({ ...base, ...hd, size: 1100000, video_backup: [
+  const data = { ...base, ...hd, size: 1100000, video_backup: [
     { ...hd, url: url('hd-route-b'), size: 1100000 },
     { ...hd, quality: '高清', codec: 'hevc', bit_rate: 523000, url: url('hd-hevc'), size: 600000 },
     { ...small, url: url('720-first'), size: 900000 },
     { ...small, bit_rate: 666000, url: url('720-other'), size: 800000 },
-  ] });
+  ] };
+  const before = structuredClone(data);
+  const view = await mount(data);
   try {
     await view.showQualities();
     assert.equal(view.choices().length, 2);
     assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['1.1 MB · 1080p', '0.9 MB · 720p']);
-    assert.equal(view.elements('rs-backup-variants').length, 2);
-    assert.ok(view.elements('rs-backup-variants').every(node => !node.props.open), 'alternatives start collapsed');
-    assert.ok(view.elements('rs-variant-item').every(node => node.parent.type !== 'button'), 'variant controls are outside primary buttons');
-    view.elements('rs-variant-item')[0].props.onClick(); await nextTick();
+    assert.equal(view.elements('rs-backup-variants').length, 0);
+    assert.equal(view.elements('rs-variant-item').length, 0);
+    assert.deepEqual(data, before, 'removing the controls must not remove or rewrite raw alternatives');
+    await view.fail();
+    assert.equal(view.player().src, url('hd-route-b'), 'the selected version retains its strict CDN fallback');
+    await view.fail();
+    assert.ok(view.alert(), 'exhausted routes cannot automatically switch codec or bitrate');
+    assert.deepEqual(view.switched, [url('hd-route-b')]);
+    // A selected route from the owning parser state still becomes this resolution's
+    // representative, even though the UI no longer offers the variant dropdown.
+    view.state.value = { ...view.state.value, currentVideoUrl: url('hd-hevc') }; await nextTick();
     assert.equal(view.player().src, url('hd-hevc'));
     assert.equal(view.textOf(view.elements('rs-backup-name')[0]), '0.6 MB · 1080p');
     assert.match(view.textOf(view.choices()[0]), /523 Kbps.*hevc/);
     view.copy(); assert.equal(view.copied.at(-1), url('hd-hevc'));
     await view.fail();
     assert.ok(view.alert(), 'same resolution does not authorize automatic codec or bitrate fallback');
-    assert.deepEqual(view.switched, [url('hd-hevc')]);
-    view.elements('rs-variant-item')[0].props.onClick(); await nextTick();
-    assert.equal(view.player().src, url('a'));
+    assert.deepEqual(view.switched, [url('hd-route-b')]);
+    view.choices()[1].props.onClick(); await nextTick();
+    assert.equal(view.player().src, url('720-first'), 'unselected resolutions retain the upstream preferred version');
     await view.fail();
-    assert.equal(view.player().src, url('hd-route-b'), 'the original version retains its strict CDN fallback');
+    assert.ok(view.alert());
+    assert.deepEqual(view.switched, [url('hd-route-b'), url('720-first')]);
+    assert.deepEqual(data, before);
   } finally { view.app.unmount(); }
 });
 
