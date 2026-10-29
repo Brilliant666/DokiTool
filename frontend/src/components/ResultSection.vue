@@ -2,7 +2,7 @@
 import AppIcon from './AppIcon.vue'
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import VideoPlaylist from './VideoPlaylist.vue'
-import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaSources, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
+import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaQualities, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
 
 const props = defineProps({
   resultData: Object,
@@ -33,15 +33,26 @@ const hasImages = computed(() => props.resultData?.images?.length > 0)
 const hasMusic = computed(() => !!props.resultData?.music?.url)
 const qualityMedia = computed(() => (isMulti.value ? currentVideoItem.value : null) || props.resultData)
 const qualityCandidates = computed(() => getMediaSources(qualityMedia.value))
-const qualityOptions = computed(() => groupMediaSources(qualityMedia.value).map(group => ({
-  ...(group.sources.find(source => source.url === activeVideoUrl.value) || group.sources[0]),
-  groupKey: group.key,
-  sources: group.sources,
-  active: group.sources.some(source => source.url === activeVideoUrl.value),
-})))
+const qualityOptions = computed(() => groupMediaQualities(qualityMedia.value).map(group => {
+  const variants = group.variants.map(variant => ({
+    ...(variant.sources.find(source => source.url === activeVideoUrl.value) || variant.sources[0]),
+    variantKey: variant.key,
+    sources: variant.sources,
+    active: variant.sources.some(source => source.url === activeVideoUrl.value),
+  }))
+  const selected = variants.find(variant => variant.active) || variants[0]
+  return {
+    ...selected,
+    groupKey: group.key,
+    otherVariants: variants.filter(variant => variant.variantKey !== selected.variantKey),
+  }
+}))
 const hasBackup = computed(() => qualityCandidates.value.length > 0)
 const qualityLabel = (source) => mediaSourceQuality(source, qualityCandidates.value, props.locale)
 const isOriginalQuality = (source) => isHighestOriginalSource(source, qualityCandidates.value)
+// Keep a measured resolution's card name stable across upstream encoding labels.
+const qualityOptionLabel = (source) => !isOriginalQuality(source) && source.width && source.height
+  ? `${Math.min(source.width, source.height)}p` : qualityLabel(source)
 const activeQuality = computed(() => qualityCandidates.value.find((item) => item.url === (isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url)))
 const isLive = computed(() => props.resultData?.type === 'live')
 const hasLivePhotos = computed(() => (props.resultData?.live_photo?.length || 0) > 0)
@@ -975,34 +986,57 @@ const toggleSection = (key) => {
                 <span>{{ t(locale, 'selectQuality') }}</span>
               </div>
               <div class="rs-backup-list">
-                <button
+                <div
                   v-for="backup in qualityOptions"
                   :key="backup.groupKey"
-                  @click="selectQuality(backup)"
-                  class="rs-backup-item"
-                  :class="{ 'rs-backup-item--cur': backup.active }"
+                  class="rs-backup-group"
                 >
-                  <div class="rs-backup-hd">
-                    <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityLabel(backup) }}</span>
-                    <AppIcon v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></AppIcon>
-                  </div>
-                  <div class="rs-backup-meta">
-                    <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
-                    <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
-                    <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
-                      <AppIcon class="fas fa-wave-square"></AppIcon>{{ formatBitrate(backup.bit_rate) }}
-                    </span>
-                    <span v-if="backup.width && backup.height" class="rs-backup-meta-tag">
-                      <AppIcon class="fas fa-arrows-alt"></AppIcon>{{ backup.width }}×{{ backup.height }}
-                    </span>
-                    <span v-if="backup.codec" class="rs-backup-meta-tag">
-                      <AppIcon class="fas fa-microchip"></AppIcon>{{ backup.codec }}
-                    </span>
-                  </div>
-                  <div v-if="backup.active" class="rs-backup-playing">
-                    <AppIcon class="fas fa-headphones"></AppIcon> {{ t(locale, 'currentPlaying') }}
-                  </div>
-                </button>
+                  <button
+                    @click="selectQuality(backup)"
+                    class="rs-backup-item"
+                    :class="{ 'rs-backup-item--cur': backup.active }"
+                  >
+                    <div class="rs-backup-hd">
+                      <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityOptionLabel(backup) }}</span>
+                      <AppIcon v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></AppIcon>
+                    </div>
+                    <div class="rs-backup-meta">
+                      <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
+                      <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
+                      <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
+                        <AppIcon class="fas fa-wave-square"></AppIcon>{{ formatBitrate(backup.bit_rate) }}
+                      </span>
+                      <span v-if="backup.width && backup.height" class="rs-backup-meta-tag">
+                        <AppIcon class="fas fa-arrows-alt"></AppIcon>{{ backup.width }}×{{ backup.height }}
+                      </span>
+                      <span v-if="backup.codec" class="rs-backup-meta-tag">
+                        <AppIcon class="fas fa-microchip"></AppIcon>{{ backup.codec }}
+                      </span>
+                    </div>
+                    <div v-if="backup.active" class="rs-backup-playing">
+                      <AppIcon class="fas fa-headphones"></AppIcon> {{ t(locale, 'currentPlaying') }}
+                    </div>
+                  </button>
+                  <details v-if="backup.otherVariants.length" class="rs-backup-variants">
+                    <summary :aria-label="`${qualityOptionLabel(backup)} · ${locale === 'en' ? 'Other versions' : '其他版本'} (${backup.otherVariants.length})`">
+                      {{ locale === 'en' ? 'Other versions' : '其他版本' }} ({{ backup.otherVariants.length }})
+                    </summary>
+                    <div class="rs-variant-list">
+                      <button
+                        v-for="variant in backup.otherVariants"
+                        :key="variant.variantKey"
+                        class="rs-variant-item"
+                        @click="selectQuality(variant)"
+                      >
+                        <span class="rs-variant-name">{{ formatMediaSize(variant.size, locale) }} · {{ variant.codec || (locale === 'en' ? 'Unknown encoding' : '编码未知') }}</span>
+                        <span class="rs-backup-meta">
+                          <span v-if="variant.bit_rate" class="rs-backup-meta-tag">{{ formatBitrate(variant.bit_rate) }}</span>
+                          <span v-if="variant.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${variant.sources.length} routes` : `${variant.sources.length} 条线路` }}</span>
+                        </span>
+                      </button>
+                    </div>
+                  </details>
+                </div>
               </div>
             </template>
             <div v-else class="rs-empty">
@@ -1436,6 +1470,10 @@ const toggleSection = (key) => {
 /* ═══════════════════════════════════════════════════════════════
    MEDIA COLUMN
    ═══════════════════════════════════════════════════════════════ */
+.rs-media-col,
+.rs-info-col {
+  min-width: 0;
+}
 .rs-media-col {
   display: flex;
   flex-direction: column;
@@ -2215,6 +2253,42 @@ const toggleSection = (key) => {
   font-weight: 600;
   color: var(--c-accent);
   text-align: center;
+}
+.rs-backup-variants {
+  padding: .25rem .5rem 0;
+  color: var(--c-fg-3);
+  font-size: .6875rem;
+}
+.rs-backup-variants > summary {
+  width: fit-content;
+  cursor: pointer;
+  padding: .2rem .25rem;
+}
+.rs-variant-list {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  margin-top: .3rem;
+}
+.rs-variant-item {
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+  width: 100%;
+  padding: .5rem .6rem;
+  border: 1px solid var(--c-border-2);
+  border-radius: var(--r-sm);
+  background: var(--c-bg-2);
+  text-align: left;
+  cursor: pointer;
+}
+.rs-variant-name {
+  color: var(--c-fg-2);
+  font-weight: 500;
+}
+.rs-variant-item:hover,
+.rs-variant-item:focus-visible {
+  border-color: var(--c-accent);
 }
 
 /* empty */
