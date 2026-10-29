@@ -48,14 +48,14 @@ const showProjectPromotions = false
     <div class="max-w-7xl mx-auto px-4 py-8 md:py-16 relative z-10">
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10 mb-12 footer-grid">
         <div class="footer-brand">
-          <div class="flex flex-col items-start gap-1 mb-5">
+          <div class="flex items-center gap-3 mb-5">
             <div class="brand-icon">
               <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
                 <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
-            <p class="pl-3 text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
           </div>
           <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-5">
             {{ getContent(locale).desc }}
