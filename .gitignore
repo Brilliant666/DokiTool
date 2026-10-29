@@ -88,7 +88,9 @@
 !/backend/tests/weibo-contract.php
 !/backend/tests/weibo-media-contract.php
 /frontend/public/*
+!/frontend/public/dokitool-favicon.png
 !/frontend/public/dokitool-icon.svg
+!/frontend/public/dokitool-wordmark.png
 !/frontend/public/dokitool.svg
 !/frontend/public/licenses/
 /frontend/src/*

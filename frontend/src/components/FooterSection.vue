@@ -6,7 +6,7 @@ defineProps({
 const content = {
   'zh-CN': {
     brand: 'DokiTool',
-    version: '由 Brilliant666 维护',
+    version: '由Daiobs维护',
     desc: '简单易用的短视频解析工具，支持多平台无水印视频与图集解析，让分享更自由。',
     quickLinks: '快速链接',
     home: '首页',
@@ -24,7 +24,7 @@ const content = {
   },
   'en': {
     brand: 'DokiTool',
-    version: 'Maintained by Brilliant666',
+    version: 'Maintained by Daiobs',
     desc: 'Simple & easy video parsing tool. Support multi-platform watermark-free video & album extraction.',
     quickLinks: 'Quick Links',
     home: 'Home',
@@ -47,7 +47,8 @@ const getContent = (locale) => content[locale] || content['zh-CN']
 const repositoryUrl = 'https://github.com/Brilliant666/DokiTool'
 const socialLinks = [{ icon: 'fab fa-github', url: repositoryUrl, label: 'DokiTool on GitHub' }]
 
-const currentYear = new Date().getFullYear()
+// Keep the project promotion controls available for a future display option.
+const showProjectPromotions = false
 </script>
 
 <template>
@@ -60,7 +61,7 @@ const currentYear = new Date().getFullYear()
           <div class="flex items-center gap-3 mb-5">
             <div class="brand-icon">
               <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
-                <img src="/dokitool.svg" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
+                <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
@@ -73,7 +74,7 @@ const currentYear = new Date().getFullYear()
             {{ getContent(locale).desc }}
           </p>
 
-          <div class="flex items-center gap-3">
+          <div v-if="showProjectPromotions" class="flex items-center gap-3">
             <a
               v-for="social in socialLinks"
               :key="social.label"
@@ -150,7 +151,7 @@ const currentYear = new Date().getFullYear()
           <ul class="space-y-3">
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-user text-xs text-indigo-400"></i>
-              <span>Brilliant666</span>
+              <span>Daiobs</span>
             </li>
             <li>
               <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
@@ -164,7 +165,7 @@ const currentYear = new Date().getFullYear()
             </li>
           </ul>
 
-          <div class="mt-5 flex items-center gap-2">
+          <div v-if="showProjectPromotions" class="mt-5 flex items-center gap-2">
             <a
               :href="socialLinks[0].url"
               target="_blank"
@@ -178,35 +179,23 @@ const currentYear = new Date().getFullYear()
         </div>
       </div>
 
-      <div class="text-center text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-6">
-        <p>{{ getContent(locale).credits }}</p>
-        <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mt-1">
-          <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
-          <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
-          <a :href="`${repositoryUrl}/blob/main/NOTICE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).license }}</a>
-          <a href="/licenses/third-party-notices.txt" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).dependencies }}</a>
-        </div>
-      </div>
-
       <div class="footer-divider"></div>
 
-      <div class="flex flex-col sm:flex-row items-center justify-center md:justify-between gap-4 pt-8 text-center footer-bottom">
-        <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-sm text-slate-500 dark:text-slate-400">
-          <p>© {{ currentYear }} DokiTool contributors</p>
+      <div class="flex flex-col md:flex-row items-center justify-center md:justify-between gap-4 pt-8 text-center footer-bottom">
+        <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-sm text-slate-500 dark:text-slate-400 shrink-0">
+          <p>© 2026 DokiTool</p>
           <p class="md:hidden">{{ getContent(locale).version }}</p>
         </div>
 
-        <div class="flex items-center gap-4">
-          <a :href="`${repositoryUrl}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link text-sm">MIT License</a>
-          <a
-            :href="socialLinks[0].url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-sm font-medium text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors flex items-center gap-1"
-          >
-            <i class="fab fa-github text-xs"></i>
-            <span>GitHub</span>
-          </a>
+        <div class="text-center md:text-right text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+          <p>{{ getContent(locale).credits }}</p>
+          <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 mt-1">
+            <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
+            <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
+            <a :href="`${repositoryUrl}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">MIT License</a>
+            <a :href="`${repositoryUrl}/blob/main/NOTICE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).license }}</a>
+            <a href="/licenses/third-party-notices.txt" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).dependencies }}</a>
+          </div>
         </div>
       </div>
     </div>
@@ -300,6 +289,11 @@ const currentYear = new Date().getFullYear()
   text-decoration: none;
   transition: all 0.2s ease;
   padding: 0.25rem 0;
+}
+
+/* Temporarily simplify link rows while keeping their labels and destinations. */
+.footer-link > i {
+  display: none;
 }
 
 .dark .footer-link {
