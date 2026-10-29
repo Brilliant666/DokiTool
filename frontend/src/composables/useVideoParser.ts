@@ -816,6 +816,7 @@ export function useVideoParser(options: {
   async function resolveBilibiliVideo(
     video: Pick<MediaVideo, "index"> &
       Partial<Pick<MediaVideo, "_bvid" | "_page" | "_cid" | "_sourceUrl">>,
+    signal?: AbortSignal,
   ): Promise<VideoMetadata & { url: string; video_backup: VideoBackup[]; quality: string } | null> {
     const resolvingRequest = requestId;
     const source = video._sourceUrl || videoStore.resultData?._sourceUrl || inputUrl.value;
@@ -843,8 +844,10 @@ export function useVideoParser(options: {
           })
         : await fetchJSON(
             `${API.bilibili}?url=${encodeURIComponent(pageUrl)}`,
+            55000,
+            signal,
           );
-      if (requestId !== resolvingRequest) return null;
+      if (signal?.aborted || requestId !== resolvingRequest) return null;
       const normalized = normalizeResponse(data, pageUrl);
       // bilibili.php 型后端会一次返回该 BV 所有分P（videos，各带直链），
       // 且顶层 url 不一定对应当前页：按目标页码取对应分集的直链

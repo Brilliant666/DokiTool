@@ -78,6 +78,9 @@ export const useVideoStore = defineStore("video", () => {
       loaded: 0,
       total: 0,
       speed: 0,
+      elapsed: 0,
+      averageSpeed: 0,
+      transferred: 0,
       error: null,
       statusText: "准备中...",
       show: true,
@@ -102,12 +105,12 @@ export const useVideoStore = defineStore("video", () => {
     const download = downloads.value.find((item) => item.id === id);
     if (download) {
       download.abortController?.abort();
-      updateDownload(id, { status: "cancelled", statusText: "已取消" });
+      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, abortController: null });
     }
   };
   const clearCompletedDownloads = () => {
     downloads.value = downloads.value.filter(
-      (item) => !["completed", "cancelled", "failed"].includes(item.status),
+      (item) => !["completed", "cancelled", "failed", "handed-off"].includes(item.status),
     );
   };
   /** 懒解析后回填某集字段；videos 与 collections[].episodes 同步更新（shallowRef 需整体重赋值） */

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import VideoPlaylist from './VideoPlaylist.vue'
+import { getMediaSources, getSameQualityUrls, groupMediaSources } from '../utils/mediaSources'
 
 const props = defineProps({
   resultData: Object,
@@ -10,6 +11,7 @@ const props = defineProps({
   formatNumber: Function,
   formatDuration: Function,
   currentVideoUrl: String,
+  resultVersion: Number,
   /** 选集状态（多 P 时可用） */
   selection: Object
 })
@@ -28,17 +30,14 @@ const emit = defineEmits([
 const hasVideo = computed(() => !!props.resultData?.url)
 const hasImages = computed(() => props.resultData?.images?.length > 0)
 const hasMusic = computed(() => !!props.resultData?.music?.url)
-const qualityCandidates = computed(() => {
-  const data = props.resultData
-  if (!data) return []
-  const item = isMulti.value ? currentVideoItem.value : null
-  const primary = item || data
-  const candidates = [
-    ...(primary.url ? [{ url: primary.url, quality: primary.quality, width: primary.width, height: primary.height, bit_rate: primary.bit_rate ?? primary.bitrate, codec: primary.codec }] : []),
-    ...(Array.isArray(primary.video_backup) ? primary.video_backup : []),
-  ]
-  return candidates.filter((candidate, index) => candidate.url && candidates.findIndex((other) => other.url === candidate.url) === index)
-})
+const qualityMedia = computed(() => (isMulti.value ? currentVideoItem.value : null) || props.resultData)
+const qualityCandidates = computed(() => getMediaSources(qualityMedia.value))
+const qualityOptions = computed(() => groupMediaSources(qualityMedia.value).map(group => ({
+  ...(group.sources.find(source => source.url === activeVideoUrl.value) || group.sources[0]),
+  groupKey: group.key,
+  sources: group.sources,
+  active: group.sources.some(source => source.url === activeVideoUrl.value),
+})))
 const hasBackup = computed(() => qualityCandidates.value.length > 0)
 const qualityLabel = (quality) => quality === 'original' ? (props.locale === 'en' ? 'Original' : '原画') : quality
 const activeQuality = computed(() => qualityCandidates.value.find((item) => item.url === (isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url)))
@@ -128,7 +127,26 @@ const currentVideoItem = computed(
   () => props.selection?.currentVideo?.value ?? visibleVideos.value?.[currentIndex.value] ?? null
 )
 const playbackFailed = ref(false)
-const playerKey = computed(() => JSON.stringify([props.resultData?._sourceUrl || '', activeVideoUrl.value]))
+const manualSelection = ref(0)
+const mediaIdentity = computed(() => JSON.stringify([
+  props.resultVersion || 0, props.resultData?._sourceUrl || '',
+  isMulti.value ? [currentVideoItem.value?._bvid, currentVideoItem.value?._cid, currentVideoItem.value?.index, activeCollection.value] : null,
+]))
+const playerKey = computed(() => JSON.stringify([mediaIdentity.value, activeVideoUrl.value, manualSelection.value]))
+const attemptedSources = new Set()
+let automaticSwitches = 0
+let pendingAutomaticUrl = ''
+const resetPlaybackAttempts = () => {
+  attemptedSources.clear()
+  automaticSwitches = 0
+  pendingAutomaticUrl = ''
+  playbackFailed.value = false
+}
+const selectQuality = (source) => {
+  resetPlaybackAttempts()
+  manualSelection.value++
+  emit('switch-video', source)
+}
 const originalPageUrl = computed(() => {
   const source = props.resultData?._sourceUrl
   if (typeof source !== 'string') return ''
@@ -137,12 +155,34 @@ const originalPageUrl = computed(() => {
     return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''
   } catch { return '' }
 })
-watch(playerKey, () => { playbackFailed.value = false }, { flush: 'sync' })
+watch([mediaIdentity, activeVideoUrl], ([identity, url], [previousIdentity]) => {
+  if (identity !== previousIdentity || url !== pendingAutomaticUrl) resetPlaybackAttempts()
+  pendingAutomaticUrl = ''
+  playbackFailed.value = false
+}, { flush: 'sync' })
 const updatePlaybackStatus = (event, failed) => {
   const player = event.currentTarget
   // A removed player's queued event must not change the newly selected source.
   if (player !== videoEl.value || !activeVideoUrl.value) return
   if ((player.currentSrc || player.src) !== activeVideoUrl.value) return
+  // Props may already identify a new selection before Vue replaces the old DOM node.
+  if (typeof player.getAttribute === 'function' && player.getAttribute('data-playback-key') !== playerKey.value) return
+  if (pendingAutomaticUrl) return
+  if (failed) {
+    attemptedSources.add(activeVideoUrl.value)
+    const nextUrl = automaticSwitches < 2
+      ? getSameQualityUrls(qualityMedia.value, activeVideoUrl.value).find(url => !attemptedSources.has(url))
+      : undefined
+    const nextSource = qualityCandidates.value.find(source => source.url === nextUrl)
+    if (nextSource) {
+      automaticSwitches++
+      attemptedSources.add(nextUrl)
+      pendingAutomaticUrl = nextUrl
+      playbackFailed.value = false
+      emit('switch-video', nextSource)
+      return
+    }
+  }
   playbackFailed.value = failed
 }
 // 该 P/合集分集正在懒解析中（B 站）
@@ -530,6 +570,7 @@ const toggleSection = (key) => {
             <div class="rs-video-stage">
               <video
                 :key="playerKey"
+                :data-playback-key="playerKey"
                 ref="videoEl"
                 :src="selectedVideoUrl || undefined"
                 controls
@@ -646,6 +687,7 @@ const toggleSection = (key) => {
           <div class="rs-video-stage">
             <video
               :key="playerKey"
+              :data-playback-key="playerKey"
               ref="videoEl"
               :src="currentVideoUrl || resultData.url"
               controls
@@ -919,17 +961,19 @@ const toggleSection = (key) => {
               </div>
               <div class="rs-backup-list">
                 <button
-                  v-for="(backup, idx) in qualityCandidates"
-                  :key="idx"
-                  @click="emit('switch-video', backup)"
+                  v-for="(backup, idx) in qualityOptions"
+                  :key="backup.groupKey"
+                  @click="selectQuality(backup)"
                   class="rs-backup-item"
-                  :class="{ 'rs-backup-item--cur': activeVideoUrl === backup.url }"
+                  :class="{ 'rs-backup-item--cur': backup.active }"
                 >
                   <div class="rs-backup-hd">
                     <span class="rs-backup-name">{{ qualityLabel(backup.quality || backup.label) || (backup.width && backup.height ? `${backup.width}×${backup.height}` : `${t(locale, 'videoSource')} ${idx + 1}`) }}</span>
-                    <i v-if="activeVideoUrl === backup.url" class="fas fa-circle-check rs-backup-cur"></i>
+                    <i v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></i>
                   </div>
                   <div class="rs-backup-meta">
+                    <span v-if="backup.is_original && backup.metadata_source === 'mp4'" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original file' : '原始文件' }}</span>
+                    <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
                     <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
                       <i class="fas fa-wave-square"></i>{{ formatBitrate(backup.bit_rate) }}
                     </span>
@@ -940,7 +984,7 @@ const toggleSection = (key) => {
                       <i class="fas fa-microchip"></i>{{ backup.codec }}
                     </span>
                   </div>
-                  <div v-if="activeVideoUrl === backup.url" class="rs-backup-playing">
+                  <div v-if="backup.active" class="rs-backup-playing">
                     <i class="fas fa-headphones"></i> {{ t(locale, 'currentPlaying') }}
                   </div>
                 </button>
