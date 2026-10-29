@@ -4,7 +4,6 @@ import type {
   DownloadInput,
   DownloadTask,
   ParsedMedia,
-  Particle,
   ToastMessage,
   ToastType,
 } from "../types/media";
@@ -19,7 +18,6 @@ export const useVideoStore = defineStore("video", () => {
     progressPercent = shallowRef(0),
     downloads = ref<DownloadTask[]>([]),
     activeDownloads = shallowRef(new Map<number, DownloadTask>());
-  let swiperInstance: { destroy: () => void } | null = null;
   const setResult = (data: ParsedMedia) => {
     resultVersion.value++;
     resultData.value = data;
@@ -141,53 +139,6 @@ export const useVideoStore = defineStore("video", () => {
       ...(nextCollections ? { collections: nextCollections } : {}),
     };
   };
-  const initSwiper = () => {
-    swiperInstance?.destroy();
-    swiperInstance = null;
-    if (window.Swiper && document.querySelector(".swiper"))
-      swiperInstance = new window.Swiper(".swiper", {
-        pagination: { el: ".swiper-pagination", clickable: true },
-        loop: true,
-        autoplay: { delay: 3000, disableOnInteraction: false },
-      });
-  };
-  const initParticles = () => {
-    const canvas = document.getElementById("particle-canvas");
-    if (!(canvas instanceof HTMLCanvasElement)) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    let particles: Particle[] = [];
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-    const createParticle = (): Particle => ({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      vx: (Math.random() - 0.5) * 0.5,
-      vy: (Math.random() - 0.5) * 0.5,
-      size: Math.random() * 2 + 1,
-      opacity: Math.random() * 0.5 + 0.1,
-    });
-    resize();
-    particles = Array.from({ length: 50 }, createParticle);
-    const draw = () => {
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      particles.forEach((particle) => {
-        particle.x += particle.vx;
-        particle.y += particle.vy;
-        if (particle.x < 0 || particle.x > canvas.width) particle.vx *= -1;
-        if (particle.y < 0 || particle.y > canvas.height) particle.vy *= -1;
-        context.beginPath();
-        context.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
-        context.fillStyle = `rgba(99, 102, 241, ${particle.opacity})`;
-        context.fill();
-      });
-      requestAnimationFrame(draw);
-    };
-    window.addEventListener("resize", resize, { passive: true });
-    draw();
-  };
   return {
     resultVersion,
     resultData,
@@ -210,7 +161,5 @@ export const useVideoStore = defineStore("video", () => {
     cancelDownload,
     clearCompletedDownloads,
     patchVideo,
-    initSwiper,
-    initParticles,
   };
 });

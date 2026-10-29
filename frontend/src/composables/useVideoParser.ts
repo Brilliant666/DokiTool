@@ -1,4 +1,4 @@
-import { nextTick, shallowRef, watch, type Ref } from "vue";
+import { shallowRef, watch, type Ref } from "vue";
 import { useButtonControl } from "./useButtonControl";
 import { secureApiClient } from "../services/secureApiClient";
 import { apiConfig } from "../services/apiConfig";
@@ -770,9 +770,6 @@ export function useVideoParser(options: {
       if (currentRequest !== requestId) return;
       const normalized = normalizeResponse(data, url);
       videoStore.setResult(normalized);
-      await nextTick();
-      if (currentRequest !== requestId) return;
-      videoStore.initSwiper();
       showToast("解析成功", "success", 2200);
     } catch (error) {
       if (currentRequest !== requestId) return;

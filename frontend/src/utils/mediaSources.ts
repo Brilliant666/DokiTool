@@ -12,6 +12,11 @@ export interface MediaSourceGroup {
   sources: VideoBackup[];
 }
 
+/** Display grouping only; variants retain the strict automatic-failover boundary. */
+export interface MediaQualityGroup extends MediaSourceGroup {
+  variants: MediaSourceGroup[];
+}
+
 const positive = (value: unknown): number | undefined => {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
@@ -67,6 +72,44 @@ export function groupMediaSources(media: MediaSourceInput | null | undefined): M
     else groups.set(key, { key, sources: [source] });
   }
   return [...groups.values()];
+}
+
+/**
+ * Present one choice per measured resolution without changing stream identity.
+ * Verified highest originals stay separate from compressed streams of the same
+ * resolution. Unmeasured sources retain their existing strict source grouping.
+ */
+export function groupMediaQualities(media: MediaSourceInput | null | undefined): MediaQualityGroup[] {
+  const candidates = getMediaSources(media);
+  const groups = new Map<string, { group: MediaQualityGroup; rank: number; pixels: number }>();
+  for (const source of candidates) {
+    const strictKey = qualityKey(source) ?? JSON.stringify(['url', source.url]);
+    const measured = Boolean(source.width && source.height);
+    const original = isHighestOriginalSource(source, candidates);
+    const key = original
+      ? JSON.stringify(['original', source.width, source.height])
+      : measured
+        ? JSON.stringify(['resolution', source.width, source.height])
+        : JSON.stringify(['unmeasured', strictKey]);
+    let entry = groups.get(key);
+    if (!entry) {
+      entry = {
+        group: { key, sources: [], variants: [] },
+        rank: original ? 0 : measured ? 1 : 2,
+        pixels: (source.width ?? 0) * (source.height ?? 0),
+      };
+      groups.set(key, entry);
+    }
+    entry.group.sources.push(source);
+    const variant = entry.group.variants.find(item => item.key === strictKey);
+    if (variant) variant.sources.push(source);
+    else entry.group.variants.push({ key: strictKey, sources: [source] });
+  }
+  // Array.sort is stable: equal-resolution area and unmeasured groups preserve
+  // upstream priority, as do every group's sources and variants.
+  return [...groups.values()]
+    .sort((left, right) => left.rank - right.rank || right.pixels - left.pixels)
+    .map(({ group }) => group);
 }
 
 /** Selected URL first. Unknown quality and unrecognised selections never downgrade. */

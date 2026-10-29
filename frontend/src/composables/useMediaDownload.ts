@@ -1,5 +1,4 @@
 import { type Ref } from "vue";
-import JSZip from "jszip";
 import type {
   LivePhoto,
   MediaVideo,
@@ -547,26 +546,39 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     const id = retryId ?? videoStore.addDownload({ filename, status: "preparing", statusText: "准备中..." });
     const controller = new AbortController();
     archiveRetries.set(id, () => runArchive(filename, build, id));
-    videoStore.updateDownload(id, { abortController: controller, status: "downloading", statusText: "正在打包...", percent: 0, error: null, progressKind: "archive", nativeAvailable: false, elapsed: 0, speed: 0, averageSpeed: 0 });
+    videoStore.updateDownload(id, { abortController: controller, status: "preparing", statusText: "准备打包...", percent: 0, error: null, progressKind: "archive", nativeAvailable: false, elapsed: 0, speed: 0, averageSpeed: 0 });
     const monitor = monitorTransfer(id, controller, Date.now(), false);
     try {
+      // Only ZIP actions need this library. The import itself cannot be aborted,
+      // so cancellation must settle the task and guard all work after it resolves.
+      const { default: JSZip } = await abortable(import("jszip"), controller.signal);
+      checkAbort(controller.signal);
+      if (!ownsTask(id, controller)) return;
+      videoStore.updateDownload(id, { status: "downloading", statusText: "正在打包..." });
       const entries = await build(controller.signal, (done, total) => {
         checkAbort(controller.signal);
+        if (!ownsTask(id, controller)) return;
         videoStore.updateDownload(id, { percent: Math.round(done / total * 85), statusText: `打包 ${done}/${total}...` });
       });
       checkAbort(controller.signal);
+      if (!ownsTask(id, controller)) return;
       if (!entries.length) throw new Error("没有可打包的资源");
       const zip = new JSZip();
       for (const entry of entries) {
         checkAbort(controller.signal);
         // ArrayBuffer works consistently in browsers and Node's offline regression harness.
-        zip.file(entry.filename, entry.data instanceof Blob ? await entry.data.arrayBuffer() : entry.data);
+        const data = entry.data instanceof Blob ? await entry.data.arrayBuffer() : entry.data;
+        checkAbort(controller.signal);
+        if (!ownsTask(id, controller)) return;
+        zip.file(entry.filename, data);
       }
       const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
         checkAbort(controller.signal);
+        if (!ownsTask(id, controller)) return;
         videoStore.updateDownload(id, { percent: 85 + Math.round(metadata.percent * 0.14), statusText: "生成压缩包..." });
       });
       checkAbort(controller.signal);
+      if (!ownsTask(id, controller)) return;
       const blobUrl = URL.createObjectURL(blob);
       triggerBrowserDownload(blobUrl, filename);
       setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);

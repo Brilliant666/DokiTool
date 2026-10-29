@@ -63,6 +63,13 @@ async function settled(task) {
   }
   throw new Error('download did not settle');
 }
+async function waitUntil(predicate) {
+  for (let i = 0; i < 300; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  throw new Error('expected asynchronous stage was not reached');
+}
 const base = { title: '示例', images: [], live_photo: [], video_backup: [], music: {}, extra: {}, url: 'https://media.test/main.mp4' };
 
 test('all nine registered platforms are visible; unsupported platform claims are absent', async () => {
@@ -93,7 +100,11 @@ test('checkbox change toggles once and checkbox key events do not select the epi
   const script = compileScript(descriptor, { id: 'playlist-test', inlineTemplate: true });
   const code = await transformWithEsbuild(script.content, 'VideoPlaylist.ts', { loader: 'ts', format: 'cjs' });
   const module = { exports: {} };
-  new Function('require', 'module', 'exports', code.code)(createRequire(import.meta.url), module, module.exports);
+  const require = createRequire(import.meta.url);
+  new Function('require', 'module', 'exports', code.code)(
+    (id) => id === './AppIcon.vue' ? { __esModule: true, default: { render: () => h('i') } } : require(id),
+    module, module.exports,
+  );
   const element = (type) => ({ type, props: {}, children: [], parent: null });
   const renderer = createRenderer({
     createElement: element, createText: (text) => ({ type: '#text', text }), createComment: (text) => ({ type: '#comment', text }),
@@ -125,6 +136,7 @@ async function mountResultPlayer(data, locale = 'zh-CN') {
   const module = { exports: {} }, require = createRequire(import.meta.url);
   new Function('require', 'module', 'exports', code.code)(
     (id) => id === './VideoPlaylist.vue' ? { __esModule: true, default: { render: () => null } }
+      : id === './AppIcon.vue' ? { __esModule: true, default: { render: () => h('i') } }
       : id === '../utils/mediaSources' ? mediaSources : require(id),
     module, module.exports,
   );
@@ -263,6 +275,7 @@ test('ZIP cancellation aborts fetch; retry keeps the original resource snapshot'
     signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
   });
   const pending = instance.downloadAllMedia('images');
+  await waitUntil(() => capturedSignal);
   instance.handleCancelDownload(store.downloads[0].id);
   await pending;
   assert.ok(capturedSignal.aborted); assert.equal(store.downloads[0].status, 'cancelled'); assert.equal(clicked.length, 0);
@@ -563,10 +576,103 @@ test('ZIP cancellation aborts lazy resolution without waiting for its ignored si
   });
   store.patchVideo = (...args) => patches.push(args);
   const pending = instance.downloadVideosAsZip([{ index: 2, url: '', _cid: '222' }]);
+  await waitUntil(() => signal);
   instance.handleCancelDownload(store.downloads[0].id);
   await pending;
   assert.ok(signal.aborted); assert.equal(store.downloads[0].status, 'cancelled');
   resolveLate({ url: 'https://media.test/late-zip.mp4' });
   for (let i = 0; i < 10; i++) await Promise.resolve();
   assert.equal(patches.length, 0); assert.equal(fetched.length, 0); assert.equal(clicked.length, 0);
+});
+
+test('cancelling during ZIP library preparation never starts media requests or saves a file', async () => {
+  const { instance, store } = harness({ ...base, url: null, images: ['https://media.test/zip-preparation.jpg'] });
+  const pending = instance.downloadAllMedia('images');
+  assert.equal(store.downloads[0].status, 'preparing');
+  instance.handleCancelDownload(store.downloads[0].id);
+  await pending;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(store.downloads[0].status, 'cancelled');
+  assert.equal(fetched.length, 0);
+  assert.equal(clicked.length, 0);
+});
+
+test('particles retain their appearance and speed while pausing offscreen and cleaning up', async () => {
+  const source = await readFile(new URL('../src/components/ParticlesCanvas.vue', import.meta.url), 'utf8');
+  const { descriptor } = parse(source);
+  const script = compileScript(descriptor, { id: 'particles-test', inlineTemplate: true });
+  const code = await transformWithEsbuild(script.content, 'ParticlesCanvas.js', { loader: 'js', format: 'cjs' });
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', code.code)(createRequire(import.meta.url), module, module.exports);
+  const saved = { window: globalThis.window, document: globalThis.document, random: Math.random };
+  const frames = new Map(), windowListeners = new Map(), documentListeners = new Map(), motionListeners = new Map();
+  let sequence = 0, app;
+  const paints = [];
+  let dots = [];
+  const context = {
+    clearRect() { dots = []; paints.push(dots); }, beginPath() {},
+    arc(x, y, radius) { dots.push({ x, y, radius }); },
+    fill() { dots.at(-1).color = this.fillStyle; },
+  };
+  const motion = { matches: false, addEventListener(name, fn) { motionListeners.set(name, fn); }, removeEventListener(name) { motionListeners.delete(name); } };
+  const step = time => {
+    const pending = [...frames.values()]; frames.clear();
+    for (const callback of pending) callback(time);
+  };
+  const element = type => ({ type, props: {}, children: [], parent: null, width: 0, height: 0, getContext: () => context });
+  const renderer = createRenderer({
+    createElement: element, createText: text => ({ type: '#text', text }), createComment: text => ({ type: '#comment', text }),
+    setText(node, text) { node.text = text; }, setElementText(node, text) { node.text = text; },
+    parentNode: node => node.parent, nextSibling: () => null,
+    insert(node, parent) { node.parent = parent; parent.children.push(node); },
+    remove(node) { if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node); },
+    patchProp(node, key, _, value) { node.props[key] = value; },
+  });
+  try {
+    Math.random = () => 0.75;
+    globalThis.window = {
+      innerWidth: 400, innerHeight: 800, matchMedia: () => motion,
+      requestAnimationFrame(callback) { frames.set(++sequence, callback); return sequence; },
+      cancelAnimationFrame(id) { frames.delete(id); },
+      addEventListener(name, fn) { windowListeners.set(name, fn); },
+      removeEventListener(name) { windowListeners.delete(name); },
+    };
+    globalThis.document = {
+      hidden: false,
+      addEventListener(name, fn) { documentListeners.set(name, fn); },
+      removeEventListener(name) { documentListeners.delete(name); },
+    };
+    app = renderer.createApp(module.exports.default);
+    app.mount(element('root'));
+    assert.equal(paints.length, 1, 'static particles appear with the first content');
+    assert.equal(dots.length, 50);
+    assert.deepEqual(dots[0], { x: 300, y: 600, radius: 2.5, color: 'rgba(99, 102, 241, 0.475)' });
+    step(0);
+    assert.equal(paints.length, 1, 'continuous drawing waits for a content paint opportunity');
+    step(1000 / 60);
+    step(2000 / 60);
+    assert.ok(Math.abs(dots[0].x - 300.125) < 1e-8, 'original 60 Hz speed is unchanged');
+    step(2500 / 60);
+    assert.ok(Math.abs(dots[0].x - 300.1875) < 1e-8, 'a 120 Hz frame moves only half as far');
+    const beforePause = dots[0].x, paintCount = paints.length;
+    document.hidden = true; documentListeners.get('visibilitychange')();
+    assert.equal(frames.size, 0);
+    step(10000);
+    assert.equal(paints.length, paintCount);
+    document.hidden = false; documentListeners.get('visibilitychange')();
+    step(10000); step(10016);
+    assert.equal(dots[0].x, beforePause, 'returning from a background tab never jumps');
+    motion.matches = true; motionListeners.get('change')();
+    assert.equal(frames.size, 0);
+    motion.matches = false; motionListeners.get('change')();
+    assert.equal(frames.size, 1);
+    app.unmount(); app = null;
+    assert.equal(frames.size, 0);
+    assert.equal(windowListeners.size, 0);
+    assert.equal(documentListeners.size, 0);
+    assert.equal(motionListeners.size, 0);
+  } finally {
+    app?.unmount();
+    globalThis.window = saved.window; globalThis.document = saved.document; Math.random = saved.random;
+  }
 });

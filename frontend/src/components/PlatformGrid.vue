@@ -1,5 +1,15 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref } from 'vue'
+import douyinArtwork from '../assets/platforms/douyin.png'
+import kuaishouArtwork from '../assets/platforms/kuaishou.ico'
+import bilibiliArtwork from '../assets/platforms/bilibili.ico'
+import xhsArtwork from '../assets/platforms/xhs.ico'
+import toutiaoArtwork from '../assets/platforms/toutiao.ico'
+import weiboArtwork from '../assets/platforms/weibo.svg'
+import pipixiaArtwork from '../assets/platforms/pipixia.png'
+import pipigxArtwork from '../assets/platforms/pipigx.ico'
+import zuiyouArtwork from '../assets/platforms/zuiyou.png'
 import { supportedPlatforms } from '../utils/platforms'
 
 defineProps({
@@ -9,6 +19,7 @@ defineProps({
 defineEmits(['platform-click'])
 
 const isPaused = ref(false)
+const failedArtwork = ref({})
 
 const handleTouchStart = () => {
   isPaused.value = true
@@ -33,15 +44,15 @@ const getContent = (locale) => content[locale] || content['zh-CN']
 
 // The shared list controls capabilities; the showcase retains each brand's artwork.
 const platformArtwork = {
-  douyin: { img: 'https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/2025_0313_logo.png', desc: '解析抖音无水印视频', color: '#fe2c55' },
-  kuaishou: { img: 'https://p4-plat.wskwai.com/kos/nlav111422/ks-web/favicon.ico', desc: '解析快手无水印视频', color: '#ff4906' },
-  bilibili: { img: 'https://www.bilibili.com/favicon.ico', desc: '解析B站视频', color: '#00a1d6' },
-  xhs: { img: 'https://www.xiaohongshu.com/favicon.ico', desc: '解析小红书视频', color: '#fe2c55' },
-  toutiao: { img: 'https://www.toutiao.com/favicon.ico', desc: '解析今日头条视频', color: '#e6162d' },
-  weibo: { img: 'https://weibo.com/favicon.ico', desc: '解析微博短视频', color: '#e6162d' },
-  pipixia: { img: 'https://lf-toutiao-ug-dns.toutiaocdn.com/obj/toutiao-ug-tos/ppx/mp/static/media/favicon.9cfbabbf.ico', desc: '解析皮皮虾视频', color: '#ffc700' },
-  pipigx: { img: 'https://www.pipigx.com/favicon.ico', desc: '解析搞笑短视频', color: '#25d68a' },
-  zuiyou: { img: 'https://www.izuiyou.com/favicon.ico', desc: '解析最右短视频', color: '#8854d0' },
+  douyin: { img: douyinArtwork, desc: '解析抖音无水印视频', color: '#fe2c55' },
+  kuaishou: { img: kuaishouArtwork, desc: '解析快手无水印视频', color: '#ff4906' },
+  bilibili: { img: bilibiliArtwork, desc: '解析B站视频', color: '#00a1d6' },
+  xhs: { img: xhsArtwork, desc: '解析小红书视频', color: '#fe2c55' },
+  toutiao: { img: toutiaoArtwork, desc: '解析今日头条视频', color: '#e6162d' },
+  weibo: { img: weiboArtwork, desc: '解析微博短视频', color: '#e6162d' },
+  pipixia: { img: pipixiaArtwork, desc: '解析皮皮虾视频', color: '#ffc700' },
+  pipigx: { img: pipigxArtwork, desc: '解析搞笑短视频', color: '#25d68a' },
+  zuiyou: { img: zuiyouArtwork, desc: '解析最右短视频', color: '#8854d0' },
 }
 const allPlatforms = supportedPlatforms.map(platform => ({ ...platform, ...platformArtwork[platform.key] }))
 const getDesc = (locale, idx) => locale === 'en'
@@ -55,7 +66,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
   <section id="Supported_Platforms" class="mb-20 overflow-hidden platform-section scroll-mt-16 sm:scroll-mt-18">
     <div class="flex items-center justify-center py-6 platform-header">
       <h3 class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium">
-        <i class="fas fa-grid-2 text-xs"></i>
+        <AppIcon class="fas fa-table-cells-large text-xs"></AppIcon>
         {{ getContent(locale).badge }}
       </h3>
     </div>
@@ -85,7 +96,8 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
           >
             <div class="platform-icon-container">
               <div class="platform-icon-wrapper">
-                <img :src="platform.img" :alt="platform.name" class="platform-icon-img" loading="lazy">
+                <img v-if="!failedArtwork[platform.key]" :src="platform.img" :alt="platform.name" class="platform-icon-img" loading="lazy" decoding="async" @error="failedArtwork[platform.key] = true">
+                <span v-else class="font-bold text-xl" :style="{ color: platform.color }" aria-hidden="true">{{ platform.name.slice(0, 1) }}</span>
               </div>
               <div class="platform-glow" :style="{ background: platform.color }"></div>
             </div>
@@ -94,7 +106,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
             <p class="platform-desc">{{ getDesc(locale, idx % allPlatforms.length) }}</p>
 
             <div class="platform-hover-indicator">
-              <i class="fas fa-external-link-alt text-xs"></i>
+              <AppIcon class="fas fa-external-link-alt text-xs"></AppIcon>
             </div>
           </a>
         </div>
@@ -103,11 +115,11 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 
     <div class="flex justify-center mt-8 gap-6 text-xs text-slate-400 dark:text-slate-500">
       <span class="flex items-center gap-1">
-        <i class="fas fa-mouse-pointer text-indigo-400"></i>
+        <AppIcon class="fas fa-mouse-pointer text-indigo-400"></AppIcon>
         {{ locale === 'zh-CN' ? '悬停暂停' : 'Hover to pause' }}
       </span>
       <span class="hidden sm:flex items-center gap-1">
-        <i class="fas fa-arrows-alt-h text-purple-400"></i>
+        <AppIcon class="fas fa-arrows-alt-h text-purple-400"></AppIcon>
         {{ locale === 'zh-CN' ? '自动滚动' : 'Auto scroll' }}
       </span>
     </div>

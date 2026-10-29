@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { useVideoStore } from '../stores/video'
 
 const videoStore = useVideoStore()
@@ -11,7 +12,7 @@ const videoStore = useVideoStore()
            class="fixed inset-0 bg-black/50 backdrop-blur-sm z-[200] flex items-center justify-center">
         <div class="bg-white dark:bg-slate-800 rounded-2xl p-8 max-w-sm w-full mx-4 text-center shadow-2xl">
           <div class="text-4xl mb-4">
-            <i class="fas fa-spinner fa-spin text-indigo-500"></i>
+            <AppIcon class="fas fa-spinner fa-spin text-indigo-500"></AppIcon>
           </div>
           <h3 class="text-xl font-semibold mb-2">{{ videoStore.progressText || '下载进度' }}</h3>
           <div class="w-full bg-gray-200 dark:bg-slate-600 rounded-full h-2 mb-4">

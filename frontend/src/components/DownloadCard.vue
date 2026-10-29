@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { computed } from 'vue'
 
 const props = defineProps({ downloads: { type: Array, default: () => [] } })
@@ -42,7 +43,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
                 {{ item.filename || '下载文件' }}
               </div>
               <div class="flex items-center gap-2 mt-1">
-                <i :class="['fas', getStatusIcon(item.status), getStatusColor(item.status)]"></i>
+                <AppIcon :class="['fas', getStatusIcon(item.status), getStatusColor(item.status)]"></AppIcon>
                 <span class="text-xs" :class="getStatusColor(item.status)">
                   {{ item.statusText || (item.status === 'downloading' ? '下载中...' : item.status) }}
                 </span>
@@ -59,7 +60,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-blue-500 transition-colors"
                 title="重试"
               >
-                <i class="fas fa-redo text-sm"></i>
+                <AppIcon class="fas fa-redo text-sm"></AppIcon>
               </button>
 
               <button
@@ -68,7 +69,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-red-500 transition-colors"
                 title="取消"
               >
-                <i class="fas fa-times text-sm"></i>
+                <AppIcon class="fas fa-times text-sm"></AppIcon>
               </button>
 
               <button
@@ -77,7 +78,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
                 title="清除"
               >
-                <i class="fas fa-times text-sm"></i>
+                <AppIcon class="fas fa-times text-sm"></AppIcon>
               </button>
             </div>
           </div>
@@ -135,11 +136,11 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
     >
       <div class="text-sm text-slate-600 dark:text-slate-400">
         <span v-if="activeCount">
-          <i class="fas fa-cloud-download-alt mr-1"></i>
+          <AppIcon class="fas fa-cloud-download-alt mr-1"></AppIcon>
           {{ activeCount }} 个进行中
         </span>
         <span v-else-if="allCompleted">
-          <i class="fas fa-check-circle text-green-500 mr-1"></i>
+          <AppIcon class="fas fa-check-circle text-green-500 mr-1"></AppIcon>
           全部完成
         </span>
         <span v-else>{{ outcomeSummary }}</span>

@@ -27,6 +27,7 @@ before(async () => {
   const module = { exports: {} };
   new Function('require', 'module', 'exports', compiled.code)((id) => {
     if (id === './VideoPlaylist.vue') return { __esModule: true, default: { render: () => null } };
+    if (id === './AppIcon.vue') return { __esModule: true, default: { render: () => h('i') } };
     if (id === '../utils/mediaSources') return sources;
     return require(id);
   }, module, module.exports);
@@ -71,6 +72,90 @@ test('explicit gear IDs can group incomplete metadata but never override conflic
   ] };
   assert.deepEqual(sources.getSameQualityUrls(data, url('a')), [url('a'), url('b')]);
   assert.equal(sources.groupMediaSources(data).length, 3);
+});
+
+test('display quality groups combine measured resolutions while preserving encoding variants and strict failover', () => {
+  const data = { ...base, video_backup: [
+    { ...format, url: url('b'), codec: 'H.265' },
+    { ...format, url: url('h264'), codec: 'h264' },
+    { ...format, url: url('other-bitrate'), bit_rate: 5058707 },
+    { ...format, url: url('h264-backup'), codec: 'avc1' },
+    { ...format, url: url('a') },
+    { ...format, url: url('unknown-label'), quality: 'unknown' },
+    { ...format, url: url('1080'), width: 1080, height: 1920 },
+  ] };
+  const strictBefore = sources.groupMediaSources(data);
+  const groups = sources.groupMediaQualities(data);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].sources.map(item => item.url), [url('a'), url('b'), url('h264'), url('other-bitrate'), url('h264-backup'), url('unknown-label')]);
+  assert.deepEqual(groups[0].variants.map(group => group.sources.map(item => item.url)), [
+    [url('a'), url('b')], [url('h264'), url('h264-backup')], [url('other-bitrate')], [url('unknown-label')],
+  ]);
+  assert.deepEqual(groups[1].sources.map(item => item.url), [url('1080')]);
+  assert.deepEqual(sources.groupMediaSources(data), strictBefore);
+  assert.deepEqual(sources.getSameQualityUrls(data, url('b')), [url('b'), url('a')]);
+  assert.deepEqual(sources.getSameQualityUrls(data, url('h264-backup')), [url('h264-backup'), url('h264')]);
+  assert.deepEqual(sources.getSameQualityUrls(data, url('other-bitrate')), [url('other-bitrate')]);
+  assert.deepEqual(sources.getSameQualityUrls(data, url('unknown-label')), [url('unknown-label')]);
+});
+
+test('display quality groups isolate verified highest originals even from an identical compressed encoding', () => {
+  const high = { ...format, bit_rate: 52619915 };
+  const data = { ...base, video_backup: [
+    { ...high, url: url('original'), is_original: true, metadata_source: 'mp4' },
+    { ...high, url: url('compressed-same-format') },
+    { ...high, url: url('original-backup'), is_original: true, metadata_source: 'mp4' },
+    { ...format, width: 720, height: 1280, url: url('720-original'), is_original: true, metadata_source: 'mp4' },
+  ] };
+  const groups = sources.groupMediaQualities(data);
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups[0].sources.map(item => item.url), [url('original'), url('original-backup')]);
+  assert.deepEqual(groups[0].variants.map(group => group.sources.map(item => item.url)), [[url('original'), url('original-backup')]]);
+  assert.deepEqual(groups[1].sources.map(item => item.url), [url('a'), url('compressed-same-format')]);
+  assert.deepEqual(groups[2].sources.map(item => item.url), [url('720-original')]);
+  assert.ok(groups[0].sources.every(item => sources.isHighestOriginalSource(item, sources.getMediaSources(data))));
+  assert.equal(sources.isHighestOriginalSource(groups[2].sources[0], sources.getMediaSources(data)), false);
+});
+
+test('display quality groups never infer unmeasured resolution from labels but retain explicit strict gear groups', () => {
+  const data = { url: url('label-a'), quality: '1080p', video_backup: [
+    { url: url('label-b'), quality: '1080p' },
+    { url: url('unverified-original'), quality: 'original', is_original: true, metadata_source: 'mp4', bit_rate: 1000000 },
+    { url: url('unknown-a'), quality: 'unknown' },
+    { url: url('unknown-b'), quality: 'unknown' },
+    { url: url('gear-a'), quality: '1080p', gear_id: 'vendor-id', codec: 'h264' },
+    { url: url('gear-b'), quality: '1080p', gear_id: 'vendor-id', codec: 'avc1' },
+    { url: url('measured'), quality: 'unknown', width: 720, height: 1280 },
+  ] };
+  const groups = sources.groupMediaQualities(data);
+  assert.deepEqual(groups.map(group => group.sources.map(item => item.url)), [
+    [url('measured')], [url('label-a')], [url('label-b')], [url('unverified-original')],
+    [url('unknown-a')], [url('unknown-b')], [url('gear-a'), url('gear-b')],
+  ]);
+  assert.ok(groups.slice(1).every(group => group.variants.length === 1));
+});
+
+test('display quality groups sort measured sizes and keep orientation, upstream preference and inputs intact', () => {
+  const data = { ...format, url: url('portrait'), width: 1080, height: 1920, video_backup: [
+    { ...format, url: url('4k-h264'), codec: 'h264' },
+    { ...format, url: url('landscape'), width: 1920, height: 1080 },
+    { url: url('unknown'), quality: '2160p' },
+    { ...format, url: url('4k-hevc'), codec: 'H.265' },
+    { ...format, url: url('4k-h264-backup'), codec: 'avc1' },
+    { ...format, url: url('portrait'), width: 4320, height: 7680 },
+    { ...format, url: url('720'), width: 720, height: 1280 },
+  ] };
+  const snapshot = structuredClone(data);
+  data.video_backup.forEach(Object.freeze); Object.freeze(data.video_backup); Object.freeze(data);
+  const groups = sources.groupMediaQualities(data);
+  assert.deepEqual(groups.map(group => group.sources[0].url), [url('4k-h264'), url('portrait'), url('landscape'), url('720'), url('unknown')]);
+  assert.deepEqual(groups[0].sources.map(item => item.url), [url('4k-h264'), url('4k-hevc'), url('4k-h264-backup')]);
+  assert.deepEqual(groups[0].variants.map(group => group.sources[0].url), [url('4k-h264'), url('4k-hevc')]);
+  assert.deepEqual(data, snapshot);
+  assert.equal(groups[0].variants[1].sources[0].codec, 'hevc');
+  assert.equal(data.video_backup[3].codec, 'H.265');
+  assert.deepEqual(sources.groupMediaQualities(null), []);
+  assert.deepEqual(sources.groupMediaQualities(undefined), []);
 });
 
 test('source changes preserve original-file provenance on its own route and clear it on other routes', () => {
@@ -143,7 +228,7 @@ test('quality UI groups formats and does not call a lower-bitrate original endpo
   ] });
   try {
     await view.showQualities();
-    assert.equal(view.choices().length, 3);
+    assert.equal(view.choices().length, 2);
     assert.equal(view.text().split('原始入口').length - 1, 1);
     assert.doesNotMatch(view.text(), /原画/);
     assert.match(view.text(), /4 条线路/);
@@ -162,7 +247,8 @@ test('quality names and decimal file sizes distinguish original 4K from compress
     assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '原画');
     assert.match(view.text(), /画质原画/);
     await view.showQualities();
-    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p', '大小未知 · 2160p']);
+    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p']);
+    assert.deepEqual(view.elements('rs-variant-name').map(view.textOf), ['大小未知 · hevc']);
     assert.match(view.text(), /2 条线路/);
     view.choices()[1].props.onClick(); await nextTick();
     assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '2160p');
@@ -171,6 +257,37 @@ test('quality names and decimal file sizes distinguish original 4K from compress
     assert.equal(view.textOf(view.elements('rs-backup-name')[1]), '2.2 MB · 2160p');
     await view.showInfo();
     assert.match(view.text(), /画质2160p/);
+  } finally { view.app.unmount(); }
+});
+
+test('one card per resolution retains manual codec choices and exact selected-source details', async () => {
+  const hd = { quality: '1080p', width: 1080, height: 1920, codec: 'h264', bit_rate: 919000 };
+  const small = { quality: '720p', width: 720, height: 1280, codec: 'h264', bit_rate: 801000 };
+  const view = await mount({ ...base, ...hd, size: 1100000, video_backup: [
+    { ...hd, url: url('hd-route-b'), size: 1100000 },
+    { ...hd, quality: '高清', codec: 'hevc', bit_rate: 523000, url: url('hd-hevc'), size: 600000 },
+    { ...small, url: url('720-first'), size: 900000 },
+    { ...small, bit_rate: 666000, url: url('720-other'), size: 800000 },
+  ] });
+  try {
+    await view.showQualities();
+    assert.equal(view.choices().length, 2);
+    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['1.1 MB · 1080p', '0.9 MB · 720p']);
+    assert.equal(view.elements('rs-backup-variants').length, 2);
+    assert.ok(view.elements('rs-backup-variants').every(node => !node.props.open), 'alternatives start collapsed');
+    assert.ok(view.elements('rs-variant-item').every(node => node.parent.type !== 'button'), 'variant controls are outside primary buttons');
+    view.elements('rs-variant-item')[0].props.onClick(); await nextTick();
+    assert.equal(view.player().src, url('hd-hevc'));
+    assert.equal(view.textOf(view.elements('rs-backup-name')[0]), '0.6 MB · 1080p');
+    assert.match(view.textOf(view.choices()[0]), /523 Kbps.*hevc/);
+    view.copy(); assert.equal(view.copied.at(-1), url('hd-hevc'));
+    await view.fail();
+    assert.ok(view.alert(), 'same resolution does not authorize automatic codec or bitrate fallback');
+    assert.deepEqual(view.switched, [url('hd-hevc')]);
+    view.elements('rs-variant-item')[0].props.onClick(); await nextTick();
+    assert.equal(view.player().src, url('a'));
+    await view.fail();
+    assert.equal(view.player().src, url('hd-route-b'), 'the original version retains its strict CDN fallback');
   } finally { view.app.unmount(); }
 });
 

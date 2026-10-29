@@ -1,4 +1,6 @@
 <script setup>
+import BrandWordmark from './BrandWordmark.vue'
+import AppIcon from './AppIcon.vue'
 defineProps({
   locale: String
 })
@@ -51,7 +53,7 @@ const showProjectPromotions = false
           <div class="flex items-center gap-3 mb-5">
             <div class="brand-icon">
               <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
-                <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
+                <BrandWordmark />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
@@ -71,32 +73,32 @@ const showProjectPromotions = false
               class="social-link"
               :aria-label="social.label"
             >
-              <i :class="['fab', social.icon]"></i>
+              <AppIcon :class="['fab', social.icon]"></AppIcon>
             </a>
           </div>
         </div>
 
         <div class="footer-links">
           <h5 class="footer-heading">
-            <i class="fas fa-link mr-2 text-indigo-500"></i>
+            <AppIcon class="fas fa-link mr-2 text-indigo-500"></AppIcon>
             {{ getContent(locale).quickLinks }}
           </h5>
           <ul class="space-y-3">
             <li>
               <a href="/" class="footer-link">
-                <i class="fas fa-home text-xs mr-2"></i>
+                <AppIcon class="fas fa-home text-xs mr-2"></AppIcon>
                 {{ getContent(locale).home }}
               </a>
             </li>
             <li>
               <a href="#Supported_Platforms" class="footer-link">
-                <i class="fas fa-th text-xs mr-2"></i>
+                <AppIcon class="fas fa-th text-xs mr-2"></AppIcon>
                 {{ getContent(locale).platforms }}
               </a>
             </li>
             <li>
               <a href="#course" class="footer-link">
-                <i class="fas fa-book text-xs mr-2"></i>
+                <AppIcon class="fas fa-book text-xs mr-2"></AppIcon>
                 {{ getContent(locale).course }}
               </a>
             </li>
@@ -105,19 +107,19 @@ const showProjectPromotions = false
 
         <div class="footer-links">
           <h5 class="footer-heading">
-            <i class="fas fa-question-circle mr-2 text-purple-500"></i>
+            <AppIcon class="fas fa-question-circle mr-2 text-purple-500"></AppIcon>
             {{ getContent(locale).help }}
           </h5>
           <ul class="space-y-3">
             <li>
               <a href="#faq" class="footer-link">
-                <i class="fas fa-comments text-xs mr-2"></i>
+                <AppIcon class="fas fa-comments text-xs mr-2"></AppIcon>
                 {{ getContent(locale).faq }}
               </a>
             </li>
             <li>
               <a href="#ours" class="footer-link">
-                <i class="fas fa-info-circle text-xs mr-2"></i>
+                <AppIcon class="fas fa-info-circle text-xs mr-2"></AppIcon>
                 {{ getContent(locale).about }}
               </a>
             </li>
@@ -126,16 +128,16 @@ const showProjectPromotions = false
 
         <div class="footer-links">
           <h5 class="footer-heading">
-            <i class="fas fa-id-card mr-2 text-pink-500"></i>
+            <AppIcon class="fas fa-id-card mr-2 text-pink-500"></AppIcon>
             {{ getContent(locale).contact }}
           </h5>
           <ul class="space-y-3">
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-              <i class="fas fa-user text-xs text-indigo-400"></i>
+              <AppIcon class="fas fa-user text-xs text-indigo-400"></AppIcon>
               <span>Daiobs</span>
             </li>
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-              <i class="fas fa-globe text-xs text-emerald-400"></i>
+              <AppIcon class="fas fa-globe text-xs text-emerald-400"></AppIcon>
               <a href="https://snap.dokitool.com/" class="footer-link">snap.dokitool.com</a>
             </li>
           </ul>
@@ -147,7 +149,7 @@ const showProjectPromotions = false
               rel="noopener noreferrer"
               class="github-btn"
             >
-              <i class="fab fa-github"></i>
+              <AppIcon class="fab fa-github"></AppIcon>
               <span>{{ getContent(locale).starUs }}</span>
             </a>
           </div>
@@ -165,7 +167,7 @@ const showProjectPromotions = false
         <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 text-sm leading-relaxed">
           <span class="text-slate-500 dark:text-slate-400">Powered by jiuhunwl</span>
           <a href="https://github.com/jiuhunwl" target="_blank" rel="noopener noreferrer" class="footer-credit-link inline-flex items-center gap-1.5">
-            <i class="fab fa-github" aria-hidden="true"></i>
+            <AppIcon class="fab fa-github" aria-hidden="true"></AppIcon>
             <span>GitHub</span>
           </a>
         </div>

@@ -1,4 +1,5 @@
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref } from 'vue'
 
 defineProps({
@@ -52,7 +53,7 @@ const toggle = (idx) => {
           class="w-full px-6 py-4 text-left font-medium flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-700/50 transition-colors"
         >
           <span>{{ faq.q }}</span>
-          <i :class="['fas', openIndex === idx ? 'fa-chevron-up' : 'fa-chevron-down', 'text-gray-400']"></i>
+          <AppIcon :class="['fas', openIndex === idx ? 'fa-chevron-up' : 'fa-chevron-down', 'text-gray-400']"></AppIcon>
         </button>
         <div v-if="openIndex === idx" class="px-6 pb-4 text-gray-600 dark:text-gray-400 text-sm">
           {{ faq.a }}

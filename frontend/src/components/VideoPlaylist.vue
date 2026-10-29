@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue'
 import { computed } from "vue";
 import type { MediaCollection, MediaVideo } from "../types/media";
 
@@ -141,11 +142,11 @@ const onCoverError = (e: Event): void => {
             @error="onCoverError"
           />
           <div v-else class="vlib-card-cover-fb">
-            <i class="fas fa-film"></i>
+            <AppIcon class="fas fa-film"></AppIcon>
           </div>
           <span class="vlib-ep">{{ epPrefix }}{{ v._epNo || v.index || idx + 1 }}</span>
           <span v-if="v._resolving" class="vlib-ep-resolving" aria-label="解析中">
-            <i class="fas fa-spinner fa-spin"></i>
+            <AppIcon class="fas fa-spinner fa-spin"></AppIcon>
           </span>
           <span v-else-if="v.error" class="vlib-ep-error">⚠</span>
         </div>
@@ -156,7 +157,7 @@ const onCoverError = (e: Event): void => {
           </div>
           <div class="vlib-card-meta">
             <span class="vlib-duration">
-              <i class="fas fa-clock"></i>
+              <AppIcon class="fas fa-clock"></AppIcon>
               {{ visibleDuration(v) }}
             </span>
             <span v-if="v.quality" class="vlib-quality">{{ v.quality }}</span>
