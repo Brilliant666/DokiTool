@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import { supportedPlatforms } from '../utils/platforms'
 
 defineProps({
   locale: String
@@ -30,56 +31,22 @@ const content = {
 
 const getContent = (locale) => content[locale] || content['zh-CN']
 
-const allPlatforms = [
-  { name: '抖音', url: 'https://www.douyin.com', desc: '解析抖音无水印视频', gradient: 'from-slate-900 to-slate-700', img: 'https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/2025_0313_logo.png', color: '#fe2c55' },
-  { name: '快手', url: 'https://www.kuaishou.com', desc: '解析快手无水印视频', gradient: 'from-red-500 to-amber-400', img: 'https://p4-plat.wskwai.com/kos/nlav111422/ks-web/favicon.ico', color: '#ff4906' },
-  { name: 'B站', url: 'https://www.bilibili.com', desc: '解析B站视频', gradient: 'from-sky-500 to-violet-500', img: 'https://www.bilibili.com/favicon.ico', color: '#00a1d6' },
-  { name: '小红书', url: 'https://www.xiaohongshu.com', desc: '解析小红书视频', gradient: 'from-rose-500 to-red-500', img: 'https://www.xiaohongshu.com/favicon.ico', color: '#fe2c55' },
-  { name: '微博', url: 'https://weibo.com', desc: '解析微博短视频', gradient: 'from-orange-500 to-amber-400', img: 'https://weibo.com/favicon.ico', color: '#e6162d' },
-  { name: '微视', url: 'https://weishi.qq.com', desc: '解析微视短视频', gradient: 'from-blue-600 to-cyan-400', img: 'https://isee.weishi.qq.com/favicon.ico', color: '#3a7fff' },
-  { name: '皮皮虾', url: 'https://www.pipix.com', desc: '解析皮皮虾视频', gradient: 'from-purple-600 to-pink-500', img: 'https://lf-toutiao-ug-dns.toutiaocdn.com/obj/toutiao-ug-tos/ppx/mp/static/media/favicon.9cfbabbf.ico', color: '#ffc700' },
-  { name: '皮皮搞笑', url: 'https://www.pipigx.com', desc: '解析搞笑短视频', gradient: 'from-green-600 to-lime-400', img: 'https://www.pipigx.com/favicon.ico', color: '#25d68a' },
-  { name: '西瓜视频', url: 'https://www.ixigua.com', desc: '解析西瓜短视频', gradient: 'from-emerald-600 to-teal-500', img: 'https://www.ixigua.com/favicon.ico', color: '#fe2c55' },
-  { name: '好看视频', url: 'https://haokan.baidu.com', desc: '解析百度系短视频', gradient: 'from-blue-800 to-sky-400', img: 'https://haokan.baidu.com/favicon.ico', color: '#3a7fff' },
-  { name: '最右', url: 'https://www.izuiyou.com', desc: '解析最右短视频', gradient: 'from-purple-800 to-fuchsia-500', img: 'https://www.izuiyou.com/favicon.ico', color: '#8854d0' },
-  { name: '火山小视频', url: 'https://www.huoshan.com', desc: '解析火山平台视频', gradient: 'from-orange-800 to-amber-500', img: 'https://sj-fd.zol-img.com.cn/t_s180x180/g2/M00/09/0A/ChMlWl5TM3qIEGKDAACLMVr64W0AANcDwHGiFgAAItJ628.png', color: '#ff6e27' },
-]
-
-const platformDescs = {
-  'zh-CN': [
-    '解析抖音无水印视频',
-    '解析快手无水印视频',
-    '解析B站视频',
-    '解析小红书视频',
-    '解析微博短视频',
-    '解析微视短视频',
-    '解析皮皮虾视频',
-    '解析搞笑短视频',
-    '解析西瓜短视频',
-    '解析百度系短视频',
-    '解析最右短视频',
-    '解析火山平台视频',
-  ],
-  'en': [
-    'Parse Douyin videos',
-    'Parse Kuaishou videos',
-    'Parse Bilibili videos',
-    'Parse Xiaohongshu videos',
-    'Parse Weibo videos',
-    'Parse Weishi videos',
-    'Parse Pipixia videos',
-    'Parse Funny videos',
-    'Parse Xigua videos',
-    'Parse Baidu videos',
-    'Parse Zuiyou videos',
-    'Parse Huoshan videos',
-  ]
+// The shared list controls capabilities; the showcase retains each brand's artwork.
+const platformArtwork = {
+  douyin: { img: 'https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/2025_0313_logo.png', desc: '解析抖音无水印视频', color: '#fe2c55' },
+  kuaishou: { img: 'https://p4-plat.wskwai.com/kos/nlav111422/ks-web/favicon.ico', desc: '解析快手无水印视频', color: '#ff4906' },
+  bilibili: { img: 'https://www.bilibili.com/favicon.ico', desc: '解析B站视频', color: '#00a1d6' },
+  xhs: { img: 'https://www.xiaohongshu.com/favicon.ico', desc: '解析小红书视频', color: '#fe2c55' },
+  toutiao: { img: 'https://www.toutiao.com/favicon.ico', desc: '解析今日头条视频', color: '#e6162d' },
+  weibo: { img: 'https://weibo.com/favicon.ico', desc: '解析微博短视频', color: '#e6162d' },
+  pipixia: { img: 'https://lf-toutiao-ug-dns.toutiaocdn.com/obj/toutiao-ug-tos/ppx/mp/static/media/favicon.9cfbabbf.ico', desc: '解析皮皮虾视频', color: '#ffc700' },
+  pipigx: { img: 'https://www.pipigx.com/favicon.ico', desc: '解析搞笑短视频', color: '#25d68a' },
+  zuiyou: { img: 'https://www.izuiyou.com/favicon.ico', desc: '解析最右短视频', color: '#8854d0' },
 }
-
-const getDesc = (locale, idx) => {
-  const descs = platformDescs[locale] || platformDescs['zh-CN']
-  return descs[idx]
-}
+const allPlatforms = supportedPlatforms.map(platform => ({ ...platform, ...platformArtwork[platform.key] }))
+const getDesc = (locale, idx) => locale === 'en'
+  ? `Parse ${allPlatforms[idx].english} videos`
+  : allPlatforms[idx].desc
 
 const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 </script>
@@ -117,7 +84,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
             :aria-label="`${platform.name}: ${getDesc(locale, idx % allPlatforms.length)}`"
           >
             <div class="platform-icon-container">
-              <div :class="['platform-icon-wrapper', 'bg-gradient-to-br', platform.gradient]">
+              <div class="platform-icon-wrapper">
                 <img :src="platform.img" :alt="platform.name" class="platform-icon-img" loading="lazy">
               </div>
               <div class="platform-glow" :style="{ background: platform.color }"></div>
@@ -283,6 +250,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 }
 
 .platform-icon-wrapper {
+  background: white;
   width: 56px;
   height: 56px;
   margin: 0 auto;

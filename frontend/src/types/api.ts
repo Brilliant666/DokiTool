@@ -1,5 +1,6 @@
 export type PlatformKey =
-  "all" | "douyin" | "kuaishou" | "bilibili" | "xhs" | "toutiao";
+  "all" | "douyin" | "kuaishou" | "bilibili" | "xhs" | "toutiao" |
+  "weibo" | "pipixia" | "pipigx" | "zuiyou";
 export type AppLocale = "zh-CN" | "en";
 
 export interface SecureSessionResponse {

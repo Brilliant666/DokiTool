@@ -15,7 +15,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'download-main', 'download-backup', 'download-all', 'download-music',
+  'download-main', 'download-backup', 'download-all', 'download-images', 'download-image', 'download-music',
   'download-live-video', 'download-live-cover', 'download-all-live', 'download-all-live-covers',
   'copy-url', 'toggle-backup', 'switch-video',
   'select-video', 'toggle-video', 'select-all-videos', 'clear-selection',
@@ -28,7 +28,20 @@ const emit = defineEmits([
 const hasVideo = computed(() => !!props.resultData?.url)
 const hasImages = computed(() => props.resultData?.images?.length > 0)
 const hasMusic = computed(() => !!props.resultData?.music?.url)
-const hasBackup = computed(() => props.resultData?.video_backup?.length > 0)
+const qualityCandidates = computed(() => {
+  const data = props.resultData
+  if (!data) return []
+  const item = isMulti.value ? currentVideoItem.value : null
+  const primary = item || data
+  const candidates = [
+    ...(primary.url ? [{ url: primary.url, quality: primary.quality, width: primary.width, height: primary.height, bit_rate: primary.bit_rate ?? primary.bitrate, codec: primary.codec }] : []),
+    ...(Array.isArray(primary.video_backup) ? primary.video_backup : []),
+  ]
+  return candidates.filter((candidate, index) => candidate.url && candidates.findIndex((other) => other.url === candidate.url) === index)
+})
+const hasBackup = computed(() => qualityCandidates.value.length > 0)
+const qualityLabel = (quality) => quality === 'original' ? (props.locale === 'en' ? 'Original' : '原画') : quality
+const activeQuality = computed(() => qualityCandidates.value.find((item) => item.url === (isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url)))
 const isLive = computed(() => props.resultData?.type === 'live')
 const hasLivePhotos = computed(() => (props.resultData?.live_photo?.length || 0) > 0)
 const totalLivePhotos = computed(() => props.resultData?.live_photo?.length || 0)
@@ -56,6 +69,18 @@ const liveViewMode = ref('video')
 const showCopyToast = ref(false)
 const copyToastText = ref('')
 const videoEl = ref(null)
+
+// A different result can contain fewer images/live items. Reset its carousel and
+// close the previous modal so no stale index points outside the new result.
+watch(() => props.resultData, (data, previous) => {
+  if (!data || !previous || data._sourceUrl !== previous._sourceUrl) {
+    activeImageIndex.value = 0
+    activeLiveIndex.value = 0
+    activeTab.value = 'info'
+    imageModalOpen.value = false
+    if (typeof document !== 'undefined') document.body.style.overflow = ''
+  }
+})
 
 // 选中集变更 → 播放器 reload 归零
 watch(
@@ -87,6 +112,14 @@ const selectedVideoUrl = computed(() => {
     ''
   )
 })
+const activeVideoUrl = computed(() => isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url || '')
+const sourceHint = computed(() => {
+  if (props.resultData?.media_delivery !== 'weibo-relay') return t(props.locale, 'sourceHint')
+  const active = activeVideoUrl.value
+  const sources = [props.resultData, ...(props.resultData?.video_backup || [])]
+  const viaService = sources.some(source => source.media_delivery === 'weibo-relay' && source.url === active)
+  return t(props.locale, viaService ? 'weiboSourceHint' : 'sourceHint')
+})
 const selectedCount = computed(() => props.selection?.selectedCount?.value ?? 0)
 const selectedTotal = computed(() => props.selection?.total?.value ?? props.resultData?.videos?.length ?? 0)
 
@@ -94,6 +127,24 @@ const selectedTotal = computed(() => props.selection?.total?.value ?? props.resu
 const currentVideoItem = computed(
   () => props.selection?.currentVideo?.value ?? visibleVideos.value?.[currentIndex.value] ?? null
 )
+const playbackFailed = ref(false)
+const playerKey = computed(() => JSON.stringify([props.resultData?._sourceUrl || '', activeVideoUrl.value]))
+const originalPageUrl = computed(() => {
+  const source = props.resultData?._sourceUrl
+  if (typeof source !== 'string') return ''
+  try {
+    const parsed = new URL(source)
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''
+  } catch { return '' }
+})
+watch(playerKey, () => { playbackFailed.value = false }, { flush: 'sync' })
+const updatePlaybackStatus = (event, failed) => {
+  const player = event.currentTarget
+  // A removed player's queued event must not change the newly selected source.
+  if (player !== videoEl.value || !activeVideoUrl.value) return
+  if ((player.currentSrc || player.src) !== activeVideoUrl.value) return
+  playbackFailed.value = failed
+}
 // 该 P/合集分集正在懒解析中（B 站）
 const isResolving = computed(() => !!currentVideoItem.value?._resolving)
 // 当前分集既没有直链也没有顶层 url（等待解析 / 解析失败）
@@ -133,7 +184,7 @@ const author = computed(() => {
     id = props.resultData.author.id || ''
   }
   const likeCount = props.resultData?.extra?.statistics?.digg_count
-  const likeCountNum = likeCount !== undefined && likeCount !== null ? props.formatNumber(likeCount) : '0'
+  const likeCountNum = likeCount !== undefined && likeCount !== null && likeCount !== '' && Number.isFinite(Number(likeCount)) ? props.formatNumber(likeCount) : null
   return { name, avatar, id, likeCountNum }
 })
 
@@ -142,7 +193,7 @@ const infoCards = computed(() => {
   const data = props.resultData
   const cards = []
   cards.push({ label: content[props.locale]?.infoTitle || '作品标题', value: data.title || content[props.locale]?.unknownTitle || '未知标题', icon: 'fa-pen' })
-  const publishTs = (data.extra && data.extra.create_time) || data.time
+  const publishTs = data.extra?.create_time ?? data.create_time ?? data.extra?.publish_time ?? data.publish_time ?? data.time
   cards.push({ label: content[props.locale]?.publishTime || '发布时间', value: formatDate(publishTs) || content[props.locale]?.unknownTime || '未知时间', icon: 'fa-calendar' })
   let typeText = content[props.locale]?.unknownType || '未知'
   const type = data.type || (data.images && data.images.length > 0 ? 'images' : 'video')
@@ -152,9 +203,13 @@ const infoCards = computed(() => {
   else if (type === 'live') typeText = content[props.locale]?.live || '实况解析'
   else typeText = data.images && data.images.length > 0 ? (content[props.locale]?.images || '图片集') : (content[props.locale]?.video || '视频')
   cards.push({ label: content[props.locale]?.type || '类型', value: typeText, icon: 'fa-cube' })
-  if (type !== 'live' && data.quality) {
-    cards.push({ label: content[props.locale]?.quality || '画质', value: data.quality, icon: 'fa-expand' })
+  const source = activeQuality.value || data
+  if (type !== 'live' && source.quality) {
+    cards.push({ label: content[props.locale]?.quality || '画质', value: qualityLabel(source.quality), icon: 'fa-expand' })
   }
+  if (source.width && source.height) cards.push({ label: t(props.locale, 'resolution'), value: `${source.width}×${source.height}`, icon: 'fa-arrows-alt' })
+  if (source.codec) cards.push({ label: t(props.locale, 'codec'), value: source.codec, icon: 'fa-microchip' })
+  if (source.bit_rate || source.bitrate) cards.push({ label: t(props.locale, 'bitRate'), value: formatBitrate(source.bit_rate || source.bitrate), icon: 'fa-wave-square' })
   if (data.duration) {
     cards.push({ label: content[props.locale]?.duration || '时长', value: props.formatDuration(data.duration), icon: 'fa-clock' })
   }
@@ -171,7 +226,7 @@ const stats = computed(() => {
     { key: 'collect_count', label: content[props.locale]?.statCollect || '收藏', value: s.collect_count, icon: 'fa-star' },
     { key: 'share_count', label: content[props.locale]?.statShare || '分享', value: s.share_count, icon: 'fa-share-alt' },
   ]
-  return statMap.filter(item => Number(item.value || 0) > 0)
+  return statMap.filter(item => item.value !== undefined && item.value !== null && item.value !== '' && Number.isFinite(Number(item.value)) && Number(item.value) >= 0)
 })
 
 const hashtags = computed(() => {
@@ -190,6 +245,9 @@ const content = {
   'zh-CN': {
     resultTitle: '解析结果',
     sourceHint: '当前使用源链接直连播放与下载',
+    weiboSourceHint: '当前通过本站服务播放与下载微博视频',
+    playbackFailed: '该视频源无法在本站直接播放，可尝试其他画质或打开原作品。',
+    openOriginal: '打开原作品',
     downloadSingle: '下载视频',
     downloadLive: '下载实况',
     downloadAll: '下载全部',
@@ -257,6 +315,9 @@ const content = {
   'en': {
     resultTitle: 'Result',
     sourceHint: 'Using direct source link',
+    weiboSourceHint: 'Weibo playback and downloads use this site’s media service',
+    playbackFailed: 'This source cannot play directly here. Try another quality or open the original post.',
+    openOriginal: 'Open original post',
     downloadSingle: 'Download Video',
     downloadLive: 'Download Live',
     downloadAll: 'Download All',
@@ -327,12 +388,15 @@ const t = (locale, key) => content[locale]?.[key] || content['zh-CN'][key] || ke
 
 const formatDate = (timestamp) => {
   if (!timestamp) return ''
-  const date = new Date(timestamp * 1000)
+  const numeric = typeof timestamp === 'number' || /^\d+(\.\d+)?$/.test(String(timestamp))
+  const value = numeric ? Number(timestamp) * (Number(timestamp) < 1e12 ? 1000 : 1) : String(timestamp).replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T')
+  const date = new Date(value)
   if (isNaN(date.getTime())) return ''
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()].map((value) => String(value).padStart(2, '0')).join(':')
+  return `${y}-${m}-${d} ${time}`
 }
 
 const formatBitrate = (val) => {
@@ -382,7 +446,10 @@ const handleKeydown = (e) => {
 }
 
 onMounted(() => window.addEventListener('keydown', handleKeydown))
-onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  document.body.style.overflow = ''
+})
 
 const tabs = computed(() => {
   const items = [{ key: 'info', icon: 'fa-info-circle', label: t(props.locale, 'tabInfo') }]
@@ -424,7 +491,7 @@ const toggleSection = (key) => {
         <div class="rs-header-right">
           <span class="rs-header-hint">
             <i class="fas fa-link rs-header-hint-icon"></i>
-            <span class="rs-header-hint-text">{{ t(locale, 'sourceHint') }}</span>
+            <span class="rs-header-hint-text">{{ sourceHint }}</span>
           </span>
         </div>
       </div>
@@ -435,6 +502,10 @@ const toggleSection = (key) => {
          ════════════════════════════════════════════════════════ -->
     <div class="rs-title-row">
       <h2 class="rs-title">{{ resultData.title || t(locale, 'unknownTitle') }}</h2>
+    </div>
+    <div v-if="playbackFailed" class="rs-playback-error" role="alert">
+      <span>{{ t(locale, 'playbackFailed') }}</span>
+      <a v-if="originalPageUrl" :href="originalPageUrl" target="_blank" rel="noopener noreferrer">{{ t(locale, 'openOriginal') }}</a>
     </div>
 
     <!-- ════════════════════════════════════════════════════════
@@ -454,16 +525,19 @@ const toggleSection = (key) => {
                 <i class="fas fa-play-circle rs-card-icon"></i>
                 <span>{{ t(locale, 'videoSource') }}</span>
               </div>
-              <span v-if="resultData.quality" class="rs-quality-tag">{{ resultData.quality }}</span>
+              <span v-if="resultData.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality?.quality || resultData.quality) }}</span>
             </div>
             <div class="rs-video-stage">
               <video
+                :key="playerKey"
                 ref="videoEl"
                 :src="selectedVideoUrl || undefined"
                 controls
                 referrerpolicy="no-referrer"
                 class="rs-video"
                 :poster="resultData.cover || undefined"
+                @error="updatePlaybackStatus($event, true)"
+                @loadeddata="updatePlaybackStatus($event, false)"
               >
                 <track kind="captions" :src="undefined" />
               </video>
@@ -567,16 +641,19 @@ const toggleSection = (key) => {
               <i class="fas fa-play-circle rs-card-icon"></i>
               <span>{{ t(locale, 'videoSource') }}</span>
             </div>
-            <span v-if="resultData.quality" class="rs-quality-tag">{{ resultData.quality }}</span>
+            <span v-if="resultData.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality?.quality || resultData.quality) }}</span>
           </div>
           <div class="rs-video-stage">
             <video
+              :key="playerKey"
               ref="videoEl"
               :src="currentVideoUrl || resultData.url"
               controls
               referrerpolicy="no-referrer"
               class="rs-video"
               :poster="resultData.cover || undefined"
+              @error="updatePlaybackStatus($event, true)"
+              @loadeddata="updatePlaybackStatus($event, false)"
             >
               <track kind="captions" :src="undefined" />
             </video>
@@ -602,7 +679,7 @@ const toggleSection = (key) => {
         </div>
 
         <!-- ── IMAGE GALLERY ── -->
-        <div v-if="hasImages && !isLiveType" class="rs-card rs-card--gallery">
+        <div v-if="hasImages" class="rs-card rs-card--gallery">
           <div class="rs-card-hd">
             <div class="rs-card-hd-left">
               <i class="fas fa-images rs-card-icon"></i>
@@ -635,7 +712,7 @@ const toggleSection = (key) => {
           </div>
 
           <div class="rs-card-actions">
-            <button @click="emit('download-all')" class="rs-btn rs-btn--primary">
+            <button @click="emit('download-images')" class="rs-btn rs-btn--primary">
               <i class="fas fa-download"></i>
               <span>{{ t(locale, 'allImages') }} ({{ resultData.images.length }})</span>
             </button>
@@ -778,7 +855,7 @@ const toggleSection = (key) => {
               >
                 @{{ author.id }}
               </div>
-              <div v-if="author.likeCountNum !== '0'" class="rs-author-likes">
+              <div v-if="author.likeCountNum !== null" class="rs-author-likes">
                 <i class="fas fa-heart"></i>
                 {{ t(locale, 'infoLikes').replace('{count}', author.likeCountNum) }}
               </div>
@@ -842,15 +919,15 @@ const toggleSection = (key) => {
               </div>
               <div class="rs-backup-list">
                 <button
-                  v-for="(backup, idx) in resultData.video_backup"
+                  v-for="(backup, idx) in qualityCandidates"
                   :key="idx"
                   @click="emit('switch-video', backup)"
                   class="rs-backup-item"
-                  :class="{ 'rs-backup-item--cur': currentVideoUrl === backup.url }"
+                  :class="{ 'rs-backup-item--cur': activeVideoUrl === backup.url }"
                 >
                   <div class="rs-backup-hd">
-                    <span class="rs-backup-name">{{ backup.quality || backup.label || t(locale, 'unknown') }}</span>
-                    <i v-if="currentVideoUrl === backup.url" class="fas fa-circle-check rs-backup-cur"></i>
+                    <span class="rs-backup-name">{{ qualityLabel(backup.quality || backup.label) || (backup.width && backup.height ? `${backup.width}×${backup.height}` : `${t(locale, 'videoSource')} ${idx + 1}`) }}</span>
+                    <i v-if="activeVideoUrl === backup.url" class="fas fa-circle-check rs-backup-cur"></i>
                   </div>
                   <div class="rs-backup-meta">
                     <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
@@ -863,7 +940,7 @@ const toggleSection = (key) => {
                       <i class="fas fa-microchip"></i>{{ backup.codec }}
                     </span>
                   </div>
-                  <div v-if="currentVideoUrl === backup.url" class="rs-backup-playing">
+                  <div v-if="activeVideoUrl === backup.url" class="rs-backup-playing">
                     <i class="fas fa-headphones"></i> {{ t(locale, 'currentPlaying') }}
                   </div>
                 </button>
@@ -970,6 +1047,9 @@ const toggleSection = (key) => {
             />
           </div>
 
+          <button class="rs-btn rs-btn--primary" @click="emit('download-image', resultData.images[activeImageIndex])">
+            <i class="fas fa-download"></i>{{ locale === 'en' ? 'Download image' : '下载图片' }}
+          </button>
           <div v-if="resultData.images?.length > 1" class="rs-modal-pager">
             <button
               v-for="(_, idx) in resultData.images"
@@ -1243,6 +1323,21 @@ const toggleSection = (key) => {
    TITLE ROW
    ═══════════════════════════════════════════════════════════════ */
 .rs-title-row { margin-bottom: 1.25rem; }
+.rs-playback-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+  margin-bottom: 1.25rem;
+  padding: .875rem 1rem;
+  border: 1px solid #fbbf24;
+  border-radius: .875rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: .875rem;
+  line-height: 1.6;
+}
+.rs-playback-error a { color: inherit; font-weight: 600; text-decoration: underline; }
+:global(.dark) .rs-playback-error { background: #3b2d14; color: #fde68a; border-color: #a16207; }
 .rs-title {
   margin: 0;
   font-size: 1.125rem;

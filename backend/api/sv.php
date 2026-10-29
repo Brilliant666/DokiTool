@@ -29,6 +29,7 @@ if (!extension_loaded('curl')) {
 }
 try {
     [$status, $payload] = snapForward($platform, $url);
+    [$status, $payload] = snapPreparePublicMedia($platform, $payload, $status);
     snapSend($payload, $status);
 } catch (Throwable $error) {
     snapSend(snapError(503, '解析服务配置异常'), 503);

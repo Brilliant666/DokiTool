@@ -71,6 +71,7 @@
 /backend/lib/*
 !/backend/lib/gateway.php
 !/backend/lib/runtime.php
+!/backend/lib/weibo-media.php
 /backend/public/*
 !/backend/public/index.php
 /backend/tests/*
@@ -78,7 +79,12 @@
 !/backend/tests/contract.php
 !/backend/tests/http-smoke.php
 !/backend/tests/mock-internal.php
+!/backend/tests/parser-contract.php
+!/backend/tests/pipixia-contract.php
+!/backend/tests/toutiao-contract.php
 !/backend/tests/validate.py
+!/backend/tests/weibo-contract.php
+!/backend/tests/weibo-media-contract.php
 /frontend/public/*
 !/frontend/public/dokitool.svg
 !/frontend/public/licenses/
@@ -96,6 +102,7 @@
 !/frontend/src/utils/
 /frontend/tests/*
 !/frontend/tests/parser-contract.test.mjs
+!/frontend/tests/ui-download-contract.test.mjs
 /ops/examples/*
 !/ops/examples/snap-access.caddy.example
 !/ops/examples/snap-fpm.conf
@@ -157,6 +164,8 @@
 /frontend/src/utils/*
 !/frontend/src/utils/antiReplay.js
 !/frontend/src/utils/downloadFilename.ts
+!/frontend/src/utils/mediaSource.ts
+!/frontend/src/utils/platforms.ts
 !/frontend/src/utils/rateLimit.js
 !/frontend/src/utils/segmentDownload.ts
 !/frontend/src/utils/videoFilename.ts

@@ -93,7 +93,7 @@ const allCompleted = computed(() => {
 
             <div class="flex items-center gap-1.5">
               <button
-                v-if="item.status === 'failed'"
+                v-if="item.status === 'failed' || item.status === 'cancelled'"
                 @click="emit('retry', item.id)"
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-blue-500 transition-colors"
                 title="重试"

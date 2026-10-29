@@ -90,6 +90,30 @@ foreach ([
     check('public dispatch ' . $method . ' ' . $path . ' ' . $expected, http_response_code() === $expected && json_decode($body, true)['code'] === $expected);
 }
 
+$body = '';
+$write = snapResponseWriter($body, 16);
+check('bounded metadata accepts response at limit', $write(null, '12345678') === 8 && $write(null, 'abcdefgh') === 8 && strlen($body) === 16);
+check('bounded metadata aborts before growing buffer', $write(null, 'overflow') === 0 && $body === '12345678abcdefgh');
+check('media protocol-relative source normalized', snapMediaUrl('//media.example/video.mp4') === 'https://media.example/video.mp4');
+check('media userinfo rejected', snapMediaUrl('https://user@media.example/video.mp4') === '' && snapMediaUrl('https://user:pass@media.example/video.mp4') === '');
+$legacy = snapNormalizeMedia(['video' => 'https://media.example/v.mp4', 'imgurl' => ['https://media.example/p.jpg'], 'music' => 'https://media.example/m.mp3', 'video_backup' => ['https://media.example/b.mp4']]);
+check('legacy video image music aliases retained for frontend', $legacy['url'] === $legacy['video'] && $legacy['images'] === $legacy['imgurl'] && $legacy['music']['url'] === 'https://media.example/m.mp3');
+check('string backups converted without losing source', $legacy['video_backup'] === [['url' => 'https://media.example/b.mp4']]);
+
+$fixtureKey = str_repeat('fixture-key-only-', 3);
+$weibo = ['code' => 200, 'data' => ['url' => 'https://f.video.weibocdn.com/main.mp4', 'width' => 1920, 'height' => 1080,
+    'video_backup' => [['url' => 'https://f.video.weibocdn.com/backup.mp4', 'quality' => '720p'], ['url' => 'https://untrusted.example/video.mp4']]]];
+[$status, $prepared] = snapPreparePublicMedia('weibo', $weibo, 200, $fixtureKey);
+check('signed media delivery only after valid Weibo parse', $status === 200 && $prepared['data']['media_delivery'] === 'weibo-relay' && str_starts_with($prepared['data']['playback_url'], '/api/media/weibo?ticket='));
+check('raw media and selected dimensions retained', $prepared['data']['url'] === $weibo['data']['url'] && $prepared['data']['width'] === 1920 && $prepared['data']['height'] === 1080);
+check('unknown media hosts not offered as relay backups', count($prepared['data']['video_backup']) === 1 && $prepared['data']['video_backup'][0]['quality'] === '720p' && isset($prepared['data']['video_backup'][0]['playback_url']));
+check('missing signing configuration fails clearly', snapPreparePublicMedia('weibo', $weibo, 200, '')[0] === 503);
+check('other platforms remain direct', snapPreparePublicMedia('douyin', $media, 200, $fixtureKey) === [200, $media]);
+check('business failures never mint tickets', snapPreparePublicMedia('weibo', $business, 200, $fixtureKey) === [200, $business]);
+check('HTTP failures never mint tickets', snapPreparePublicMedia('weibo', $weibo, 502, $fixtureKey) === [502, $weibo]);
+check('unsupported main source is not a false playback success', snapPreparePublicMedia('weibo', ['code' => 200, 'data' => ['url' => 'https://evil.test/a.mp4']], 200, $fixtureKey)[0] === 502);
+check('signing key is never returned', !str_contains(json_encode($prepared), $fixtureKey));
+
 $passed = count(array_filter($checks, static fn ($item) => $item['passed']));
 echo json_encode(['suite' => 'backend-contract', 'passed' => $passed, 'total' => count($checks), 'checks' => $checks], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL;
 exit($passed === count($checks) ? 0 : 1);

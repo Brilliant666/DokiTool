@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { platformTabs } from '../utils/platforms'
 
 const props = defineProps({
   inputUrl: String,
@@ -14,11 +15,11 @@ const emit = defineEmits(['update:inputUrl', 'parse', 'select-platform'])
 
 const content = {
   'zh-CN': {
-    badge: 'BK-SV v4.1 · 多平台解析',
+    badge: 'DokiTool · 多平台解析',
     title1: '轻松解析',
     title2: '任何',
     title3: '短视频',
-    desc: 'v4.1 全新升级！支持抖音、快手、B 站、小红书等平台，一键提取无水印视频与图集，简单免费。',
+    desc: '支持抖音、快手、B 站、小红书等平台，一键提取无水印视频与图集，简单免费。',
     feature1: '无水印',
     feature2: '高速解析',
     feature3: '完全免费',
@@ -36,11 +37,11 @@ const content = {
     ]
   },
   'en': {
-    badge: 'BK-SV v4.1 · Multi-Platform',
+    badge: 'DokiTool · Multi-Platform',
     title1: 'Parse ',
     title2: 'Any',
     title3: ' Short Video',
-    desc: 'v4.1 Upgrade! Support Douyin, Kuaishou, Bilibili, Xiaohongshu and more. Extract videos & albums without watermark, simple and free.',
+    desc: 'Support Douyin, Kuaishou, Bilibili, Xiaohongshu and more. Extract videos & albums without watermark, simple and free.',
     feature1: 'No Watermark',
     feature2: 'Fast Parse',
     feature3: 'Free',
@@ -63,24 +64,7 @@ const getContent = (locale) => content[locale] || content['zh-CN']
 
 const hasParseError = computed(() => Boolean(props.parseError))
 
-const platformTabs = {
-  'zh-CN': [
-    { key: 'all', label: '所有', icon: 'fa-globe' },
-    { key: 'douyin', label: '抖音', icon: 'fa-music' },
-    { key: 'kuaishou', label: '快手', icon: 'fa-bolt' },
-    { key: 'bilibili', label: 'B站', icon: 'fa-play-circle' },
-    { key: 'xhs', label: '小红书', icon: 'fa-bookmark' }
-  ],
-  'en': [
-    { key: 'all', label: 'All', icon: 'fa-globe' },
-    { key: 'douyin', label: 'Douyin', icon: 'fa-music' },
-    { key: 'kuaishou', label: 'Kuaishou', icon: 'fa-bolt' },
-    { key: 'bilibili', label: 'Bilibili', icon: 'fa-play-circle' },
-    { key: 'xhs', label: 'Xiaohongshu', icon: 'fa-bookmark' }
-  ]
-}
-
-const getPlatformTabs = (locale) => platformTabs[locale] || platformTabs['zh-CN']
+const getPlatformTabs = (locale) => platformTabs(locale)
 
 const selectPlatform = (key) => {
   emit('select-platform', key)

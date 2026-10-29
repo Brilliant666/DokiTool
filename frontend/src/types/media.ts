@@ -8,12 +8,22 @@ export interface AuthorInfo {
   user_name?: string;
   [key: string]: unknown;
 }
-export interface VideoBackup {
-  url: string;
-  quality?: string;
+export interface VideoMetadata {
   width?: number;
   height?: number;
+  bit_rate?: number;
+  /** Historical frontend alias of bit_rate. */
   bitrate?: number;
+  codec?: string;
+}
+export interface VideoBackup extends VideoMetadata {
+  url: string;
+  /** Original CDN URL; url may point to the signed same-origin delivery route. */
+  original_url?: string;
+  playback_url?: string;
+  media_delivery?: "weibo-relay";
+  label?: string;
+  quality?: string;
   format?: string;
   [key: string]: unknown;
 }
@@ -30,7 +40,7 @@ export interface MusicResource {
   [key: string]: unknown;
 }
 /** 单个视频/单集（用于 P 分集、多视频返回） */
-export interface MediaVideo {
+export interface MediaVideo extends VideoMetadata {
   /** 1 起始（后端 `index`） */
   index: number;
   /** 展示名称，缺省回退 `P${index}` */
@@ -51,6 +61,8 @@ export interface MediaVideo {
   segments?: string[];
   /** B 站分 P 的 cid，用于懒解析该 P 的真实地址 */
   _cid?: string;
+  /** Stable source for a saved download task; must not follow a newly parsed work. */
+  _sourceUrl?: string;
   /** B 站合集分集所属视频的 BV/av 号，用于懒解析该集真实地址 */
   _bvid?: string;
   /** 合集分集在其 BV 内的分 P 号（该分集视频本身是多 P 时 >1） */
@@ -78,7 +90,7 @@ export interface MediaCollection {
   /** 合集内分集 */
   episodes: MediaVideo[];
 }
-export interface ParsedMedia {
+export interface ParsedMedia extends VideoMetadata {
   type?: "video" | "image" | "live" | string;
   title?: string;
   desc?: string;
@@ -86,6 +98,9 @@ export interface ParsedMedia {
   avatar?: string;
   cover?: string;
   url?: string | null;
+  original_url?: string | null;
+  playback_url?: string;
+  media_delivery?: "weibo-relay";
   quality?: string;
   duration?: number | null;
   images: string[];

@@ -51,6 +51,7 @@ const visibleDuration = (video: MediaVideo): string => {
 };
 
 const handleKeydown = (e: KeyboardEvent, index: number): void => {
+  if (e.target !== e.currentTarget || props.disabled || props.videos[index]?.error) return;
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
     emit("select", index);
@@ -120,7 +121,7 @@ const onCoverError = (e: Event): void => {
         <!-- checkbox -->
         <label
           class="vlib-check"
-          @click.stop="!v.error && !disabled && emit('toggle', idx)"
+          @click.stop
         >
           <input
             type="checkbox"

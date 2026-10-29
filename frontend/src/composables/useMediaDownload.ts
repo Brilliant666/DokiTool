@@ -1,4 +1,4 @@
-import { ref, type Ref } from "vue";
+import { type Ref } from "vue";
 import JSZip from "jszip";
 import type {
   LivePhoto,
@@ -24,6 +24,11 @@ import type { VideoSelection } from "./useVideoSelection";
 interface ResolvedVideo {
   url: string;
   video_backup?: VideoBackup[];
+  quality?: string;
+  width?: number;
+  height?: number;
+  bit_rate?: number;
+  codec?: string;
 }
 
 interface UseMediaDownloadOptions {
@@ -62,11 +67,20 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   const { videoStore, currentVideoUrl, showToast, selection, resolveVideoUrl } =
     options;
 
-  /** 单文件抓取（用于 ZIP 打包，复用 store 之外的简单 fetch） */
+  const archiveRetries = new Map<number, () => Promise<void>>();
+  const checkAbort = (signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+  };
+
+  /** 单文件抓取（用于 ZIP 打包） */
   async function fetchBlob(url: string, signal?: AbortSignal): Promise<Blob> {
     const response = await fetch(url, { method: "GET", mode: "cors", signal });
     if (!response.ok) throw new Error(`资源请求失败（HTTP ${response.status}）`);
-    return response.blob();
+    const blob = await response.blob();
+    if (signal) checkAbort(signal);
+    if (!blob.size) throw new Error("资源为空");
+    if (/text\/html|application\/json/i.test(blob.type)) throw new Error("资源地址返回了错误页面");
+    return blob;
   }
 
   /**
@@ -75,10 +89,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
    */
   async function resolveVideo(video: MediaVideo): Promise<MediaVideo> {
     if (video.url || (!video._cid && !video._bvid) || !resolveVideoUrl) return video;
+    const resultVersion = videoStore.resultVersion;
     const resolved = await resolveVideoUrl(video);
     if (!resolved?.url) return video;
-    videoStore.patchVideo(video, { url: resolved.url, _resolved: true });
-    return { ...video, url: resolved.url, _resolved: true };
+    const patch = { ...resolved, video_backup: resolved.video_backup ?? [], _resolved: true, _resolving: false, error: undefined };
+    if (videoStore.resultVersion === resultVersion) videoStore.patchVideo(video, patch);
+    return { ...video, ...patch };
   }
 
   async function downloadFile(url: string, filename: string, downloadId: number): Promise<void> {
@@ -111,6 +127,11 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
         signal: abortController.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const contentType = response.headers.get("content-type")?.split(";")[0] || "";
+      if (/text\/html|application\/json/i.test(contentType)) throw new Error("资源地址返回了错误页面");
+      const extension = ({ "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/avif": "avif", "audio/mp4": "m4a", "audio/mpeg": "mp3" } as Record<string, string>)[contentType];
+      if (extension) filename = filename.replace(/\.[^.]+$/, `.${extension}`);
+      videoStore.updateDownload(downloadId, { filename });
       if (!response.body) throw new Error("下载响应不支持流式读取");
 
       const total = Number(response.headers.get("content-length")) || 0;
@@ -144,7 +165,9 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
         throw new Error(`下载不完整：期望 ${total} 字节，实际 ${loaded} 字节`);
       }
 
-      const blobUrl = URL.createObjectURL(new Blob(chunks));
+      checkAbort(abortController.signal);
+      if (!loaded) throw new Error("资源为空");
+      const blobUrl = URL.createObjectURL(new Blob(chunks, { type: contentType }));
       triggerBrowserDownload(blobUrl, filename);
       setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
       videoStore.updateDownload(downloadId, {
@@ -155,7 +178,7 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
         total: total || loaded,
       });
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (abortController.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         videoStore.updateDownload(downloadId, { status: "cancelled", statusText: "已取消" });
         return;
       }
@@ -206,7 +229,7 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
         total: 0,
       });
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
+      if (abortController.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         videoStore.updateDownload(downloadId, { status: "cancelled", statusText: "已取消" });
         return;
       }
@@ -221,12 +244,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   }
 
   /** 入队一个下载任务；兼容 `enqueue(url, "mp4")` 旧调用 */
-  function enqueue(url: string, extension?: string): void;
-  function enqueue(url: string, options?: EnqueueOptions): void;
+  function enqueue(url: string, extension?: string): boolean;
+  function enqueue(url: string, options?: EnqueueOptions): boolean;
   function enqueue(
     url: string,
     extensionOrOptions?: string | EnqueueOptions,
-  ): void {
+  ): boolean {
     const options: EnqueueOptions =
       typeof extensionOrOptions === "string"
         ? { ext: extensionOrOptions }
@@ -236,12 +259,13 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     // 走到这里说明上游分片解析全部失败（通常是清单被 CORS 拦截）。
     if (looksLikeHlsManifest(url)) {
       showToast("该视频为分片流且清单不可访问，无法合并下载", "warning");
-      return;
+      return false;
     }
     const ext = options.ext ?? "mp4";
     const filename = options.filename ?? getDownloadFilename(url, ext);
     const id = videoStore.addDownload({ filename, url });
     void downloadFile(url, filename, id);
+    return true;
   }
 
   /** 主直链 + 备用画质链接按顺序去重（分片流候选：首个探测成功者胜出） */
@@ -259,49 +283,33 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
 
   function firstSegmentUrl(segments: (HlsSegment | string)[]): string {
     const first = segments[0];
-    return typeof first === "string" ? first : first.url;
+    return typeof first === "string" ? first : first?.url ?? "";
   }
 
   /** 为某集构造可读文件名并入队（自动处理分片合并与 B 站懒解析） */
-  async function enqueueVideo(video: MediaVideo, fallbackTitle?: string): Promise<void> {
-    if (!video) return;
+  async function enqueueVideo(video: MediaVideo, fallbackTitle?: string): Promise<boolean> {
+    if (!video) return false;
     const resolved = await resolveVideo(video);
     const url = resolved.url || "";
-    const resultData = videoStore.resultData;
-    // 无显式 segments 时，按候选顺序探测分片流（清单/兄弟分片）：
-    // 主直链被 CORS 拦截时（如快手 remux 清单），备用画质清单可能开放 CORS
-    let segments: (HlsSegment | string)[] | null =
-      resolved.segments && resolved.segments.length > 1
-        ? resolved.segments
-        : await prepareSegments(
-            segmentCandidates([
-              url,
-              ...((video.video_backup as VideoBackup[] | undefined) ?? []).map((b) => b.url),
-              ...(resultData?.video_backup ?? []).map((b) => b.url),
-            ]),
-          );
-    const filename = buildMediaFilename({
-      title: resolved.title || fallbackTitle,
-      index: resolved.index,
-      fallback: url || firstSegmentUrl(segments ?? []),
-    });
+    if (!url && !(resolved.segments?.length)) {
+      showToast(`第 ${video.index} 集解析失败，未添加下载`, "warning");
+      return false;
+    }
+    const segments = resolved.segments && resolved.segments.length > 1
+      ? resolved.segments
+      : await prepareSegments(segmentCandidates([
+          url,
+        ]));
+    const filename = buildMediaFilename({ title: resolved.title || fallbackTitle,
+      index: resolved.index, fallback: url || firstSegmentUrl(segments ?? []) });
     if (segments && segments.length > 1) {
-      // HLS/分片：合并为单文件；ts 分片存 .ts，其余按 mp4
       const ext = detectSegmentContainer(segments);
       const finalName = filename.replace(/\.mp4$/i, `.${ext}`);
-      const id = videoStore.addDownload({
-        filename: finalName,
-        url: firstSegmentUrl(segments),
-        segments: segments.map((s) => (typeof s === "string" ? s : s.url)),
-      });
+      const id = videoStore.addDownload({ filename: finalName, url: firstSegmentUrl(segments), segments });
       void downloadSegments(segments, finalName, id);
-      return;
+      return true;
     }
-    if (!url) {
-      showToast("该分集暂不支持下载", "warning");
-      return;
-    }
-    enqueue(url, { filename, ext: "mp4" });
+    return enqueue(url, { filename, ext: "mp4" });
   }
 
   /** 下载第 index 集（当前合集展示列表内的序号），无则拒之 */
@@ -341,11 +349,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
       showToast("没有可下载的分集", "warning");
       return;
     }
+    let added = 0;
     for (const video of usable) {
-      await enqueueVideo(video, resultData.title);
+      if (await enqueueVideo(video, resultData.title)) added++;
       await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
     }
-    showToast(`已添加 ${usable.length} 个下载任务`);
+    if (added) showToast(`已添加 ${added} 个下载任务${added < usable.length ? `，${usable.length - added} 集失败` : ""}`);
   }
 
   /** 下载全部集（逐个 enqueue，不打包） */
@@ -364,197 +373,137 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
       downloadMainVideo();
       return;
     }
+    let added = 0;
     for (const video of usable) {
-      await enqueueVideo(video, resultData.title);
+      if (await enqueueVideo(video, resultData.title)) added++;
       await new Promise<void>((resolve) => window.setTimeout(resolve, 200));
     }
-    showToast(`已添加 ${usable.length} 个下载任务`);
+    if (added) showToast(`已添加 ${added} 个下载任务${added < usable.length ? `，${usable.length - added} 集失败` : ""}`);
   }
 
-  // ── 根因修复：下载源不再读 currentVideoUrl，改为 resultData.videos[selectedIndex] ?? resultData.url
+  /** Preview and download share the selected source; an unresolved episode never falls back to another P. */
   async function downloadMainVideo(): Promise<void> {
-    const resultData = videoStore.resultData;
-    if (!resultData) return;
-    // 分段视频（快手长视频等）：合并分片为单文件下载
-    if (resultData.segments && resultData.segments.length > 1) {
-      const filename = buildMediaFilename({
-        title: resultData.title ?? "",
-        index: undefined,
-        fallback: resultData.segments[0],
-      });
-      const id = videoStore.addDownload({
-        filename,
-        url: resultData.segments[0],
-        segments: resultData.segments,
-      });
-      void downloadSegments(resultData.segments, filename, id);
-      return;
-    }
+    const data = videoStore.resultData;
+    if (!data) return;
     const idx = selection?.selectedIndex.value ?? 0;
-    const list = resultData.videos ?? [];
-    // 合集/多 P 场景下优先取选集状态的当前集（合集时为当前合集内选中项）
-    const video: MediaVideo | null =
-      selection?.currentVideo.value ?? (list.length > idx ? list[idx] : null);
-    const url = video?.url ?? resultData.url ?? "";
-    if (!url) {
-      // 可能是 B 站未解析的分集：尝试懒解析后再下载
-      if ((video?._cid || video?._bvid) && resolveVideoUrl) {
-        void (async () => {
-          const resolved = await resolveVideo(video);
-          if (resolved.url) {
-            const resolvedSegments = await prepareSegments(
-              segmentCandidates([resolved.url, ...(resultData.video_backup ?? []).map((b) => b.url)]),
-            );
-            if (resolvedSegments && resolvedSegments.length > 1) {
-              const filename = buildMediaFilename({
-                title: resolved.title ?? resultData.title ?? "",
-                index: resolved.index,
-                fallback: resolved.url,
-              });
-              const id = videoStore.addDownload({
-                filename,
-                url: firstSegmentUrl(resolvedSegments),
-                segments: resolvedSegments.map((s) =>
-                  typeof s === "string" ? s : s.url,
-                ),
-              });
-              void downloadSegments(resolvedSegments, filename, id);
-              return;
-            }
-            enqueue(resolved.url, {
-              filename: buildMediaFilename({
-                title: resolved.title ?? resultData.title ?? "",
-                index: resolved.index,
-                fallback: resolved.url,
-              }),
-              ext: "mp4",
-            });
-          } else {
-            showToast("该分集暂不支持下载", "warning");
-          }
-        })();
+    const multi = (data.videos?.length ?? 0) > 1 || (data.collections?.length ?? 0) > 0;
+    const current = selection?.currentVideo.value ?? data.videos?.[idx];
+    const changedSource = !multi && Boolean(currentVideoUrl.value) && currentVideoUrl.value !== data.url;
+    const video: MediaVideo = multi && current ? current : {
+      ...current,
+      index: current?.index ?? 1,
+      title: current?.title ?? data.title,
+      url: currentVideoUrl.value || current?.url || data.url || "",
+      segments: changedSource ? undefined : current?.segments ?? data.segments,
+      video_backup: current?.video_backup ?? data.video_backup,
+    };
+    await enqueueVideo(video, data.title);
+  }
+
+  type ArchiveEntry = { filename: string; data: Blob | Uint8Array<ArrayBuffer> };
+  type ArchiveBuilder = (signal: AbortSignal, progress: (done: number, total: number) => void) => Promise<ArchiveEntry[]>;
+
+  async function runArchive(filename: string, build: ArchiveBuilder, retryId?: number): Promise<void> {
+    const id = retryId ?? videoStore.addDownload({ filename, status: "preparing", statusText: "准备中..." });
+    const controller = new AbortController();
+    archiveRetries.set(id, () => runArchive(filename, build, id));
+    videoStore.updateDownload(id, { abortController: controller, status: "downloading", statusText: "正在打包...", percent: 0, error: null });
+    try {
+      const entries = await build(controller.signal, (done, total) => {
+        checkAbort(controller.signal);
+        videoStore.updateDownload(id, { percent: Math.round(done / total * 85), statusText: `打包 ${done}/${total}...` });
+      });
+      checkAbort(controller.signal);
+      if (!entries.length) throw new Error("没有可打包的资源");
+      const zip = new JSZip();
+      for (const entry of entries) {
+        checkAbort(controller.signal);
+        // ArrayBuffer works consistently in browsers and Node's offline regression harness.
+        zip.file(entry.filename, entry.data instanceof Blob ? await entry.data.arrayBuffer() : entry.data);
       }
-      return;
-    }
-    // 疑似分片/清单的 URL：按候选顺序智能识别（主清单被 CORS 拦截时备用清单可能开放）并合并下载
-    const segments = await prepareSegments(
-      segmentCandidates([
-        url,
-        ...((video?.video_backup as VideoBackup[] | undefined) ?? []).map((b) => b.url),
-        ...(resultData.video_backup ?? []).map((b) => b.url),
-      ]),
-    );
-    if (segments && segments.length > 1) {
-      const filename = buildMediaFilename({
-        title: video?.title ?? resultData.title ?? "",
-        index: video?.index,
-        fallback: url,
+      const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
+        checkAbort(controller.signal);
+        videoStore.updateDownload(id, { percent: 85 + Math.round(metadata.percent * 0.14), statusText: "生成压缩包..." });
       });
-      const id = videoStore.addDownload({
-        filename,
-        url: firstSegmentUrl(segments),
-        segments: segments.map((s) => (typeof s === "string" ? s : s.url)),
-      });
-      void downloadSegments(segments, filename, id);
-      return;
+      checkAbort(controller.signal);
+      const blobUrl = URL.createObjectURL(blob);
+      triggerBrowserDownload(blobUrl, filename);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+      videoStore.updateDownload(id, { status: "completed", statusText: "已完成", percent: 100, abortController: null });
+      archiveRetries.delete(id);
+      showToast(`已打包 ${entries.length} 个文件`);
+    } catch (error) {
+      if (videoStore.downloads.find((task) => task.id === id)?.abortController !== controller) return;
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        videoStore.updateDownload(id, { status: "cancelled", statusText: "已取消", abortController: null });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "打包失败";
+      videoStore.updateDownload(id, { status: "failed", statusText: "打包失败", error: message, abortController: null });
+      showToast("打包失败：" + message, "error");
     }
-    enqueue(url, {
-      filename: buildMediaFilename({
-        title: video?.title ?? resultData.title ?? "",
-        index: video?.index,
-        fallback: url,
-      }),
-      ext: "mp4",
+  }
+
+  /** Resolve every selected episode; a missing episode fails the archive instead of silently creating an empty/partial ZIP. */
+  async function downloadVideosAsZip(videos: MediaVideo[], zipName?: string): Promise<void> {
+    if (!videos.length) { showToast("没有可下载的分集", "warning"); return; }
+    const snapshot = videos.map((video) => ({ ...video }));
+    const filename = zipName?.endsWith(".zip") ? zipName : `videos_${Date.now()}.zip`;
+    await runArchive(filename, async (signal, progress) => {
+      const entries: ArchiveEntry[] = [];
+      for (let i = 0; i < snapshot.length; i++) {
+        checkAbort(signal);
+        const video = await resolveVideo(snapshot[i]);
+        checkAbort(signal);
+        if (!video.url && !video.segments?.length) throw new Error(`第 ${video.index} 集解析失败，未生成压缩包`);
+        const segments = video.segments && video.segments.length > 1 ? video.segments
+          : await prepareSegments(segmentCandidates([video.url]), signal);
+        checkAbort(signal);
+        const base = buildMediaFilename({ title: video.title, index: video.index, fallback: video.url }).replace(/\.mp4$/i, "");
+        if (segments && segments.length > 1) {
+          const data = await mergeSegments(segments, { signal });
+          entries.push({ filename: `${String(i + 1).padStart(3, "0")}_${base}.${detectSegmentContainer(segments)}`, data });
+        } else {
+          if (looksLikeHlsManifest(video.url)) throw new Error(`第 ${video.index} 集分片清单不可读取`);
+          entries.push({ filename: `${String(i + 1).padStart(3, "0")}_${base}.mp4`, data: await fetchBlob(video.url, signal) });
+        }
+        progress(i + 1, snapshot.length);
+      }
+      return entries;
     });
   }
 
-  /** 多集打包为 ZIP（分片集先合并为单 mp4，再逐个抓取入包） */
-  async function downloadVideosAsZip(videos: MediaVideo[], zipName?: string): Promise<void> {
-    const resultData = videoStore.resultData;
-    const usable = videos.filter(
-      (video) =>
-        Boolean(video.url) ||
-        Boolean(video._cid) ||
-        Boolean(video._bvid) ||
-        (video.segments?.length ?? 0) > 0,
-    );
-    if (usable.length === 0) {
-      showToast("没有可下载的分集", "warning");
-      return;
-    }
-    const safeName = zipName && zipName.endsWith(".zip") ? zipName : `videos_${Date.now()}.zip`;
-    const downloadId = videoStore.addDownload({
-      filename: safeName,
-      status: "preparing",
-      statusText: "准备中...",
-    });
-    try {
-      const zip = new JSZip();
-      for (let i = 0; i < usable.length; i++) {
-        const video = await resolveVideo(usable[i]);
-        videoStore.updateDownload(downloadId, {
-          status: "downloading",
-          percent: Math.round((i / usable.length) * 90),
-          statusText: `打包第 ${i + 1}/${usable.length} 集...`,
-        });
-        const base = buildMediaFilename({
-          title: video.title,
-          index: video.index,
-          fallback: video.url || (video.segments?.[0] ?? ""),
-        }).replace(/\.mp4$/i, "");
-        // 分片流优先：显式 segments → 候选探测（CORS 开放的备用清单）→ 单文件抓取
-        const zipSegments =
-          video.segments && video.segments.length > 1
-            ? video.segments
-            : await prepareSegments(
-                segmentCandidates([
-                  video.url,
-                  ...(resultData?.video_backup ?? []).map((b) => b.url),
-                ]),
-              );
-        if (zipSegments && zipSegments.length > 1) {
-          const ext = detectSegmentContainer(zipSegments);
-          const merged = await mergeSegments(zipSegments);
-          zip.file(`${base}.${ext}`, merged);
-        } else if (video.url) {
-          const blob = await fetchBlob(video.url);
-          zip.file(`${base}.mp4`, blob);
-        }
+  type ArchiveResource = { url: string; name: string; extension: string };
+  async function downloadResourcesAsZip(resources: ArchiveResource[], filename: string): Promise<void> {
+    if (!resources.length) { showToast("没有可下载的资源", "warning"); return; }
+    await runArchive(filename, async (signal, progress) => {
+      const entries: ArchiveEntry[] = [];
+      for (let i = 0; i < resources.length; i++) {
+        checkAbort(signal);
+        const resource = resources[i];
+        const blob = await fetchBlob(resource.url, signal);
+        const imageExtension = ({ "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/avif": "avif" } as Record<string, string>)[blob.type.split(";")[0]];
+        entries.push({ filename: `${resource.name}.${imageExtension || resource.extension}`, data: blob });
+        progress(i + 1, resources.length);
       }
-      videoStore.updateDownload(downloadId, { percent: 92, statusText: "生成压缩包..." });
-      const zipBlob = await zip.generateAsync(
-        { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
-        (metadata) =>
-          videoStore.updateDownload(downloadId, {
-            percent: 92 + Math.round(metadata.percent * 0.08),
-            statusText: `压缩中 ${Math.round(metadata.percent)}%`,
-          }),
-      );
-      videoStore.updateDownload(downloadId, { percent: 98, statusText: "正在下载..." });
-      const zipUrl = URL.createObjectURL(zipBlob);
-      const anchor = document.createElement("a");
-      anchor.href = zipUrl;
-      anchor.download = safeName;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(zipUrl);
-      videoStore.updateDownload(downloadId, {
-        status: "completed",
-        statusText: "已完成",
-        percent: 100,
-      });
-      showToast(`已打包 ${usable.length} 个视频`);
-    } catch (error) {
-      console.error(error);
-      const message = error instanceof Error ? error.message : "打包失败";
-      videoStore.updateDownload(downloadId, {
-        status: "failed",
-        statusText: "下载失败",
-        error: message,
-      });
-      showToast("打包下载失败：" + message, "error");
-    }
+      return entries;
+    });
+  }
+
+  async function downloadAllMedia(mode: "all" | "images" | "live" | "covers" = "all"): Promise<void> {
+    const data = videoStore.resultData;
+    if (!data) return;
+    const resources: ArchiveResource[] = [];
+    const add = (url: string | undefined | null, name: string, extension: string) => {
+      if (url && !resources.some((item) => item.url === url)) resources.push({ url, name, extension });
+    };
+    if (mode === "all") add(currentVideoUrl.value || data.url, "video", "mp4");
+    if (mode === "all" || mode === "images") data.images.forEach((url, i) => add(url, `image_${i + 1}`, "jpg"));
+    if (mode !== "images") data.live_photo.forEach((item, i) => {
+      add(item.image, `live_${i + 1}_cover`, "jpg");
+      if (mode !== "covers") add(item.video, `live_${i + 1}_video`, "mp4");
+    });
+    await downloadResourcesAsZip(resources, `${mode}_${Date.now()}.zip`);
   }
 
   function downloadBackupVideo(backup: VideoBackup): void {
@@ -571,8 +520,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     if (item?.video) enqueue(item.video, "mp4");
   }
 
+  function downloadImage(url: string): void {
+    if (url) enqueue(url, "jpg");
+  }
+
   function downloadLiveCover(item: LivePhoto): void {
-    if (item?.image) enqueue(item.image, "jpg");
+    if (item?.image) downloadImage(item.image);
   }
 
   async function downloadAllImages(): Promise<void> {
@@ -591,7 +544,9 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
 
   function handleRetryDownload(id: number): void {
     const task = videoStore.downloads.find((download) => download.id === id);
-    if (!task) return;
+    if (!task || ["preparing", "downloading"].includes(task.status)) return;
+    const retryArchive = archiveRetries.get(id);
+    if (retryArchive) { void retryArchive(); return; }
     // 分片任务重试：重走合并下载，避免退化成只下首片
     const rawSegments = task.segments;
     if (Array.isArray(rawSegments) && rawSegments.length > 1) {
@@ -605,8 +560,13 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   }
 
   function handleClearCompleted(id: number | "all"): void {
-    if (id === "all") videoStore.clearCompletedDownloads();
-    else videoStore.removeDownload(id);
+    if (id === "all") {
+      for (const task of videoStore.downloads) if (["completed", "cancelled", "failed"].includes(task.status)) archiveRetries.delete(task.id);
+      videoStore.clearCompletedDownloads();
+    } else {
+      archiveRetries.delete(id);
+      videoStore.removeDownload(id);
+    }
   }
 
   return {
@@ -616,10 +576,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     downloadSelected,
     downloadAllVideos,
     downloadVideosAsZip,
+    downloadAllMedia,
     downloadBackupVideo,
     downloadMusic,
     downloadLiveVideo,
     downloadLiveCover,
+    downloadImage,
     downloadAllImages,
     handleCancelDownload,
     handleRetryDownload,
