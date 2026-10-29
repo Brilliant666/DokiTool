@@ -5,7 +5,6 @@ defineProps({
 
 const content = {
   'zh-CN': {
-    brand: 'DokiTool',
     version: '由Daiobs维护',
     desc: '简单易用的短视频解析工具，支持多平台无水印视频与图集解析，让分享更自由。',
     quickLinks: '快速链接',
@@ -16,14 +15,9 @@ const content = {
     faq: '常见问题',
     about: '关于我们',
     contact: '项目信息',
-    credits: '感谢 BugPk / JH-Ahua，DokiTool 基于以下开源项目改进：',
-    license: '开源许可与声明',
-    dependencies: '第三方许可',
-    starUs: '给我们 Star',
-    issues: '问题反馈'
+    starUs: '给我们 Star'
   },
   'en': {
-    brand: 'DokiTool',
     version: 'Maintained by Daiobs',
     desc: 'Simple & easy video parsing tool. Support multi-platform watermark-free video & album extraction.',
     quickLinks: 'Quick Links',
@@ -34,11 +28,7 @@ const content = {
     faq: 'FAQ',
     about: 'About',
     contact: 'Project',
-    credits: 'Thanks to BugPk / JH-Ahua. DokiTool builds on these open-source projects:',
-    license: 'Licenses & attribution',
-    dependencies: 'Third-party licenses',
-    starUs: 'Star Us',
-    issues: 'Report Issues'
+    starUs: 'Star Us'
   }
 }
 
@@ -58,17 +48,14 @@ const showProjectPromotions = false
     <div class="max-w-7xl mx-auto px-4 py-8 md:py-16 relative z-10">
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10 mb-12 footer-grid">
         <div class="footer-brand">
-          <div class="flex items-center gap-3 mb-5">
+          <div class="flex flex-col items-start gap-1 mb-5">
             <div class="brand-icon">
               <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
                 <img src="/dokitool-wordmark.png" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
-            <div>
-              <h4 class="font-bold text-lg text-slate-800 dark:text-white">{{ getContent(locale).brand }}</h4>
-              <p class="text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
-            </div>
+            <p class="text-xs text-slate-500 dark:text-slate-400">{{ getContent(locale).version }}</p>
           </div>
           <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-5">
             {{ getContent(locale).desc }}
@@ -102,15 +89,15 @@ const showProjectPromotions = false
               </a>
             </li>
             <li>
-              <a href="#course" class="footer-link">
-                <i class="fas fa-book text-xs mr-2"></i>
-                {{ getContent(locale).course }}
-              </a>
-            </li>
-            <li>
               <a href="#Supported_Platforms" class="footer-link">
                 <i class="fas fa-th text-xs mr-2"></i>
                 {{ getContent(locale).platforms }}
+              </a>
+            </li>
+            <li>
+              <a href="#course" class="footer-link">
+                <i class="fas fa-book text-xs mr-2"></i>
+                {{ getContent(locale).course }}
               </a>
             </li>
           </ul>
@@ -134,12 +121,6 @@ const showProjectPromotions = false
                 {{ getContent(locale).about }}
               </a>
             </li>
-            <li>
-              <a :href="`${repositoryUrl}/issues`" target="_blank" rel="noopener noreferrer" class="footer-link">
-                <i class="fab fa-github text-xs mr-2"></i>
-                {{ getContent(locale).issues }}
-              </a>
-            </li>
           </ul>
         </div>
 
@@ -152,12 +133,6 @@ const showProjectPromotions = false
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-user text-xs text-indigo-400"></i>
               <span>Daiobs</span>
-            </li>
-            <li>
-              <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
-                <i class="fab fa-github text-xs mr-2"></i>
-                <span class="truncate">Brilliant666/DokiTool</span>
-              </a>
             </li>
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-globe text-xs text-emerald-400"></i>
@@ -187,15 +162,9 @@ const showProjectPromotions = false
           <p class="md:hidden">{{ getContent(locale).version }}</p>
         </div>
 
-        <div class="text-center md:text-right text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-          <p>{{ getContent(locale).credits }}</p>
-          <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 mt-1">
-            <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
-            <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
-            <a :href="`${repositoryUrl}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">MIT License</a>
-            <a :href="`${repositoryUrl}/blob/main/NOTICE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).license }}</a>
-            <a href="/licenses/third-party-notices.txt" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).dependencies }}</a>
-          </div>
+        <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 text-sm leading-relaxed">
+          <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
+          <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
         </div>
       </div>
     </div>
