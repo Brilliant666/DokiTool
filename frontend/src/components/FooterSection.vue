@@ -163,8 +163,11 @@ const showProjectPromotions = false
         </div>
 
         <div class="flex flex-wrap items-center justify-center md:justify-end gap-x-4 gap-y-1 text-sm leading-relaxed">
-          <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
-          <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
+          <span class="text-slate-500 dark:text-slate-400">Powered by jiuhunwl</span>
+          <a href="https://github.com/jiuhunwl" target="_blank" rel="noopener noreferrer" class="footer-credit-link inline-flex items-center gap-1.5">
+            <i class="fab fa-github" aria-hidden="true"></i>
+            <span>GitHub</span>
+          </a>
         </div>
       </div>
     </div>
