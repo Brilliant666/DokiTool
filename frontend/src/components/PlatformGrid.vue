@@ -31,10 +31,22 @@ const content = {
 
 const getContent = (locale) => content[locale] || content['zh-CN']
 
-const allPlatforms = supportedPlatforms
+// The shared list controls capabilities; the showcase retains each brand's artwork.
+const platformArtwork = {
+  douyin: { img: 'https://lf-douyin-pc-web.douyinstatic.com/obj/douyin-pc-web/2025_0313_logo.png', desc: '解析抖音无水印视频', color: '#fe2c55' },
+  kuaishou: { img: 'https://p4-plat.wskwai.com/kos/nlav111422/ks-web/favicon.ico', desc: '解析快手无水印视频', color: '#ff4906' },
+  bilibili: { img: 'https://www.bilibili.com/favicon.ico', desc: '解析B站视频', color: '#00a1d6' },
+  xhs: { img: 'https://www.xiaohongshu.com/favicon.ico', desc: '解析小红书视频', color: '#fe2c55' },
+  toutiao: { img: 'https://www.toutiao.com/favicon.ico', desc: '解析今日头条视频', color: '#e6162d' },
+  weibo: { img: 'https://weibo.com/favicon.ico', desc: '解析微博短视频', color: '#e6162d' },
+  pipixia: { img: 'https://lf-toutiao-ug-dns.toutiaocdn.com/obj/toutiao-ug-tos/ppx/mp/static/media/favicon.9cfbabbf.ico', desc: '解析皮皮虾视频', color: '#ffc700' },
+  pipigx: { img: 'https://www.pipigx.com/favicon.ico', desc: '解析搞笑短视频', color: '#25d68a' },
+  zuiyou: { img: 'https://www.izuiyou.com/favicon.ico', desc: '解析最右短视频', color: '#8854d0' },
+}
+const allPlatforms = supportedPlatforms.map(platform => ({ ...platform, ...platformArtwork[platform.key] }))
 const getDesc = (locale, idx) => locale === 'en'
-  ? `Parse ${allPlatforms[idx].english} media`
-  : `解析${allPlatforms[idx].name}作品`
+  ? `Parse ${allPlatforms[idx].english} videos`
+  : allPlatforms[idx].desc
 
 const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 </script>
@@ -72,8 +84,8 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
             :aria-label="`${platform.name}: ${getDesc(locale, idx % allPlatforms.length)}`"
           >
             <div class="platform-icon-container">
-              <div :class="['platform-icon-wrapper', 'bg-gradient-to-br', 'from-indigo-500 to-violet-600']">
-                <i :class="['fas', platform.icon]" class="text-2xl text-white" aria-hidden="true"></i>
+              <div class="platform-icon-wrapper">
+                <img :src="platform.img" :alt="platform.name" class="platform-icon-img" loading="lazy">
               </div>
               <div class="platform-glow" :style="{ background: platform.color }"></div>
             </div>
@@ -238,6 +250,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 }
 
 .platform-icon-wrapper {
+  background: white;
   width: 56px;
   height: 56px;
   margin: 0 auto;
