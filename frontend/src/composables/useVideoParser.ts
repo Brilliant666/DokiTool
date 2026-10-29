@@ -61,6 +61,28 @@ const positiveNumber = (value: unknown): number | undefined => {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
 };
+/** Only a signed, fixed media endpoint may replace the original Weibo URL. */
+export const resolveWeiboPlaybackUrl = (
+  value: unknown,
+  apiOrigin = apiConfig.baseUrl,
+  pageOrigin = typeof window !== "undefined" ? window.location?.origin : undefined,
+): string => {
+  if (!nonEmptyString(value) || value.length > 12288
+    || !/^\/api\/media\/weibo\?ticket=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) {
+    throw new ParseError("微博播放链接无效，请重新解析");
+  }
+  const base = apiOrigin || pageOrigin;
+  // SSR/tests without an origin may keep this one validated same-origin route.
+  if (!base) return value;
+  try {
+    const parsed = new URL(base);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password
+      || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Invalid origin");
+    return new URL(value, parsed.origin).href;
+  } catch {
+    throw new ParseError("微博播放服务地址配置异常");
+  }
+};
 const videoMetadata = (raw: Record<string, unknown>): VideoMetadata => {
   const result: VideoMetadata = {};
   const width = positiveNumber(raw.width), height = positiveNumber(raw.height);
@@ -72,11 +94,20 @@ const videoMetadata = (raw: Record<string, unknown>): VideoMetadata => {
   return result;
 };
 /** The PHP snapshots use both strings and objects for alternate video sources. */
-export const normalizeBackups = (raw: unknown): VideoBackup[] =>
+export const normalizeBackups = (raw: unknown, weiboRelay = false): VideoBackup[] =>
   (Array.isArray(raw) ? raw : []).flatMap((item) => {
-    if (nonEmptyString(item)) return [{ url: item.trim() }];
+    if (nonEmptyString(item)) {
+      if (weiboRelay) throw new ParseError("微博备用播放链接缺失，请重新解析");
+      return [{ url: item.trim() }];
+    }
     if (!item || typeof item !== "object" || !nonEmptyString(item.url)) return [];
-    return [{ ...item, ...videoMetadata(item), url: item.url.trim() }];
+    const originalUrl = item.url.trim();
+    const delivery = weiboRelay ? {
+      original_url: originalUrl,
+      media_delivery: "weibo-relay" as const,
+      url: resolveWeiboPlaybackUrl(item.playback_url),
+    } : { url: originalUrl };
+    return [{ ...item, ...videoMetadata(item), ...delivery }];
   });
 const imageUrls = (raw: unknown): string[] =>
   (Array.isArray(raw) ? raw : nonEmptyString(raw) ? [raw] : []).flatMap((item) => {
@@ -88,13 +119,16 @@ const resourceFields = (raw: Record<string, unknown>): Record<string, unknown> =
   const images = imageUrls(raw.images);
   const music = nonEmptyString(raw.music) ? { url: raw.music.trim() }
     : raw.music && typeof raw.music === "object" ? raw.music : {};
+  const originalUrl = nonEmptyString(raw.url) ? raw.url.trim()
+    : nonEmptyString(raw.video) ? raw.video.trim() : null;
+  const weiboRelay = raw.media_delivery === "weibo-relay";
   return {
     ...raw,
-    url: nonEmptyString(raw.url) ? raw.url.trim()
-      : nonEmptyString(raw.video) ? raw.video.trim() : null,
+    ...(weiboRelay ? { original_url: originalUrl } : {}),
+    url: weiboRelay ? resolveWeiboPlaybackUrl(raw.playback_url) : originalUrl,
     images: images.length ? images : imageUrls(raw.imgurl),
     music,
-    video_backup: normalizeBackups(raw.video_backup),
+    video_backup: normalizeBackups(raw.video_backup, weiboRelay),
   };
 };
 const recordOf = (value: unknown): Record<string, unknown> =>

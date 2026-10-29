@@ -71,6 +71,52 @@ test('all nine platform choices use the six existing same-origin routes', async 
   }
 });
 
+test('Weibo delivery binds main and alternate signed URLs to the actual API origin', () => {
+  const source = 'https://weibo.com/tv/show/1034:1234567890123';
+  const direct = 'https://f.video.weibocdn.com/o0/original.mp4';
+  const path = '/api/media/weibo?ticket=payload.signature';
+  const backupPath = '/api/media/weibo?ticket=alternate.signature';
+  const raw = { url: direct, playback_url: path, media_delivery: 'weibo-relay', quality: '1080p', width: 1920, height: 1080,
+    video_backup: [{url: direct + '?backup=1', playback_url: backupPath, quality: '720p', width: 1280, height: 720}] };
+  const previousBase = config.apiConfig.baseUrl, previousLocation = globalThis.window.location;
+  try {
+    globalThis.window.location = {origin:'https://snap.example.test'};
+    config.apiConfig.baseUrl = '';
+    const sameOrigin = parser.normalizeResponse(good(raw), source);
+    assert.equal(sameOrigin.url, 'https://snap.example.test' + path);
+    assert.equal(sameOrigin.original_url, direct);
+    assert.equal(sameOrigin.width, 1920);
+    assert.equal(sameOrigin.video_backup[0].url, 'https://snap.example.test' + backupPath);
+    assert.equal(sameOrigin.video_backup[0].original_url, direct + '?backup=1');
+    assert.equal(sameOrigin.video_backup[0].width, 1280);
+    assert.equal(sameOrigin.video_backup[0].media_delivery, 'weibo-relay');
+    config.apiConfig.baseUrl = 'https://api.example.test';
+    const remoteApi = parser.normalizeResponse(good(raw), source);
+    assert.equal(remoteApi.url, 'https://api.example.test' + path);
+    assert.equal(remoteApi.video_backup[0].url, 'https://api.example.test' + backupPath);
+    assert.equal(remoteApi._sourceUrl, source);
+    globalThis.window.location = undefined;
+    assert.equal(parser.resolveWeiboPlaybackUrl(path, '', undefined), path, 'SSR keeps only the validated relative route');
+  } finally {
+    config.apiConfig.baseUrl = previousBase; globalThis.window.location = previousLocation;
+  }
+});
+
+test('invalid or missing Weibo delivery tickets never silently fall back to a blocked CDN', () => {
+  const raw = {url:media, media_delivery:'weibo-relay'};
+  for (const path of [undefined, '', '/api/media/weibo', '//evil.test/api/media/weibo?ticket=a.b',
+    'https://api.example.test/api/media/weibo?ticket=a.b', '/api/media/weibo?ticket=a.b&url=https://evil.test',
+    '/api/media/weibo?ticket=a.b&ticket=c.d', '/api/media/weibo?ticket=a.b#fragment',
+    '/api/media/../weibo?ticket=a.b', '/api/media/weibo?ticket=a%2Eb']) {
+    assert.throws(() => parser.normalizeResponse(good({...raw,playback_url:path})), /微博播放链接无效/);
+  }
+  assert.throws(() => parser.normalizeResponse(good({...raw,playback_url:'/api/media/weibo?ticket=a.b',video_backup:[{url:media}]})), /微博播放链接无效/);
+  assert.throws(() => parser.normalizeResponse(good({...raw,playback_url:'/api/media/weibo?ticket=a.b',video_backup:[media]})), /微博备用播放链接缺失/);
+  assert.throws(() => parser.resolveWeiboPlaybackUrl('/api/media/weibo?ticket=a.b','https://user:pass@api.example.test'), /配置异常/);
+  assert.throws(() => parser.resolveWeiboPlaybackUrl('/api/media/weibo?ticket=a.b','https://api.example.test/path'), /配置异常/);
+  assert.equal(parser.normalizeResponse(good({url:media,playback_url:'https://evil.test/'})).url,media,'unmarked platform response cannot replace its source');
+});
+
 test('HTTP 200 with PHP business error clears stale results and shows the server message', async () => {
   const { instance, store, toasts } = harness();
   store.resultData = parser.normalizeResponse(good());

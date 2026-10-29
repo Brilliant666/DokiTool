@@ -18,6 +18,10 @@ export interface VideoMetadata {
 }
 export interface VideoBackup extends VideoMetadata {
   url: string;
+  /** Original CDN URL; url may point to the signed same-origin delivery route. */
+  original_url?: string;
+  playback_url?: string;
+  media_delivery?: "weibo-relay";
   label?: string;
   quality?: string;
   format?: string;
@@ -94,6 +98,9 @@ export interface ParsedMedia extends VideoMetadata {
   avatar?: string;
   cover?: string;
   url?: string | null;
+  original_url?: string | null;
+  playback_url?: string;
+  media_delivery?: "weibo-relay";
   quality?: string;
   duration?: number | null;
   images: string[];

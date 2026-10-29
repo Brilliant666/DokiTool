@@ -8,7 +8,7 @@ import { ref, h, createSSRApp, createRenderer, nextTick, markRaw } from 'vue';
 import { renderToString } from '@vue/server-renderer';
 import JSZip from 'jszip';
 
-let vite, downloads, ResultSection, HeroSection, platforms;
+let vite, downloads, ResultSection, HeroSection, platforms, parser, antiReplay;
 let clicked, blobs, fetched;
 const originals = { fetch: globalThis.fetch, document: globalThis.document, window: globalThis.window, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
 before(async () => {
@@ -17,6 +17,8 @@ before(async () => {
   ResultSection = (await vite.ssrLoadModule('/src/components/ResultSection.vue')).default;
   HeroSection = (await vite.ssrLoadModule('/src/components/HeroSection.vue')).default;
   platforms = await vite.ssrLoadModule('/src/utils/platforms.ts');
+  parser = await vite.ssrLoadModule('/src/composables/useVideoParser.ts');
+  antiReplay = (await vite.ssrLoadModule('/src/utils/antiReplay.js')).antiReplayInstance;
   globalThis.window = { setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {} };
   globalThis.document = { body: { appendChild() {}, style: {} }, createElement() { return { click() { clicked.push({ href: this.href, filename: this.download }); }, remove() {} }; } };
   URL.createObjectURL = (blob) => { blobs.push(blob); return `blob:test-${blobs.length}`; };
@@ -29,6 +31,7 @@ beforeEach(() => {
 after(async () => {
   Object.assign(globalThis, { fetch: originals.fetch, document: originals.document, window: originals.window });
   URL.createObjectURL = originals.createObjectURL; URL.revokeObjectURL = originals.revokeObjectURL;
+  antiReplay?.destroy();
   await vite?.close();
 });
 
@@ -139,6 +142,7 @@ async function mountResultPlayer(data, locale = 'zh-CN') {
   app.mount(root); await nextTick();
   const find = (node, match) => match(node) ? node : node.children.map((child) => find(child, match)).find(Boolean);
   return { state, app, player: () => find(root, (node) => node.type === 'video'),
+    copyButton: () => find(root, (node) => node.type === 'button' && node.children.some(child => String(child.props.class).includes('fa-copy'))),
     alert: () => find(root, (node) => node.props.role === 'alert'),
     link: () => find(root, (node) => node.type === 'a'),
     text: (node) => node ? [node.text, ...node.children.map((child) => [child.text, ...child.children.map((part) => part.text)].join(''))].join('') : '',
@@ -194,6 +198,39 @@ test('download uses the same selected source as preview', async () => {
   await settled(store.downloads[0]);
   assert.equal(store.downloads[0].status, 'completed');
   assert.ok(fetched.length > 0); assert.ok(fetched.every((url) => url === currentVideoUrl.value));
+});
+
+test('Weibo preview, copy and download use the same selected signed source and describe its delivery', async () => {
+  const direct = 'https://f.video.weibocdn.com/o0/original.mp4';
+  const backup = '/api/media/weibo?ticket=alternate.signature';
+  const data = parser.normalizeResponse({code:200,data:{...base,url:direct,
+    playback_url:'/api/media/weibo?ticket=main.signature',media_delivery:'weibo-relay',
+    video_backup:[{url:direct+'?alternate=1',playback_url:backup,quality:'720p'}]}});
+  const {instance,currentVideoUrl,store} = harness(data);
+  currentVideoUrl.value = data.video_backup[0].url;
+  const render = (locale, resultData=data) => renderToString(createSSRApp({render:()=>h(ResultSection, {
+    resultData,currentVideoUrl:currentVideoUrl.value,locale,formatNumber:String,formatDuration:String})}));
+  const html = await render('zh-CN');
+  assert.ok(html.includes(backup));
+  assert.match(html,/当前通过本站服务播放与下载微博视频/);
+  assert.doesNotMatch(html,/当前使用源链接直连播放与下载/);
+  assert.match(await render('en'),/Weibo playback and downloads use this site/);
+  const view = await mountResultPlayer(data);
+  let copied;
+  try {
+    view.state.value = {...view.state.value,currentVideoUrl:currentVideoUrl.value,onCopyUrl:url=>{copied=url}};
+    await nextTick();
+    assert.equal(view.player().src,currentVideoUrl.value);
+    view.copyButton().props.onClick();
+    assert.equal(copied,currentVideoUrl.value);
+  } finally { view.app.unmount(); }
+  await instance.downloadMainVideo();
+  await settled(store.downloads[0]);
+  assert.equal(store.downloads[0].status,'completed');
+  assert.ok(fetched.length > 0 && fetched.every(url=>url===backup), 'media probe and complete download both use the selected signed route');
+  assert.equal((await blobs.at(-1).arrayBuffer()).byteLength,4);
+  const directHtml = await render('zh-CN',base);
+  assert.match(directHtml,/当前使用源链接直连播放与下载/);
 });
 
 test('a failed lazy episode never produces an empty ZIP; retry re-resolves it', async () => {

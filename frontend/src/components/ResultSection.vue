@@ -113,6 +113,13 @@ const selectedVideoUrl = computed(() => {
   )
 })
 const activeVideoUrl = computed(() => isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url || '')
+const sourceHint = computed(() => {
+  if (props.resultData?.media_delivery !== 'weibo-relay') return t(props.locale, 'sourceHint')
+  const active = activeVideoUrl.value
+  const sources = [props.resultData, ...(props.resultData?.video_backup || [])]
+  const viaService = sources.some(source => source.media_delivery === 'weibo-relay' && source.url === active)
+  return t(props.locale, viaService ? 'weiboSourceHint' : 'sourceHint')
+})
 const selectedCount = computed(() => props.selection?.selectedCount?.value ?? 0)
 const selectedTotal = computed(() => props.selection?.total?.value ?? props.resultData?.videos?.length ?? 0)
 
@@ -238,6 +245,7 @@ const content = {
   'zh-CN': {
     resultTitle: '解析结果',
     sourceHint: '当前使用源链接直连播放与下载',
+    weiboSourceHint: '当前通过本站服务播放与下载微博视频',
     playbackFailed: '该视频源无法在本站直接播放，可尝试其他画质或打开原作品。',
     openOriginal: '打开原作品',
     downloadSingle: '下载视频',
@@ -307,6 +315,7 @@ const content = {
   'en': {
     resultTitle: 'Result',
     sourceHint: 'Using direct source link',
+    weiboSourceHint: 'Weibo playback and downloads use this site’s media service',
     playbackFailed: 'This source cannot play directly here. Try another quality or open the original post.',
     openOriginal: 'Open original post',
     downloadSingle: 'Download Video',
@@ -482,7 +491,7 @@ const toggleSection = (key) => {
         <div class="rs-header-right">
           <span class="rs-header-hint">
             <i class="fas fa-link rs-header-hint-icon"></i>
-            <span class="rs-header-hint-text">{{ t(locale, 'sourceHint') }}</span>
+            <span class="rs-header-hint-text">{{ sourceHint }}</span>
           </span>
         </div>
       </div>

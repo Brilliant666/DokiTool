@@ -27,6 +27,37 @@ function snapPublicRoutes(): array
     ];
 }
 
+/** Only successful parser output can mint a short-lived, fixed-provider media ticket. */
+function snapPreparePublicMedia(string $platform, array $payload, int $status = 200, ?string $key = null): array
+{
+    if ($platform !== 'weibo' || $status !== 200 || (int)($payload['code'] ?? 0) !== 200 || !is_array($payload['data'] ?? null)) {
+        return [$status, $payload];
+    }
+    require_once __DIR__ . '/weibo-media.php';
+    $key ??= getenv('SNAP_MEDIA_SIGNING_KEY') ?: '';
+    if (snapWeiboMediaKey($key) === null) {
+        return [503, snapError(503, '微博播放服务尚未配置，请联系站点维护者')];
+    }
+    $data = $payload['data'];
+    $playback = snapWeiboMediaUrl((string)($data['url'] ?? ''), $key);
+    if ($playback === null) {
+        return [502, snapError(502, '微博暂未提供本站支持的视频源，请稍后重试')];
+    }
+    $data['playback_url'] = $playback;
+    $data['media_delivery'] = 'weibo-relay';
+    $backups = [];
+    foreach (is_array($data['video_backup'] ?? null) ? $data['video_backup'] : [] as $source) {
+        if (!is_array($source)) { continue; }
+        $ticket = snapWeiboMediaUrl((string)($source['url'] ?? ''), $key);
+        if ($ticket === null) { continue; }
+        $source['playback_url'] = $ticket;
+        $backups[] = $source;
+    }
+    $data['video_backup'] = $backups;
+    $payload['data'] = $data;
+    return [$status, $payload];
+}
+
 function snapError(int $code, string $message): array
 {
     return ['code' => $code, 'msg' => $message, 'data' => null];
@@ -226,6 +257,12 @@ function snapHandle(bool $internal = false): void
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
     if ($internal && !snapInternalRequestAllowed($_SERVER)) {
         snapSend(snapError(403, '禁止访问内部接口'), 403);
+        return;
+    }
+    // Streaming must stay outside the legacy JSON output-buffer adapter.
+    if (!$internal && $path === '/api/media/weibo') {
+        require_once __DIR__ . '/weibo-media.php';
+        snapHandleWeiboMedia();
         return;
     }
     $routes = $internal ? array_combine(

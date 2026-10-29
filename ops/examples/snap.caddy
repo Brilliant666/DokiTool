@@ -2,15 +2,28 @@
 # Never replace the fleet Caddyfile. Verify 9081 and socket paths before use.
 snap.example.com {
     @api path /api/short_videos /api/douyin /api/ksjx /api/bilibili /api/xhsjx /api/toutiao
+    @compress not path /api/media/weibo
     @source path *.php /backend/* /internal/* /ops/* /.git/* /.env*
     # Preserve ordering: Caddy otherwise sorts handle before route.
     route {
     # This file MUST exist. The supplied example fails closed until access is decided.
     import /etc/caddy/snap-access.caddy
-    encode zstd gzip
+    encode @compress zstd gzip
     header X-Content-Type-Options nosniff
     header Referrer-Policy no-referrer
 
+    # Exact signed-media endpoint: dedicated workers, no response buffering/compression.
+    handle /api/media/weibo {
+        root * /srv/dokitool/current/backend/public
+        rewrite * /index.php
+        php_fastcgi unix//run/php/snap-media.sock {
+            resolve_root_symlink
+            read_timeout 310s
+            write_timeout 310s
+            # Negative intervals disable upstream cancellation on client disconnect.
+            flush_interval 100ms
+        }
+    }
     handle @api {
         root * /srv/dokitool/current/backend/public
         rewrite * /index.php
