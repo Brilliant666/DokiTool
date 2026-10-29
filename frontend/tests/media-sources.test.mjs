@@ -125,14 +125,18 @@ async function mount(data, selection) {
     player: () => findAll(root, node => node.type === 'video')[0],
     alert: () => findAll(root, node => node.props.role === 'alert')[0],
     choices: () => buttons().filter(node => String(node.props.class).split(' ').includes('rs-backup-item')),
+    elements: className => findAll(root, node => String(node.props.class).split(' ').includes(className)),
+    textOf: text,
     copy: () => buttons().find(node => node.children.some(child => String(child.props.class).includes('fa-copy'))).props.onClick(),
     async showQualities() { buttons().find(node => text(node).includes('画质选项')).props.onClick(); await nextTick(); },
+    async showStats() { buttons().find(node => text(node).includes('数据')).props.onClick(); await nextTick(); },
+    async showInfo() { buttons().find(node => text(node).includes('详情')).props.onClick(); await nextTick(); },
     async fail(player = this.player()) { player.currentSrc = player.src; player.props.onError({ currentTarget: player }); await nextTick(); },
     text: () => text(root),
   };
 }
 
-test('quality UI renders one choice per format and only labels probed original files', async () => {
+test('quality UI groups formats and does not call a lower-bitrate original endpoint original quality', async () => {
   const view = await mount({ ...base, is_original: true, metadata_source: 'mp4', video_backup: [
     ...base.video_backup, { ...format, url: url('original-unverified'), bit_rate: 60000000, is_original: true },
     { quality: 'unknown', url: url('unknown') },
@@ -140,9 +144,101 @@ test('quality UI renders one choice per format and only labels probed original f
   try {
     await view.showQualities();
     assert.equal(view.choices().length, 3);
-    assert.equal(view.text().split('原始文件').length - 1, 1);
+    assert.equal(view.text().split('原始入口').length - 1, 1);
+    assert.doesNotMatch(view.text(), /原画/);
     assert.match(view.text(), /4 条线路/);
   } finally { view.app.unmount(); }
+});
+
+test('quality names and decimal file sizes distinguish original 4K from compressed 4K and follow the active route', async () => {
+  const low = { ...format, bit_rate: 1800000 };
+  const view = await mount({ ...base, bit_rate: 52619915, size: 60342212,
+    is_original: true, metadata_source: 'mp4', video_backup: [
+      { ...low, url: url('lower-a'), size: 2051199 },
+      { ...low, url: url('lower-b'), size: 2200000 },
+      { ...format, url: url('missing-size'), bit_rate: 900000, size_label: '999 MB' },
+    ] });
+  try {
+    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '原画');
+    assert.match(view.text(), /画质原画/);
+    await view.showQualities();
+    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p', '大小未知 · 2160p']);
+    assert.match(view.text(), /2 条线路/);
+    view.choices()[1].props.onClick(); await nextTick();
+    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '2160p');
+    await view.fail();
+    assert.equal(view.player().src, url('lower-b'));
+    assert.equal(view.textOf(view.elements('rs-backup-name')[1]), '2.2 MB · 2160p');
+    await view.showInfo();
+    assert.match(view.text(), /画质2160p/);
+  } finally { view.app.unmount(); }
+});
+
+test('a 720p original endpoint never outranks 4K and an unverified original label never claims original quality', async () => {
+  const view = await mount({ ...base, video_backup: [
+    { ...format, quality: 'original', width: 720, height: 1280, url: url('720-original'),
+      is_original: true, metadata_source: 'mp4', size: 12376415 },
+    { url: url('unverified'), quality: 'original', size: 5000000 },
+  ] });
+  try {
+    await view.showQualities();
+    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['大小未知 · 2160p', '12.4 MB · 720p', '5.0 MB · 画质未知']);
+    assert.match(view.text(), /原始入口/);
+    view.choices()[1].props.onClick(); await nextTick();
+    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '720p');
+    assert.doesNotMatch(view.text(), /原画/);
+  } finally { view.app.unmount(); }
+});
+
+test('invalid or absent byte counts stay unknown and sizes use decimal MB', () => {
+  for (const invalid of [undefined, null, '', ' ', true, {}, 0, -1, Infinity, 1.5, 'broken']) {
+    assert.equal(sources.formatMediaSize(invalid), '大小未知');
+  }
+  assert.equal(sources.formatMediaSize(1000000), '1.0 MB');
+  assert.equal(sources.formatMediaSize('60342212'), '60.3 MB');
+  assert.equal(sources.formatMediaSize(1), '<0.1 MB');
+  assert.equal(sources.formatMediaSize(undefined, 'en'), 'Size unknown');
+});
+
+test('Douyin zero plays show an explained unknown without overwriting real zeros or raw statistics', async () => {
+  const statistics = { play_count: 0, digg_count: 0, comment_count: 1031 };
+  const view = await mount({ ...base, extra: { statistics } });
+  try {
+    await view.showStats();
+    assert.deepEqual(view.elements('rs-stat-num').map(view.textOf), ['—', '0', '1031']);
+    assert.equal(view.elements('rs-stat-num')[0].props['aria-describedby'], 'rs-play-count-note');
+    assert.match(view.text(), /上游返回 0，实际播放量暂无法核实/);
+    assert.equal(statistics.play_count, 0);
+    view.state.value = { ...view.state.value, resultData: { ...base, extra: { statistics: { ...statistics, play_count: 120 } } } };
+    await nextTick();
+    assert.equal(view.textOf(view.elements('rs-stat-num')[0]), '120');
+    assert.equal(view.elements('rs-stat-note').length, 0);
+  } finally { view.app.unmount(); }
+});
+
+test('other platforms retain zero plays, missing plays are omitted, and explicit platform works without an input URL', async () => {
+  for (const data of [
+    { ...base, platform: 'bilibili' },
+    { ...base, _sourceUrl: 'https://www.weibo.com/123' },
+    { ...base, _sourceUrl: 'https://douyin.com.example.test/123' },
+  ]) {
+    const view = await mount({ ...data, extra: { statistics: { play_count: 0, digg_count: 0 } } });
+    try {
+      await view.showStats();
+      assert.deepEqual(view.elements('rs-stat-num').map(view.textOf), ['0', '0']);
+      assert.equal(view.elements('rs-stat-note').length, 0);
+    } finally { view.app.unmount(); }
+  }
+  const missing = await mount({ ...base, extra: { statistics: { digg_count: 0 } } });
+  try { await missing.showStats(); assert.deepEqual(missing.elements('rs-stat-label').map(missing.textOf), ['点赞']); }
+  finally { missing.app.unmount(); }
+  const explicit = await mount({ ...base, _sourceUrl: undefined, platform: '抖音', extra: { statistics: { play_count: 0 } } });
+  try {
+    await explicit.showStats();
+    assert.equal(explicit.textOf(explicit.elements('rs-stat-num')[0]), '—');
+    explicit.state.value = { ...explicit.state.value, locale: 'en' }; await nextTick();
+    assert.match(explicit.text(), /actual play count cannot currently be verified/);
+  } finally { explicit.app.unmount(); }
 });
 
 test('playback tries at most two same-quality alternatives, ignores old events, and manual/new-result choices reset attempts', async () => {

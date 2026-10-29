@@ -83,7 +83,8 @@ test('mixed live results retain the complete image gallery and honest metadata',
   const unknown = await render({ ...data, extra: {} });
   assert.doesNotMatch(unknown, /获赞 0/);
   const videoHtml = await render({ ...data, type: 'video' });
-  assert.match(videoHtml, /原画/); assert.match(videoHtml, /2160×3840/);
+  assert.match(videoHtml, /2160p/); assert.match(videoHtml, /2160×3840/);
+  assert.doesNotMatch(videoHtml, /原画/); // An unverified label must not imply original quality.
 });
 
 test('checkbox change toggles once and checkbox key events do not select the episode', async () => {

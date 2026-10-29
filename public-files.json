@@ -53,6 +53,7 @@
     "frontend/package-lock.json",
     "frontend/package.json",
     "frontend/postcss.config.js",
+    "frontend/public/dokitool-icon.svg",
     "frontend/public/dokitool.svg",
     "frontend/public/licenses/fontawesome-free-6.7.2.txt",
     "frontend/public/licenses/swiper-11.2.10.txt",

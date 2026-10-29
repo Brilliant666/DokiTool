@@ -76,3 +76,37 @@ export function getSameQualityUrls(media: MediaSourceInput | null | undefined, s
   if (!group) return [selectedUrl];
   return [selectedUrl, ...group.sources.map(source => source.url).filter(url => url !== selectedUrl)];
 }
+
+/** An original endpoint is provenance, not a promise of the highest quality. */
+export function isHighestOriginalSource(source: VideoBackup, candidates: VideoBackup[]): boolean {
+  if (source.is_original !== true || source.metadata_source !== 'mp4') return false;
+  const width = positive(source.width), height = positive(source.height);
+  const bitrate = positive(source.bit_rate ?? source.bitrate);
+  if (!width || !height || !bitrate) return false;
+  const pixels = width * height;
+  return !candidates.some(candidate => {
+    const otherPixels = (positive(candidate.width) ?? 0) * (positive(candidate.height) ?? 0);
+    return otherPixels > pixels || (otherPixels === pixels &&
+      (positive(candidate.bit_rate ?? candidate.bitrate) ?? 0) > bitrate);
+  });
+}
+
+export function mediaSourceQuality(source: VideoBackup | undefined, candidates: VideoBackup[], locale = 'zh-CN'): string {
+  const unknown = locale === 'en' ? 'Unknown quality' : '画质未知';
+  if (!source) return unknown;
+  if (isHighestOriginalSource(source, candidates)) return locale === 'en' ? 'Original' : '原画';
+  const quality = typeof source.quality === 'string' && source.quality.trim()
+    ? source.quality.trim() : typeof source.label === 'string' ? source.label.trim() : '';
+  // Never revive an unverified "original" label as an original-quality claim.
+  if (quality && !['original', 'unknown'].includes(quality.toLowerCase())) return quality;
+  const width = positive(source.width), height = positive(source.height);
+  return width && height ? `${Math.min(width, height)}p` : unknown;
+}
+
+/** Use this route's byte count, never a primary URL's size_label or an estimate. */
+export function formatMediaSize(size: unknown, locale = 'zh-CN'): string {
+  const bytes = (typeof size === 'number' || (typeof size === 'string' && size.trim())) ? Number(size) : NaN;
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) return locale === 'en' ? 'Size unknown' : '大小未知';
+  if (bytes < 100000) return '<0.1 MB';
+  return `${(bytes / 1000000).toFixed(1)} MB`;
+}

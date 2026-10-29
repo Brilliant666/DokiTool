@@ -6,7 +6,7 @@ defineProps({
 const content = {
   'zh-CN': {
     brand: 'DokiTool',
-    version: 'Based on BK-SV v4.1',
+    version: '由 Brilliant666 维护',
     desc: '简单易用的短视频解析工具，支持多平台无水印视频与图集解析，让分享更自由。',
     quickLinks: '快速链接',
     home: '首页',
@@ -15,17 +15,16 @@ const content = {
     help: '帮助与支持',
     faq: '常见问题',
     about: '关于我们',
-    contact: '联系我们',
-    service: '在线客服',
-    copyright: '© 2026 BugPk & JH-Ahua · 保留所有权利',
-    poweredBy: 'Powered by BugPk',
-    madeWith: '用心打造',
+    contact: '项目信息',
+    credits: '感谢 BugPk / JH-Ahua，DokiTool 基于以下开源项目改进：',
+    license: '开源许可与声明',
+    dependencies: '第三方许可',
     starUs: '给我们 Star',
     issues: '问题反馈'
   },
   'en': {
     brand: 'DokiTool',
-    version: 'Based on BK-SV v4.1',
+    version: 'Maintained by Brilliant666',
     desc: 'Simple & easy video parsing tool. Support multi-platform watermark-free video & album extraction.',
     quickLinks: 'Quick Links',
     home: 'Home',
@@ -34,11 +33,10 @@ const content = {
     help: 'Help & Support',
     faq: 'FAQ',
     about: 'About',
-    contact: 'Contact Us',
-    service: 'Online Support',
-    copyright: '© 2026 BugPk & JH-Ahua · All Rights Reserved',
-    poweredBy: 'Powered by BugPk',
-    madeWith: 'Made with care',
+    contact: 'Project',
+    credits: 'Thanks to BugPk / JH-Ahua. DokiTool builds on these open-source projects:',
+    license: 'Licenses & attribution',
+    dependencies: 'Third-party licenses',
     starUs: 'Star Us',
     issues: 'Report Issues'
   }
@@ -46,11 +44,8 @@ const content = {
 
 const getContent = (locale) => content[locale] || content['zh-CN']
 
-const socialLinks = [
-  { icon: 'fab fa-github', url: 'https://github.com/jiuhunwl/shortvideo-html', label: 'GitHub', color: '#333' },
-  { icon: 'fas fa-globe', url: 'https://www.jiuhunwl.cn', label: 'Blog', color: '#6366f1' },
-  { icon: 'fas fa-envelope', url: 'mailto:admin@bugpk.com', label: 'Email', color: '#ef4444' },
-]
+const repositoryUrl = 'https://github.com/Brilliant666/DokiTool'
+const socialLinks = [{ icon: 'fab fa-github', url: repositoryUrl, label: 'DokiTool on GitHub' }]
 
 const currentYear = new Date().getFullYear()
 </script>
@@ -64,8 +59,8 @@ const currentYear = new Date().getFullYear()
         <div class="footer-brand">
           <div class="flex items-center gap-3 mb-5">
             <div class="brand-icon">
-              <div class="w-12 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
-                <img src="/dokitool.svg" alt="DokiTool" class="w-8 h-8 object-contain" />
+              <div class="w-20 h-12 rounded-2xl flex items-center justify-center overflow-hidden">
+                <img src="/dokitool.svg" alt="DokiTool" class="w-20 h-8 object-contain" width="80" height="32" />
               </div>
               <div class="brand-icon-glow"></div>
             </div>
@@ -139,7 +134,7 @@ const currentYear = new Date().getFullYear()
               </a>
             </li>
             <li>
-              <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
+              <a :href="`${repositoryUrl}/issues`" target="_blank" rel="noopener noreferrer" class="footer-link">
                 <i class="fab fa-github text-xs mr-2"></i>
                 {{ getContent(locale).issues }}
               </a>
@@ -155,17 +150,17 @@ const currentYear = new Date().getFullYear()
           <ul class="space-y-3">
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-user text-xs text-indigo-400"></i>
-              <span>BugPk & Jh-Ahua</span>
+              <span>Brilliant666</span>
             </li>
             <li>
               <a :href="socialLinks[0].url" target="_blank" rel="noopener noreferrer" class="footer-link">
                 <i class="fab fa-github text-xs mr-2"></i>
-                <span class="truncate">jiuhunwl/shortvideo-html</span>
+                <span class="truncate">Brilliant666/DokiTool</span>
               </a>
             </li>
             <li class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
               <i class="fas fa-globe text-xs text-emerald-400"></i>
-              <span>api.bugpk.com</span>
+              <a href="https://snap.dokitool.com/" class="footer-link">snap.dokitool.com</a>
             </li>
           </ul>
 
@@ -183,17 +178,26 @@ const currentYear = new Date().getFullYear()
         </div>
       </div>
 
+      <div class="text-center text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-6">
+        <p>{{ getContent(locale).credits }}</p>
+        <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mt-1">
+          <a href="https://github.com/jiuhunwl/short_videos" target="_blank" rel="noopener noreferrer" class="footer-credit-link">short_videos</a>
+          <a href="https://github.com/jiuhunwl/shortvideo-html" target="_blank" rel="noopener noreferrer" class="footer-credit-link">shortvideo-html</a>
+          <a :href="`${repositoryUrl}/blob/main/NOTICE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).license }}</a>
+          <a href="/licenses/third-party-notices.txt" target="_blank" rel="noopener noreferrer" class="footer-credit-link">{{ getContent(locale).dependencies }}</a>
+        </div>
+      </div>
+
       <div class="footer-divider"></div>
 
       <div class="flex flex-col sm:flex-row items-center justify-center md:justify-between gap-4 pt-8 text-center footer-bottom">
         <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-sm text-slate-500 dark:text-slate-400">
-          <p>{{ getContent(locale).copyright }}</p>
+          <p>© {{ currentYear }} DokiTool contributors</p>
+          <p class="md:hidden">{{ getContent(locale).version }}</p>
         </div>
 
         <div class="flex items-center gap-4">
-          <p class="text-sm text-slate-500 dark:text-slate-400">
-            {{ getContent(locale).poweredBy }}
-          </p>
+          <a :href="`${repositoryUrl}/blob/main/LICENSE`" target="_blank" rel="noopener noreferrer" class="footer-credit-link text-sm">MIT License</a>
           <a
             :href="socialLinks[0].url"
             target="_blank"
@@ -240,6 +244,20 @@ const currentYear = new Date().getFullYear()
 .brand-icon {
   position: relative;
   display: inline-block;
+  flex-shrink: 0;
+}
+
+.footer-credit-link {
+  color: #6366f1;
+  text-underline-offset: 3px;
+}
+
+.footer-credit-link:hover {
+  text-decoration: underline;
+}
+
+.dark .footer-credit-link {
+  color: #a5b4fc;
 }
 
 .brand-icon-glow {

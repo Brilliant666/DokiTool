@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import VideoPlaylist from './VideoPlaylist.vue'
-import { getMediaSources, getSameQualityUrls, groupMediaSources } from '../utils/mediaSources'
+import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaSources, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
 
 const props = defineProps({
   resultData: Object,
@@ -39,7 +39,8 @@ const qualityOptions = computed(() => groupMediaSources(qualityMedia.value).map(
   active: group.sources.some(source => source.url === activeVideoUrl.value),
 })))
 const hasBackup = computed(() => qualityCandidates.value.length > 0)
-const qualityLabel = (quality) => quality === 'original' ? (props.locale === 'en' ? 'Original' : '原画') : quality
+const qualityLabel = (source) => mediaSourceQuality(source, qualityCandidates.value, props.locale)
+const isOriginalQuality = (source) => isHighestOriginalSource(source, qualityCandidates.value)
 const activeQuality = computed(() => qualityCandidates.value.find((item) => item.url === (isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url)))
 const isLive = computed(() => props.resultData?.type === 'live')
 const hasLivePhotos = computed(() => (props.resultData?.live_photo?.length || 0) > 0)
@@ -244,8 +245,8 @@ const infoCards = computed(() => {
   else typeText = data.images && data.images.length > 0 ? (content[props.locale]?.images || '图片集') : (content[props.locale]?.video || '视频')
   cards.push({ label: content[props.locale]?.type || '类型', value: typeText, icon: 'fa-cube' })
   const source = activeQuality.value || data
-  if (type !== 'live' && source.quality) {
-    cards.push({ label: content[props.locale]?.quality || '画质', value: qualityLabel(source.quality), icon: 'fa-expand' })
+  if (type !== 'live' && (source.quality || source.width || source.height)) {
+    cards.push({ label: content[props.locale]?.quality || '画质', value: qualityLabel(source), icon: 'fa-expand' })
   }
   if (source.width && source.height) cards.push({ label: t(props.locale, 'resolution'), value: `${source.width}×${source.height}`, icon: 'fa-arrows-alt' })
   if (source.codec) cards.push({ label: t(props.locale, 'codec'), value: source.codec, icon: 'fa-microchip' })
@@ -256,6 +257,17 @@ const infoCards = computed(() => {
   return cards
 })
 
+const isDouyinResult = computed(() => {
+  const platform = String(props.resultData?.platform || '').trim().toLowerCase()
+  if (platform) return ['douyin', '抖音'].includes(platform)
+  try {
+    const host = new URL(props.resultData?._sourceUrl || '').hostname.toLowerCase()
+    return ['douyin.com', 'iesdouyin.com'].some(domain => host === domain || host.endsWith(`.${domain}`))
+  } catch { return false }
+})
+const playCountNote = computed(() => props.locale === 'en'
+  ? 'The source returned 0; the actual play count cannot currently be verified.'
+  : '上游返回 0，实际播放量暂无法核实。')
 const stats = computed(() => {
   if (!props.resultData?.extra?.statistics) return []
   const s = props.resultData.extra.statistics
@@ -267,6 +279,7 @@ const stats = computed(() => {
     { key: 'share_count', label: content[props.locale]?.statShare || '分享', value: s.share_count, icon: 'fa-share-alt' },
   ]
   return statMap.filter(item => item.value !== undefined && item.value !== null && item.value !== '' && Number.isFinite(Number(item.value)) && Number(item.value) >= 0)
+    .map(item => ({ ...item, unverified: item.key === 'play_count' && isDouyinResult.value && Number(item.value) === 0 }))
 })
 
 const hashtags = computed(() => {
@@ -565,7 +578,7 @@ const toggleSection = (key) => {
                 <i class="fas fa-play-circle rs-card-icon"></i>
                 <span>{{ t(locale, 'videoSource') }}</span>
               </div>
-              <span v-if="resultData.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality?.quality || resultData.quality) }}</span>
+              <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
             </div>
             <div class="rs-video-stage">
               <video
@@ -682,7 +695,7 @@ const toggleSection = (key) => {
               <i class="fas fa-play-circle rs-card-icon"></i>
               <span>{{ t(locale, 'videoSource') }}</span>
             </div>
-            <span v-if="resultData.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality?.quality || resultData.quality) }}</span>
+            <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
           </div>
           <div class="rs-video-stage">
             <video
@@ -947,10 +960,11 @@ const toggleSection = (key) => {
                 <div class="rs-stat-icon">
                   <i :class="['fas', stat.icon]"></i>
                 </div>
-                <div class="rs-stat-num">{{ formatNumber(stat.value) }}</div>
+                <div class="rs-stat-num" :aria-describedby="stat.unverified ? 'rs-play-count-note' : undefined">{{ stat.unverified ? '—' : formatNumber(stat.value) }}</div>
                 <div class="rs-stat-label">{{ stat.label }}</div>
               </div>
             </div>
+            <p v-if="stats.some(stat => stat.unverified)" id="rs-play-count-note" class="rs-stat-note">{{ playCountNote }}</p>
           </div>
 
           <!-- ── TAB: 画质选项 ── -->
@@ -961,18 +975,18 @@ const toggleSection = (key) => {
               </div>
               <div class="rs-backup-list">
                 <button
-                  v-for="(backup, idx) in qualityOptions"
+                  v-for="backup in qualityOptions"
                   :key="backup.groupKey"
                   @click="selectQuality(backup)"
                   class="rs-backup-item"
                   :class="{ 'rs-backup-item--cur': backup.active }"
                 >
                   <div class="rs-backup-hd">
-                    <span class="rs-backup-name">{{ qualityLabel(backup.quality || backup.label) || (backup.width && backup.height ? `${backup.width}×${backup.height}` : `${t(locale, 'videoSource')} ${idx + 1}`) }}</span>
+                    <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityLabel(backup) }}</span>
                     <i v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></i>
                   </div>
                   <div class="rs-backup-meta">
-                    <span v-if="backup.is_original && backup.metadata_source === 'mp4'" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original file' : '原始文件' }}</span>
+                    <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
                     <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
                     <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
                       <i class="fas fa-wave-square"></i>{{ formatBitrate(backup.bit_rate) }}
@@ -2116,6 +2130,12 @@ const toggleSection = (key) => {
   font-weight: 700;
   color: var(--c-fg);
   font-variant-numeric: tabular-nums;
+}
+.rs-stat-note {
+  margin-top: .6rem;
+  font-size: .6875rem;
+  line-height: 1.5;
+  color: var(--c-fg-3);
 }
 .rs-stat-label {
   font-size: .625rem;
