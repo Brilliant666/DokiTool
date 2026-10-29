@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { createServer, transformWithEsbuild } from 'vite';
 import { parse, compileScript } from '@vue/compiler-sfc';
-import { ref, h, createSSRApp, createRenderer, nextTick } from 'vue';
+import { ref, h, createSSRApp, createRenderer, nextTick, markRaw } from 'vue';
 import { renderToString } from '@vue/server-renderer';
 import JSZip from 'jszip';
 
@@ -17,7 +17,7 @@ before(async () => {
   ResultSection = (await vite.ssrLoadModule('/src/components/ResultSection.vue')).default;
   HeroSection = (await vite.ssrLoadModule('/src/components/HeroSection.vue')).default;
   platforms = await vite.ssrLoadModule('/src/utils/platforms.ts');
-  globalThis.window = { setTimeout, clearTimeout };
+  globalThis.window = { setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {} };
   globalThis.document = { body: { appendChild() {}, style: {} }, createElement() { return { click() { clicked.push({ href: this.href, filename: this.download }); }, remove() {} }; } };
   URL.createObjectURL = (blob) => { blobs.push(blob); return `blob:test-${blobs.length}`; };
   URL.revokeObjectURL = () => {};
@@ -104,6 +104,87 @@ test('checkbox change toggles once and checkbox key events do not select the epi
   const card = label.parent;
   card.props.onKeydown({ key: ' ', target: input, currentTarget: card, preventDefault() {} });
   assert.equal(selections, 0);
+});
+
+async function mountResultPlayer(data, locale = 'zh-CN') {
+  const source = await readFile(new URL('../src/components/ResultSection.vue', import.meta.url), 'utf8');
+  const { descriptor } = parse(source);
+  const script = compileScript(descriptor, { id: 'media-error-test', inlineTemplate: true,
+    templateOptions: { compilerOptions: { hoistStatic: false } } });
+  const code = await transformWithEsbuild(script.content, 'ResultSection.js', { loader: 'js', format: 'cjs' });
+  const module = { exports: {} }, require = createRequire(import.meta.url);
+  new Function('require', 'module', 'exports', code.code)(
+    (id) => id === './VideoPlaylist.vue' ? { __esModule: true, default: { render: () => null } } : require(id),
+    module, module.exports,
+  );
+  const element = (type, text = '') => markRaw({ type, text, props: {}, children: [], parent: null, style: {}, removeAttribute() {} });
+  const portal = element('portal');
+  const detach = (node) => {
+    if (node.parent) node.parent.children = node.parent.children.filter((item) => item !== node);
+    node.parent = null;
+  };
+  const renderer = createRenderer({
+    querySelector: () => portal,
+    createElement: element, createText: (text) => element('#text', text), createComment: (text) => element('#comment', text),
+    setText(node, text) { node.text = text; }, setElementText(node, text) { node.text = text; node.children = []; },
+    parentNode: (node) => node.parent,
+    nextSibling: (node) => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
+    insert(node, parent, anchor) { detach(node); node.parent = parent; const index = parent.children.indexOf(anchor); parent.children.splice(index < 0 ? parent.children.length : index, 0, node); },
+    remove: detach,
+    patchProp(node, key, _, value) { node.props[key] = value; if (key === 'src') node.src = value; },
+  });
+  const state = ref({ resultData: data, locale, formatNumber: String, formatDuration: String });
+  const root = element('root');
+  const app = renderer.createApp({ render: () => h(module.exports.default, state.value) });
+  app.mount(root); await nextTick();
+  const find = (node, match) => match(node) ? node : node.children.map((child) => find(child, match)).find(Boolean);
+  return { state, app, player: () => find(root, (node) => node.type === 'video'),
+    alert: () => find(root, (node) => node.props.role === 'alert'),
+    link: () => find(root, (node) => node.type === 'a'),
+    text: (node) => node ? [node.text, ...node.children.map((child) => [child.text, ...child.children.map((part) => part.text)].join(''))].join('') : '',
+  };
+}
+
+test('media failure appears only after an active player error and recovers when switching or loading', async () => {
+  const original = 'https://weibo.com/tv/show/1034:123';
+  const view = await mountResultPlayer({ ...base, type: 'video', _sourceUrl: original });
+  try {
+    assert.equal(view.alert(), undefined);
+    const firstPlayer = view.player(); firstPlayer.currentSrc = firstPlayer.src;
+    firstPlayer.props.onError({ currentTarget: firstPlayer }); await nextTick();
+    assert.match(view.text(view.alert()), /该视频源无法在本站直接播放/);
+    assert.equal(view.link().props.href, original);
+    assert.equal(view.link().props.rel, 'noopener noreferrer');
+    view.state.value = { ...view.state.value, currentVideoUrl: 'https://media.test/backup.mp4' }; await nextTick();
+    assert.equal(view.alert(), undefined);
+    const secondPlayer = view.player(); assert.notEqual(firstPlayer, secondPlayer); secondPlayer.currentSrc = secondPlayer.src;
+    firstPlayer.props.onError({ currentTarget: firstPlayer }); await nextTick();
+    assert.equal(view.alert(), undefined, 'a removed player cannot show an error for its replacement');
+    secondPlayer.props.onError({ currentTarget: secondPlayer }); await nextTick();
+    assert.ok(view.alert());
+    firstPlayer.props.onLoadeddata({ currentTarget: firstPlayer }); await nextTick();
+    assert.ok(view.alert(), 'a stale success cannot hide the current failure');
+    secondPlayer.props.onLoadeddata({ currentTarget: secondPlayer }); await nextTick();
+    assert.equal(view.alert(), undefined);
+  } finally { view.app.unmount(); }
+});
+
+test('multi-P media errors use stable work identity and never expose unsafe original links', async () => {
+  const view = await mountResultPlayer({ ...base, type: 'video', _sourceUrl: 'https://www.bilibili.com/video/BV1234567890?p=2',
+    videos: [{ index: 2, url: base.url }, { index: 3, url: 'https://media.test/p3.mp4' }] }, 'en');
+  try {
+    let player = view.player(); player.currentSrc = player.src;
+    player.props.onError({ currentTarget: player }); await nextTick();
+    assert.match(view.text(view.alert()), /This source cannot play directly here/);
+    assert.equal(view.link().props.href, 'https://www.bilibili.com/video/BV1234567890?p=2');
+    for (const unsafe of ['javascript:alert(1)', 'https://user:secret@example.com/', 'not a URL']) {
+      view.state.value = { ...view.state.value, resultData: { ...view.state.value.resultData, _sourceUrl: unsafe } }; await nextTick();
+      assert.equal(view.alert(), undefined, 'new work clears the old error even when its media URL matches');
+      player = view.player(); player.currentSrc = player.src;
+      player.props.onError({ currentTarget: player }); await nextTick();
+      assert.ok(view.alert()); assert.equal(view.link(), undefined);
+    }
+  } finally { view.app.unmount(); }
 });
 
 test('download uses the same selected source as preview', async () => {

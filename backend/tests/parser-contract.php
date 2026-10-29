@@ -66,6 +66,19 @@ case 'bilibili':
     expect('explicit short-link p wins', bilibiliRedirectTarget('https://b23.tv/example?p=2', 'https://www.bilibili.com/video/BV1234567890?p=3') === 'https://www.bilibili.com/video/BV1234567890?p=2');
     ob_start(); $missing = extractBilibiliBVId(false); $noise = ob_get_clean();
     expect('failed HTML ID extraction never pollutes JSON', $missing === null && $noise === '');
+    expect('HTTP 412 becomes actionable access restriction', bilibiliFailure(bilibiliDecodeResponse('{"code":-412}', 412, 0), '视频信息')['code'] === 503);
+    expect('HTTP 429 HTML is not a missing work', bilibiliFailure(bilibiliDecodeResponse('<html>blocked</html>', 429, 0), '视频信息')['code'] === 503);
+    expect('transport failure is not a missing work', bilibiliFailure(bilibiliDecodeResponse(false, 0, 28), '视频信息')['code'] === 502);
+    expect('invalid JSON is an upstream response error', bilibiliFailure(bilibiliDecodeResponse('oops', 200, 0), '视频信息')['code'] === 502);
+    expect('deleted work remains an explicit 404', bilibiliFailure(bilibiliDecodeResponse('{"code":-404}', 200, 0), '视频信息')['code'] === 404);
+    expect('success-shaped non-200 response is not accepted', bilibiliDecodeResponse('{"code":0}', 412, 0)['code'] !== 0);
+    $metadata = buildBilibiliResponse(['pages' => [['page' => 1, 'cid' => 1, 'dimension' => ['width' => 2160, 'height' => 3840]]],
+        'pubdate' => 1780405739, 'stat' => ['view' => 0, 'like' => 12, 'aid' => 123]], 'BV1234567890', 1,
+        fn () => ['code' => 0, 'data' => ['quality' => 64, 'durl' => [['url' => 'https://source.example/720.mp4']]]])['data'];
+    expect('returned quality describes playback not original dimensions', $metadata['quality'] === '720p' && !isset($metadata['width']) && $metadata['extra']['source_dimension']['width'] === 2160);
+    expect('publish date and genuine zero stats retained', $metadata['create_time'] === 1780405739 && $metadata['extra']['statistics'] === ['play_count' => 0, 'digg_count' => 12]);
+    expect('unknown quality is not labeled original', bilibiliQuality([]) === 'unknown');
+    expect('exhausted parse budget does not start another request', bilibiliApiRequest('https://must-not-be-requested.invalid/', microtime(true) - 1)['_transport_errno'] === CURLE_OPERATION_TIMEDOUT);
     break;
 case 'zuiyou':
     require __DIR__ . '/../api/zuiyou.php';

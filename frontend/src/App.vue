@@ -145,10 +145,13 @@ const formatNumber = (num) => {
 }
 
 const formatDuration = (seconds) => {
-  if (!seconds) return '0:00'
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
+  const duration = Number(seconds)
+  if (!Number.isFinite(duration) || duration <= 0) return '0:00'
+  const tenths = Math.round(duration * 10)
+  const m = Math.floor(tenths / 600)
+  const s = Math.floor((tenths % 600) / 10)
+  const fraction = tenths % 10
+  return `${m}:${String(s).padStart(2, '0')}${fraction ? `.${fraction}` : ''}`
 }
 
 const toggleTheme = () => {

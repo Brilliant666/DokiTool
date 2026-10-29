@@ -28,6 +28,12 @@ for suite in ['douyin', 'pipigx', 'bilibili', 'zuiyou', 'weibo']:
     checked = run([str(backend / 'tests/parser-contract.php'), suite])
     payload = json.loads(checked.stdout)
     parser_checks.append(dict(payload, successful=checked.returncode == 0))
+for suite in ['weibo', 'toutiao', 'pipixia']:
+    checked = run([str(backend / f'tests/{suite}-contract.php')])
+    payload = json.loads(checked.stdout)
+    parser_checks.append(dict(payload, successful=checked.returncode == 0
+                              and payload.get('total', 0) > 0
+                              and payload.get('passed') == payload.get('total')))
 lint = []
 # Retained optional upstream files are ignored, not part of this product's API.
 inventory = json.loads((backend.parent / 'public-files.json').read_text(encoding='utf-8'))

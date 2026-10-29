@@ -79,7 +79,10 @@
 !/backend/tests/http-smoke.php
 !/backend/tests/mock-internal.php
 !/backend/tests/parser-contract.php
+!/backend/tests/pipixia-contract.php
+!/backend/tests/toutiao-contract.php
 !/backend/tests/validate.py
+!/backend/tests/weibo-contract.php
 /frontend/public/*
 !/frontend/public/dokitool.svg
 !/frontend/public/licenses/

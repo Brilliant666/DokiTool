@@ -120,6 +120,24 @@ const selectedTotal = computed(() => props.selection?.total?.value ?? props.resu
 const currentVideoItem = computed(
   () => props.selection?.currentVideo?.value ?? visibleVideos.value?.[currentIndex.value] ?? null
 )
+const playbackFailed = ref(false)
+const playerKey = computed(() => JSON.stringify([props.resultData?._sourceUrl || '', activeVideoUrl.value]))
+const originalPageUrl = computed(() => {
+  const source = props.resultData?._sourceUrl
+  if (typeof source !== 'string') return ''
+  try {
+    const parsed = new URL(source)
+    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''
+  } catch { return '' }
+})
+watch(playerKey, () => { playbackFailed.value = false }, { flush: 'sync' })
+const updatePlaybackStatus = (event, failed) => {
+  const player = event.currentTarget
+  // A removed player's queued event must not change the newly selected source.
+  if (player !== videoEl.value || !activeVideoUrl.value) return
+  if ((player.currentSrc || player.src) !== activeVideoUrl.value) return
+  playbackFailed.value = failed
+}
 // 该 P/合集分集正在懒解析中（B 站）
 const isResolving = computed(() => !!currentVideoItem.value?._resolving)
 // 当前分集既没有直链也没有顶层 url（等待解析 / 解析失败）
@@ -220,6 +238,8 @@ const content = {
   'zh-CN': {
     resultTitle: '解析结果',
     sourceHint: '当前使用源链接直连播放与下载',
+    playbackFailed: '该视频源无法在本站直接播放，可尝试其他画质或打开原作品。',
+    openOriginal: '打开原作品',
     downloadSingle: '下载视频',
     downloadLive: '下载实况',
     downloadAll: '下载全部',
@@ -287,6 +307,8 @@ const content = {
   'en': {
     resultTitle: 'Result',
     sourceHint: 'Using direct source link',
+    playbackFailed: 'This source cannot play directly here. Try another quality or open the original post.',
+    openOriginal: 'Open original post',
     downloadSingle: 'Download Video',
     downloadLive: 'Download Live',
     downloadAll: 'Download All',
@@ -472,6 +494,10 @@ const toggleSection = (key) => {
     <div class="rs-title-row">
       <h2 class="rs-title">{{ resultData.title || t(locale, 'unknownTitle') }}</h2>
     </div>
+    <div v-if="playbackFailed" class="rs-playback-error" role="alert">
+      <span>{{ t(locale, 'playbackFailed') }}</span>
+      <a v-if="originalPageUrl" :href="originalPageUrl" target="_blank" rel="noopener noreferrer">{{ t(locale, 'openOriginal') }}</a>
+    </div>
 
     <!-- ════════════════════════════════════════════════════════
          MAIN GRID: media-left + info-right (desktop)
@@ -494,12 +520,15 @@ const toggleSection = (key) => {
             </div>
             <div class="rs-video-stage">
               <video
+                :key="playerKey"
                 ref="videoEl"
                 :src="selectedVideoUrl || undefined"
                 controls
                 referrerpolicy="no-referrer"
                 class="rs-video"
                 :poster="resultData.cover || undefined"
+                @error="updatePlaybackStatus($event, true)"
+                @loadeddata="updatePlaybackStatus($event, false)"
               >
                 <track kind="captions" :src="undefined" />
               </video>
@@ -607,12 +636,15 @@ const toggleSection = (key) => {
           </div>
           <div class="rs-video-stage">
             <video
+              :key="playerKey"
               ref="videoEl"
               :src="currentVideoUrl || resultData.url"
               controls
               referrerpolicy="no-referrer"
               class="rs-video"
               :poster="resultData.cover || undefined"
+              @error="updatePlaybackStatus($event, true)"
+              @loadeddata="updatePlaybackStatus($event, false)"
             >
               <track kind="captions" :src="undefined" />
             </video>
@@ -1282,6 +1314,21 @@ const toggleSection = (key) => {
    TITLE ROW
    ═══════════════════════════════════════════════════════════════ */
 .rs-title-row { margin-bottom: 1.25rem; }
+.rs-playback-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+  margin-bottom: 1.25rem;
+  padding: .875rem 1rem;
+  border: 1px solid #fbbf24;
+  border-radius: .875rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: .875rem;
+  line-height: 1.6;
+}
+.rs-playback-error a { color: inherit; font-weight: 600; text-decoration: underline; }
+:global(.dark) .rs-playback-error { background: #3b2d14; color: #fde68a; border-color: #a16207; }
 .rs-title {
   margin: 0;
   font-size: 1.125rem;
