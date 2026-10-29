@@ -1,0 +1,49 @@
+name: Watch upstream updates
+
+on:
+  schedule:
+    # 01:00 UTC = 09:00 Asia/Shanghai (no daylight saving time).
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      verify_notification:
+        description: 'Send an explicit notification-channel test (not an upstream update)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dokitool-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'Brilliant666/DokiTool' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the maintained repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Check public inventory
+        run: python3 -B scripts/check-public-files.py --staged
+
+      - name: Test notification and state handling offline
+        run: python3 -B -m unittest discover -s scripts/tests -v
+
+      - name: Detect upstream changes and notify through an Issue
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFY_NOTIFICATION: ${{ inputs.verify_notification && 'true' || 'false' }}
+        run: |
+          args=()
+          if [ "$VERIFY_NOTIFICATION" = "true" ]; then
+            args+=(--verify-notification)
+          fi
+          python3 -B scripts/check-upstream-updates.py "${args[@]}"

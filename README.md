@@ -11,6 +11,8 @@ DokiTool 是整合 Vue 3 前端与 PHP 解析接口的短视频工具，支持�
 
 原作者的许可证与版权声明保留在 [backend/LICENSE](backend/LICENSE)、[frontend/LICENSE](frontend/LICENSE) 和源码注释中；新增适配代码采用 [MIT](LICENSE)。依赖许可见 [NOTICE](NOTICE) 及 [frontend/public/licenses](frontend/public/licenses)。详细来源记录在 [UPSTREAM.json](UPSTREAM.json)，人工引入更新的方法见 [上游维护说明](docs/UPSTREAM-MAINTENANCE.md)。
 
+[上游每日更新检查](docs/UPSTREAM-WATCH.md) 由 GitHub Actions 在北京时间 09:00 运行，新变化通过仓库 Issue 通知；不自动合并或部署。
+
 ## 目录
 
 - `frontend/`：Vue 3、TypeScript、Vite 界面与契约测试。

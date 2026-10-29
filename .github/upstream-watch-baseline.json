@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "observed_at": "2026-10-29T02:29:08Z",
+  "repositories": {
+    "jiuhunwl/short_videos": {
+      "default_branch": "main",
+      "head_sha": "72e5b6e72ab21e695d510e1c4c45213ce9a25f0f",
+      "releases": [],
+      "tags": []
+    },
+    "jiuhunwl/shortvideo-html": {
+      "default_branch": "main",
+      "head_sha": "cd16011960fe90b53dd87f57714d1a096e986e5a",
+      "releases": [
+        {
+          "id": 411487084,
+          "tag_name": "v4.1.0",
+          "published_at": "2026-10-13T09:08:05Z",
+          "updated_at": "2026-10-13T09:08:07Z",
+          "prerelease": false,
+          "html_url": "https://github.com/jiuhunwl/shortvideo-html/releases/tag/v4.1.0"
+        }
+      ],
+      "tags": [
+        {
+          "ref": "refs/tags/v4.1.0",
+          "object_sha": "2dc62c87f406bfb68758c5f90df6fc9b551dbf2f",
+          "type": "tag"
+        }
+      ]
+    }
+  }
+}

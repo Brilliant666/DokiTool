@@ -2,6 +2,7 @@
 # Unlisted local files are retained but excluded from Git.
 /*
 !/.gitattributes
+!/.github/
 !/.gitignore
 !/LICENSE
 !/NOTICE
@@ -13,6 +14,9 @@
 !/ops/
 !/public-files.json
 !/scripts/
+/.github/*
+!/.github/upstream-watch-baseline.json
+!/.github/workflows/
 /backend/*
 !/backend/LICENSE
 !/backend/api/
@@ -25,6 +29,7 @@
 !/docs/API.md
 !/docs/DEPLOYMENT.md
 !/docs/UPSTREAM-MAINTENANCE.md
+!/docs/UPSTREAM-WATCH.md
 /frontend/*
 !/frontend/.env.example
 !/frontend/LICENSE
@@ -42,7 +47,11 @@
 !/ops/examples/
 /scripts/*
 !/scripts/check-public-files.py
+!/scripts/check-upstream-updates.py
+!/scripts/tests/
 !/scripts/third-party-notices.py
+/.github/workflows/*
+!/.github/workflows/upstream-watch.yml
 /backend/api/*
 !/backend/api/bilibili/
 !/backend/api/douyin/
@@ -91,6 +100,8 @@
 !/ops/examples/snap-access.caddy.example
 !/ops/examples/snap-fpm.conf
 !/ops/examples/snap.caddy
+/scripts/tests/*
+!/scripts/tests/test_upstream_updates.py
 /backend/api/bilibili/*
 !/backend/api/bilibili/bilibili.php
 /backend/api/douyin/*

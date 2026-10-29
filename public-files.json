@@ -3,6 +3,8 @@
   "description": "Explicit public source inventory. Unlisted local material is preserved and ignored.",
   "files": [
     ".gitattributes",
+    ".github/upstream-watch-baseline.json",
+    ".github/workflows/upstream-watch.yml",
     ".gitignore",
     "LICENSE",
     "NOTICE",
@@ -36,6 +38,7 @@
     "docs/API.md",
     "docs/DEPLOYMENT.md",
     "docs/UPSTREAM-MAINTENANCE.md",
+    "docs/UPSTREAM-WATCH.md",
     "frontend/.env.example",
     "frontend/LICENSE",
     "frontend/index.html",
@@ -93,6 +96,8 @@
     "ops/examples/snap.caddy",
     "public-files.json",
     "scripts/check-public-files.py",
+    "scripts/check-upstream-updates.py",
+    "scripts/tests/test_upstream_updates.py",
     "scripts/third-party-notices.py"
   ]
 }
