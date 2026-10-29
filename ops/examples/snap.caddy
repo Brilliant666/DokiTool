@@ -38,6 +38,13 @@ snap.example.com {
     handle @source {
         respond 404
     }
+    # Only the download Worker handles /downloads/file/* while active.
+    # Missing scripts or expired handoff URLs must never become the SPA homepage.
+    handle /downloads/* {
+        root * /srv/dokitool/current/frontend/dist
+        header Cache-Control "no-cache"
+        file_server
+    }
     # Exact SEO files must never fall through to the SPA, including when missing.
     handle /robots.txt {
         root * /srv/dokitool/current/frontend/dist

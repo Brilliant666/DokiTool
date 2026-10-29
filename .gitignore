@@ -28,6 +28,7 @@
 /docs/*
 !/docs/API.md
 !/docs/DEPLOYMENT.md
+!/docs/DOWNLOADS.md
 !/docs/UPSTREAM-MAINTENANCE.md
 !/docs/UPSTREAM-WATCH.md
 /frontend/*
@@ -96,6 +97,7 @@
 /frontend/public/*
 !/frontend/public/dokitool-icon.svg
 !/frontend/public/dokitool.svg
+!/frontend/public/downloads/
 !/frontend/public/licenses/
 !/frontend/public/robots.txt
 !/frontend/public/sitemap.xml
@@ -110,6 +112,7 @@
 !/frontend/src/assets/
 !/frontend/src/components/
 !/frontend/src/composables/
+!/frontend/src/downloads/
 !/frontend/src/main.ts
 !/frontend/src/router/
 !/frontend/src/services/
@@ -119,6 +122,9 @@
 !/frontend/src/types/
 !/frontend/src/utils/
 /frontend/tests/*
+!/frontend/tests/download-manager.test.mjs
+!/frontend/tests/download-transports.test.mjs
+!/frontend/tests/download-worker.test.mjs
 !/frontend/tests/icons.test.mjs
 !/frontend/tests/media-sources.test.mjs
 !/frontend/tests/parser-contract.test.mjs
@@ -145,6 +151,8 @@
 !/backend/api/xiaohongshu/xhsjx.php
 /frontend/brand-originals/platforms/*
 !/frontend/brand-originals/platforms/zuiyou.png
+/frontend/public/downloads/*
+!/frontend/public/downloads/worker.js
 /frontend/public/licenses/*
 !/frontend/public/licenses/fontawesome-free-6.7.2.txt
 !/frontend/public/licenses/swiper-11.2.10.txt
@@ -179,6 +187,13 @@
 !/frontend/src/composables/useRequestTimeout.js
 !/frontend/src/composables/useVideoParser.ts
 !/frontend/src/composables/useVideoSelection.ts
+/frontend/src/downloads/*
+!/frontend/src/downloads/blob.ts
+!/frontend/src/downloads/file.ts
+!/frontend/src/downloads/manager.ts
+!/frontend/src/downloads/native.ts
+!/frontend/src/downloads/streaming.ts
+!/frontend/src/downloads/types.ts
 /frontend/src/router/*
 !/frontend/src/router/index.js
 /frontend/src/services/*

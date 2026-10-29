@@ -20,10 +20,10 @@ const formatElapsed = (elapsed) => {
 const getStatusColor = (status) => ({ downloading: 'text-blue-500', completed: 'text-green-500', failed: 'text-red-500', cancelled: 'text-gray-500', 'handed-off': 'text-blue-500' }[status] || 'text-slate-500')
 const getStatusIcon = (status) => ({ downloading: 'fa-spinner fa-spin', completed: 'fa-check-circle', failed: 'fa-exclamation-circle', cancelled: 'fa-times-circle', 'handed-off': 'fa-external-link-alt' }[status] || 'fa-hourglass-half')
 const visibleDownloads = computed(() => props.downloads.filter(item => item.status !== 'completed' || item.show))
-const activeCount = computed(() => props.downloads.filter(item => ['preparing', 'downloading'].includes(item.status)).length)
+const activeCount = computed(() => props.downloads.filter(item => ['queued', 'preparing', 'downloading'].includes(item.status)).length)
 const allSettled = computed(() => props.downloads.length > 0 && activeCount.value === 0)
 const allCompleted = computed(() => props.downloads.length > 0 && props.downloads.every(item => item.status === 'completed'))
-const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失败'], ['cancelled', '取消'], ['handed-off', '浏览器处理']]
+const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失败'], ['cancelled', '取消'], ['interrupted', '连接中断'], ['handed-off', '浏览器处理']]
   .map(([status, label]) => [props.downloads.filter(item => item.status === status).length, label])
   .filter(([count]) => count > 0).map(([count, label]) => `${label} ${count}`).join(' · '))
 </script>
@@ -55,7 +55,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
 
             <div class="flex items-center gap-1.5">
               <button
-                v-if="item.status === 'failed' || item.status === 'cancelled' || item.status === 'handed-off'"
+                v-if="['failed', 'cancelled', 'handed-off', 'interrupted'].includes(item.status) && (!item.deliveryId || item.url)"
                 @click="emit('retry', item.id)"
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-blue-500 transition-colors"
                 title="重试"
@@ -64,7 +64,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
               </button>
 
               <button
-                v-if="item.status === 'downloading' || item.status === 'preparing'"
+                v-if="['queued', 'preparing', 'downloading'].includes(item.status)"
                 @click="emit('cancel', item.id)"
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-red-500 transition-colors"
                 title="取消"
@@ -73,7 +73,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
               </button>
 
               <button
-                v-if="item.status === 'completed' || item.status === 'cancelled' || item.status === 'failed' || item.status === 'handed-off'"
+                v-if="['completed', 'cancelled', 'failed', 'handed-off', 'interrupted'].includes(item.status)"
                 @click="emit('clear-completed', item.id)"
                 class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
                 title="清除"
@@ -114,13 +114,13 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
           <div v-if="item.status === 'handed-off'" class="text-xs text-slate-500 mt-2">
             请在浏览器下载列表确认进度和结果，本站无法追踪。
           </div>
-          <button v-if="item.nativeAvailable && ['downloading', 'failed'].includes(item.status)"
+          <button v-if="item.nativeAvailable && ['downloading', 'failed', 'cancelled', 'interrupted'].includes(item.status)"
             @click="emit('handoff', item.id)"
             class="mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
             title="打开源文件，由浏览器处理；本站不再显示该次下载速度">
-            {{ item.status === 'downloading' ? '改用浏览器下载' : '交给浏览器下载' }}
+            {{ item.transport === 'browser_streaming' && ['downloading', 'interrupted'].includes(item.status) ? '停止传输后打开源链接' : '打开源链接' }}
           </button>
-          <div v-if="item.status === 'failed' && item.error" class="text-xs text-red-500 mt-1">
+          <div v-if="['failed', 'interrupted'].includes(item.status) && item.error" class="text-xs text-red-500 mt-1">
             {{ item.error }}
           </div>
         </div>

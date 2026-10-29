@@ -1,3 +1,5 @@
+import type { DeliveryStatus, DownloadTransport } from "../downloads/types";
+
 export interface AuthorInfo {
   id?: string;
   name?: string;
@@ -133,9 +135,10 @@ export interface ToastMessage {
   message: string;
   type: ToastType;
 }
-export type DownloadStatus =
-  "preparing" | "downloading" | "completed" | "cancelled" | "failed" | "handed-off";
+export type DownloadStatus = DeliveryStatus;
 export interface DownloadTask {
+  deliveryId?: string;
+  transport?: DownloadTransport;
   id: number;
   filename: string;
   url?: string;
@@ -150,7 +153,7 @@ export interface DownloadTask {
   /** Bytes actually received, including failed routes when retried. */
   transferred?: number;
   progressKind?: "bytes" | "segments" | "archive";
-  /** Only complete files may be handed to the browser; never HLS/segment URLs. */
+  /** Manual source-link capability, not verified native attachment eligibility. */
   nativeAvailable?: boolean;
   error: string | null;
   statusText: string;
