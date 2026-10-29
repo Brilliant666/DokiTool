@@ -5,6 +5,7 @@ import { platformTabs } from '../utils/platforms'
 
 const props = defineProps({
   inputUrl: String,
+  isReady: { type: Boolean, default: true },
   isLoading: Boolean,
   isError: Boolean,
   parseError: String,
@@ -73,28 +74,26 @@ const selectPlatform = (key) => {
 </script>
 
 <template>
-    <section class="relative text-center py-4 sm:py-6 lg:py-8 overflow-hidden">
-    <div class="absolute inset-0 -z-10">
-      <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] bg-gradient-radial from-indigo-500/10 via-purple-500/5 to-transparent rounded-full blur-3xl"></div>
-    </div>
+  <section class="hero-section relative text-center overflow-hidden">
+    <div class="hero-glow absolute inset-0 -z-10" aria-hidden="true"></div>
 
     <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 relative">
-      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-xs sm:text-sm font-medium mb-6 sm:mb-8 ux-animate-fade-in">
+      <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-xs sm:text-sm font-medium mb-6 sm:mb-8">
         <AppIcon class="fas fa-wand-magic-sparkles"></AppIcon>
         <span>{{ getContent(locale).badge }}</span>
       </div>
 
-      <h2 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold mb-6 sm:mb-8 tracking-tight ux-animate-slide-up" style="animation-delay: 100ms">
+      <h2 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold mb-6 sm:mb-8 tracking-tight">
         <span class="ux-gradient-text">{{ getContent(locale).title1 }}</span>
         <span class="text-slate-700 dark:text-slate-200">{{ getContent(locale).title2 }}</span>
         <span class="ux-gradient-text">{{ getContent(locale).title3 }}</span>
       </h2>
 
-      <p class="text-base sm:text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed ux-animate-slide-up" style="animation-delay: 200ms">
+      <p class="text-base sm:text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mb-8 sm:mb-10 leading-relaxed">
         {{ getContent(locale).desc }}
       </p>
 
-      <div class="flex flex-wrap justify-center gap-4 sm:gap-6 mb-10 sm:mb-12 ux-animate-slide-up" style="animation-delay: 300ms">
+      <div class="flex flex-wrap justify-center gap-4 sm:gap-6 mb-10 sm:mb-12">
         <div
           v-for="(feature, index) in getContent(locale).features"
           :key="index"
@@ -105,12 +104,13 @@ const selectPlatform = (key) => {
         </div>
       </div>
 
-      <div class="max-w-xl sm:max-w-2xl mx-auto ux-animate-slide-up" style="animation-delay: 400ms">
+      <div class="max-w-xl sm:max-w-2xl mx-auto">
         <div class="flex flex-wrap justify-center gap-2 mb-4">
           <button
             v-for="tab in getPlatformTabs(locale)"
             :key="tab.key"
             @click="selectPlatform(tab.key)"
+            :disabled="!isReady || isLoading"
             :aria-pressed="currentPlatform === tab.key"
             :class="[
               'px-3 py-1.5 rounded-lg font-medium text-xs transition-all flex items-center gap-1.5',
@@ -128,17 +128,21 @@ const selectPlatform = (key) => {
           <div class="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-2xl blur opacity-20 group-hover:opacity-40 transition-opacity duration-300 -z-10"></div>
           <div class="relative flex items-center bg-white dark:bg-slate-800 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 shadow-xl shadow-slate-200/50 dark:shadow-slate-950/50 overflow-hidden transition-all duration-300 focus-within:border-indigo-500 dark:focus-within:border-indigo-400 focus-within:ring-4 focus-within:ring-indigo-500/10">
             <input
+              data-initial-url
+              data-allow-mismatch="attribute"
               :value="inputUrl"
               @input="emit('update:inputUrl', $event.target.value)"
-              @keyup.enter="emit('parse')"
+              @keyup.enter="isReady && emit('parse')"
               type="text"
               :placeholder="getContent(locale).placeholder"
+              :aria-label="getContent(locale).inputLabel"
               class="flex-1 px-4 sm:px-6 py-4 sm:py-5 bg-transparent text-slate-800 dark:text-slate-100 text-sm sm:text-base placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none"
               :disabled="isLoading"
             />
             <button
               @click="emit('parse')"
-              :disabled="isLoading"
+              :disabled="!isReady || isLoading"
+              :aria-label="!isReady ? (locale === 'en' ? 'Preparing…' : '正在准备…') : getContent(locale).button"
               class="m-1 sm:m-1.5 px-5 sm:px-7 py-2.5 sm:py-3 rounded-xl font-semibold flex items-center gap-2 transition-all duration-300 whitespace-nowrap enterprise-btn"
               :class="isLoading
                 ? 'bg-slate-400 dark:bg-slate-500 cursor-not-allowed opacity-60'
@@ -147,8 +151,8 @@ const selectPlatform = (key) => {
                   : 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-600 dark:hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/25 dark:shadow-indigo-900/40 border border-indigo-500/40 dark:border-indigo-500/30 parse-state-btn'"
             >
               <AppIcon :class="['fas text-xs sm:text-sm transition-transform duration-300', isLoading ? 'fa-spinner fa-spin' : isError ? 'fa-exclamation-circle' : 'fa-bolt']"></AppIcon>
-              <span class="hidden sm:inline text-sm">{{ isLoading ? getContent(locale).loading : isError ? getContent(locale).error : getContent(locale).button }}</span>
-              <span class="sm:hidden text-sm">{{ isLoading ? '...' : isError ? '!' : '>' }}</span>
+              <span class="hidden sm:inline text-sm">{{ !isReady ? (locale === 'en' ? 'Preparing…' : '正在准备…') : isLoading ? getContent(locale).loading : isError ? getContent(locale).error : getContent(locale).button }}</span>
+              <span class="sm:hidden text-sm">{{ !isReady || isLoading ? '...' : isError ? '!' : '>' }}</span>
             </button>
           </div>
         </div>
@@ -181,8 +185,16 @@ const selectPlatform = (key) => {
 </template>
 
 <style scoped>
-.bg-gradient-radial {
-  background: radial-gradient(circle, var(--tw-gradient-stops));
+.hero-section {
+  isolation: isolate;
+  padding: 1rem 0;
+}
+.hero-glow {
+  pointer-events: none;
+  background: radial-gradient(ellipse closest-side at 50% 45%, rgba(99, 102, 241, .10), rgba(139, 92, 246, .04) 65%, transparent);
+}
+@media (min-width: 640px) {
+  .hero-section { padding-top: 1.5rem; }
 }
 
 .ux-gradient-text {
@@ -190,46 +202,6 @@ const selectPlatform = (key) => {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-}
-
-.ux-animate-fade-in {
-  animation: uxFadeIn 0.5s ease forwards;
-  opacity: 0;
-}
-
-.ux-animate-slide-up {
-  animation: uxSlideUp 0.6s ease forwards;
-  opacity: 0;
-}
-
-@keyframes uxFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes uxSlideUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ux-animate-fade-in,
-  .ux-animate-slide-up {
-    animation: none;
-    opacity: 1;
-  }
 }
 
 .enterprise-btn {

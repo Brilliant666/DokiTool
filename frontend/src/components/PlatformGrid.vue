@@ -64,7 +64,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 
 <template>
   <section id="Supported_Platforms" class="mb-20 overflow-hidden platform-section scroll-mt-16 sm:scroll-mt-18">
-    <div class="flex items-center justify-center py-6 platform-header">
+    <div class="flex items-center justify-center py-4 platform-header">
       <h3 class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium">
         <AppIcon class="fas fa-table-cells-large text-xs"></AppIcon>
         {{ getContent(locale).badge }}
@@ -148,7 +148,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 
 .marquee-container {
   overflow: hidden;
-  padding: 1.5rem 0;
+  padding: 1rem 0;
   position: relative;
 }
 

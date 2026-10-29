@@ -1,6 +1,6 @@
 <script setup>
 import AppIcon from './AppIcon.vue'
-import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import VideoPlaylist from './VideoPlaylist.vue'
 import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaQualities, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
 
@@ -44,7 +44,6 @@ const qualityOptions = computed(() => groupMediaQualities(qualityMedia.value).ma
   return {
     ...selected,
     groupKey: group.key,
-    otherVariants: variants.filter(variant => variant.variantKey !== selected.variantKey),
   }
 }))
 const hasBackup = computed(() => qualityCandidates.value.length > 0)
@@ -81,6 +80,21 @@ const liveViewMode = ref('video')
 const showCopyToast = ref(false)
 const copyToastText = ref('')
 const videoEl = ref(null)
+const infoColumnEl = ref(null)
+const authorCardEl = ref(null)
+const infoCardEl = ref(null)
+const tabsEl = ref(null)
+const detailsPanelEl = ref(null)
+const desktopLayout = ref(false)
+const detailsCardHeight = ref(0)
+const detailsColumnHeight = ref(0)
+const canAlignDetails = computed(() => desktopLayout.value && hasVideo.value &&
+  !isMulti.value && !hasImages.value && !hasLivePhotos.value && !isLiveType.value)
+const hasDetailsBaseline = computed(() => canAlignDetails.value && detailsColumnHeight.value > 0)
+const detailsLayoutStyle = computed(() => hasDetailsBaseline.value ? {
+  '--rs-details-card-height': `${detailsCardHeight.value}px`,
+  '--rs-details-column-height': `${detailsColumnHeight.value}px`,
+} : undefined)
 
 // A different result can contain fewer images/live items. Reset its carousel and
 // close the previous modal so no stale index points outside the new result.
@@ -525,6 +539,83 @@ const tabs = computed(() => {
   return items
 })
 
+// Measure the details panel, never the selected tab. While another desktop tab
+// is open the same panel stays laid out, but hidden/inert and out of normal flow.
+// Its natural height therefore follows translations, wrapping and source details
+// without letting a long quality/tag list resize the player.
+let layoutDisposed = false
+let layoutFrame = 0
+let layoutQueued = false
+let layoutObserver
+let observedLayoutNodes = []
+let desktopQuery
+const clearDetailsBaseline = () => {
+  detailsCardHeight.value = 0
+  detailsColumnHeight.value = 0
+}
+const measureDetailsLayout = () => {
+  if (layoutDisposed) return
+  const nodes = canAlignDetails.value
+    ? [detailsPanelEl.value, tabsEl.value, authorCardEl.value, infoCardEl.value].filter(Boolean)
+    : []
+  if (layoutObserver && (nodes.length !== observedLayoutNodes.length || nodes.some((node, index) => node !== observedLayoutNodes[index]))) {
+    layoutObserver.disconnect()
+    nodes.forEach(node => layoutObserver.observe(node))
+    observedLayoutNodes = nodes
+  }
+  if (!canAlignDetails.value) { clearDetailsBaseline(); return }
+  const details = detailsPanelEl.value?.getBoundingClientRect?.()
+  const navigation = tabsEl.value?.getBoundingClientRect?.()
+  if (!details?.width || !details.height || !navigation?.height || !window.getComputedStyle) return
+  const cardStyle = window.getComputedStyle(infoCardEl.value)
+  const columnStyle = window.getComputedStyle(infoColumnEl.value)
+  const pixels = value => Number.parseFloat(value) || 0
+  const cardHeight = Math.ceil(details.height + navigation.height +
+    pixels(cardStyle.borderTopWidth) + pixels(cardStyle.borderBottomWidth))
+  const authorHeight = authorCardEl.value?.getBoundingClientRect?.().height || 0
+  const columnHeight = Math.ceil(cardHeight + authorHeight + (authorHeight ? pixels(columnStyle.rowGap) : 0))
+  if (detailsCardHeight.value !== cardHeight) detailsCardHeight.value = cardHeight
+  if (detailsColumnHeight.value !== columnHeight) detailsColumnHeight.value = columnHeight
+}
+const queueDetailsMeasurement = () => {
+  if (layoutDisposed || layoutQueued) return
+  layoutQueued = true
+  nextTick(() => {
+    if (layoutDisposed) { layoutQueued = false; return }
+    const measure = () => {
+      layoutFrame = 0
+      layoutQueued = false
+      measureDetailsLayout()
+    }
+    if (window.requestAnimationFrame) layoutFrame = window.requestAnimationFrame(measure)
+    else measure()
+  })
+}
+const updateLayoutViewport = () => {
+  desktopLayout.value = desktopQuery?.matches ?? window.innerWidth >= 1040
+  if (!desktopLayout.value) clearDetailsBaseline()
+  queueDetailsMeasurement()
+}
+watch([canAlignDetails, mediaIdentity], () => {
+  clearDetailsBaseline()
+  queueDetailsMeasurement()
+}, { flush: 'post' })
+watch([infoCards, author, tabs, activeTab, () => props.locale], queueDetailsMeasurement, { flush: 'post' })
+onMounted(() => {
+  desktopQuery = window.matchMedia?.('(min-width: 1040px)')
+  if (window.ResizeObserver) layoutObserver = new window.ResizeObserver(queueDetailsMeasurement)
+  desktopQuery?.addEventListener?.('change', updateLayoutViewport)
+  window.addEventListener('resize', updateLayoutViewport, { passive: true })
+  updateLayoutViewport()
+})
+onUnmounted(() => {
+  layoutDisposed = true
+  if (layoutFrame) window.cancelAnimationFrame?.(layoutFrame)
+  layoutObserver?.disconnect()
+  desktopQuery?.removeEventListener?.('change', updateLayoutViewport)
+  window.removeEventListener('resize', updateLayoutViewport)
+})
+
 const toggleSection = (key) => {
   collapsedSections.value[key] = !collapsedSections.value[key]
 }
@@ -573,7 +664,8 @@ const toggleSection = (key) => {
          ════════════════════════════════════════════════════════ -->
     <div
       class="rs-main"
-      :class="{ 'rs-main--align-details': activeTab === 'info' && hasVideo && !isMulti && !hasImages && !hasLivePhotos }"
+      :class="{ 'rs-main--align-details': hasDetailsBaseline }"
+      :style="detailsLayoutStyle"
     >
       <!-- ============================================================
            LEFT COLUMN: Media Content
@@ -889,9 +981,9 @@ const toggleSection = (key) => {
       <!-- ============================================================
            RIGHT COLUMN: Info Panel
            ============================================================ -->
-      <div class="rs-info-col">
+      <div ref="infoColumnEl" class="rs-info-col">
         <!-- ── AUTHOR CARD ── -->
-        <div v-if="author && (author.name || author.avatar)" class="rs-card rs-card--author">
+        <div v-if="author && (author.name || author.avatar)" ref="authorCardEl" class="rs-card rs-card--author">
           <div class="rs-author-inner">
             <div class="rs-author-avatar-wrap">
               <img
@@ -928,8 +1020,8 @@ const toggleSection = (key) => {
         </div>
 
         <!-- ── TAB NAVIGATION ── -->
-        <div class="rs-card rs-card--info">
-          <nav class="rs-tabs">
+        <div ref="infoCardEl" class="rs-card rs-card--info">
+          <nav ref="tabsEl" class="rs-tabs">
             <button
               v-for="tab in tabs"
               :key="tab.key"
@@ -943,7 +1035,14 @@ const toggleSection = (key) => {
           </nav>
 
           <!-- ── TAB: 详情 ── -->
-          <div v-if="activeTab === 'info'" class="rs-tab-panel">
+          <div
+            v-if="activeTab === 'info' || canAlignDetails"
+            ref="detailsPanelEl"
+            class="rs-tab-panel rs-tab-panel--details"
+            :class="{ 'rs-tab-panel--measure': activeTab !== 'info' }"
+            :aria-hidden="activeTab !== 'info' ? 'true' : undefined"
+            :inert="activeTab !== 'info' ? '' : undefined"
+          >
             <div class="rs-info-list">
               <div 
                 v-for="(card, idx) in infoCards" 
@@ -995,7 +1094,9 @@ const toggleSection = (key) => {
                   >
                     <div class="rs-backup-hd">
                       <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityOptionLabel(backup) }}</span>
-                      <AppIcon v-if="backup.active" class="fas fa-circle-check rs-backup-cur"></AppIcon>
+                      <span v-if="backup.active" class="rs-backup-playing">
+                        <AppIcon class="fas fa-circle-check rs-backup-cur"></AppIcon> {{ t(locale, 'currentPlaying') }}
+                      </span>
                     </div>
                     <div class="rs-backup-meta">
                       <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
@@ -1010,29 +1111,7 @@ const toggleSection = (key) => {
                         <AppIcon class="fas fa-microchip"></AppIcon>{{ backup.codec }}
                       </span>
                     </div>
-                    <div v-if="backup.active" class="rs-backup-playing">
-                      <AppIcon class="fas fa-headphones"></AppIcon> {{ t(locale, 'currentPlaying') }}
-                    </div>
                   </button>
-                  <details v-if="backup.otherVariants.length" class="rs-backup-variants">
-                    <summary :aria-label="`${qualityOptionLabel(backup)} · ${locale === 'en' ? 'Other versions' : '其他版本'} (${backup.otherVariants.length})`">
-                      {{ locale === 'en' ? 'Other versions' : '其他版本' }} ({{ backup.otherVariants.length }})
-                    </summary>
-                    <div class="rs-variant-list">
-                      <button
-                        v-for="variant in backup.otherVariants"
-                        :key="variant.variantKey"
-                        class="rs-variant-item"
-                        @click="selectQuality(variant)"
-                      >
-                        <span class="rs-variant-name">{{ formatMediaSize(variant.size, locale) }} · {{ variant.codec || (locale === 'en' ? 'Unknown encoding' : '编码未知') }}</span>
-                        <span class="rs-backup-meta">
-                          <span v-if="variant.bit_rate" class="rs-backup-meta-tag">{{ formatBitrate(variant.bit_rate) }}</span>
-                          <span v-if="variant.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${variant.sources.length} routes` : `${variant.sources.length} 条线路` }}</span>
-                        </span>
-                      </button>
-                    </div>
-                  </details>
                 </div>
               </div>
             </template>
@@ -1641,10 +1720,12 @@ const toggleSection = (key) => {
   .rs-video { max-height: 400px; }
 }
 
-/* Match the details column without stretching the player for other tabs or media lists. */
+/* The natural details height anchors both columns; tabs only change the right
+   card's content height, with overflow inside that card. Mobile remains in flow. */
 @media (min-width: 1040px) {
   .rs-main--align-details .rs-media-col {
-    align-self: stretch;
+    height: var(--rs-details-column-height);
+    min-height: 0;
   }
   .rs-main--align-details .rs-card--video {
     display: flex;
@@ -1660,6 +1741,24 @@ const toggleSection = (key) => {
     inset: 0;
     height: 100%;
     max-height: none;
+  }
+  .rs-main--align-details .rs-info-col {
+    max-height: var(--rs-details-column-height);
+  }
+  .rs-main--align-details .rs-card--author,
+  .rs-main--align-details .rs-tabs {
+    flex-shrink: 0;
+  }
+  .rs-main--align-details .rs-card--info {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: var(--rs-details-card-height);
+  }
+  .rs-main--align-details .rs-tab-panel:not(.rs-tab-panel--details) {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
   }
 }
 
@@ -2093,6 +2192,16 @@ const toggleSection = (key) => {
   padding: 1rem 1.125rem;
   animation: rsFadeIn .2s ease;
 }
+.rs-tab-panel--details {
+  flex-shrink: 0;
+}
+.rs-tab-panel--measure {
+  position: absolute;
+  inset: 0 0 auto;
+  visibility: hidden;
+  pointer-events: none;
+  animation: none;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    INFO LIST
@@ -2209,8 +2318,8 @@ const toggleSection = (key) => {
 .rs-backup-item {
   display: flex;
   flex-direction: column;
-  gap: .35rem;
-  padding: .7rem .75rem;
+  gap: .25rem;
+  padding: .5rem .75rem;
   background: var(--c-bg-2);
   border: 1px solid var(--c-border-2);
   border-radius: var(--r-md);
@@ -2233,6 +2342,7 @@ const toggleSection = (key) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: .5rem;
 }
 .rs-backup-name {
   font-size: .8125rem;
@@ -2259,46 +2369,14 @@ const toggleSection = (key) => {
   border-radius: .25rem;
 }
 .rs-backup-playing {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: .625rem;
   font-weight: 600;
   color: var(--c-accent);
-  text-align: center;
-}
-.rs-backup-variants {
-  padding: .25rem .5rem 0;
-  color: var(--c-fg-3);
-  font-size: .6875rem;
-}
-.rs-backup-variants > summary {
-  width: fit-content;
-  cursor: pointer;
-  padding: .2rem .25rem;
-}
-.rs-variant-list {
-  display: flex;
-  flex-direction: column;
-  gap: .3rem;
-  margin-top: .3rem;
-}
-.rs-variant-item {
-  display: flex;
-  flex-direction: column;
-  gap: .25rem;
-  width: 100%;
-  padding: .5rem .6rem;
-  border: 1px solid var(--c-border-2);
-  border-radius: var(--r-sm);
-  background: var(--c-bg-2);
-  text-align: left;
-  cursor: pointer;
-}
-.rs-variant-name {
-  color: var(--c-fg-2);
-  font-weight: 500;
-}
-.rs-variant-item:hover,
-.rs-variant-item:focus-visible {
-  border-color: var(--c-accent);
 }
 
 /* empty */
