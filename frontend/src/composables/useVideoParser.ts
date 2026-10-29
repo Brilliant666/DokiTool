@@ -7,6 +7,8 @@ import type {
   MediaCollection,
   MediaVideo,
   ParsedMedia,
+  VideoBackup,
+  VideoMetadata,
 } from "../types/media";
 import type { useVideoStore } from "../stores/video";
 
@@ -55,6 +57,84 @@ const messageOf = (value: unknown) => {
 };
 const nonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && Boolean(value.trim());
+const positiveNumber = (value: unknown): number | undefined => {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+};
+const videoMetadata = (raw: Record<string, unknown>): VideoMetadata => {
+  const result: VideoMetadata = {};
+  const width = positiveNumber(raw.width), height = positiveNumber(raw.height);
+  const bitrate = positiveNumber(raw.bit_rate) ?? positiveNumber(raw.bitrate);
+  if (width !== undefined) result.width = width;
+  if (height !== undefined) result.height = height;
+  if (bitrate !== undefined) result.bit_rate = result.bitrate = bitrate;
+  if (nonEmptyString(raw.codec)) result.codec = raw.codec.trim();
+  return result;
+};
+/** The PHP snapshots use both strings and objects for alternate video sources. */
+export const normalizeBackups = (raw: unknown): VideoBackup[] =>
+  (Array.isArray(raw) ? raw : []).flatMap((item) => {
+    if (nonEmptyString(item)) return [{ url: item.trim() }];
+    if (!item || typeof item !== "object" || !nonEmptyString(item.url)) return [];
+    return [{ ...item, ...videoMetadata(item), url: item.url.trim() }];
+  });
+const imageUrls = (raw: unknown): string[] =>
+  (Array.isArray(raw) ? raw : nonEmptyString(raw) ? [raw] : []).flatMap((item) => {
+    const url = typeof item === "string" ? item : item?.url;
+    return nonEmptyString(url) ? [url.trim()] : [];
+  });
+/** Normalize legacy fields before checking whether a response has usable media. */
+const resourceFields = (raw: Record<string, unknown>): Record<string, unknown> => {
+  const images = imageUrls(raw.images);
+  const music = nonEmptyString(raw.music) ? { url: raw.music.trim() }
+    : raw.music && typeof raw.music === "object" ? raw.music : {};
+  return {
+    ...raw,
+    url: nonEmptyString(raw.url) ? raw.url.trim()
+      : nonEmptyString(raw.video) ? raw.video.trim() : null,
+    images: images.length ? images : imageUrls(raw.imgurl),
+    music,
+    video_backup: normalizeBackups(raw.video_backup),
+  };
+};
+const recordOf = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+const normalizeTags = (value: unknown) => (Array.isArray(value) ? value : []).flatMap((item) => {
+  if (nonEmptyString(item)) return [{ name: item.trim() }];
+  const raw = recordOf(item);
+  const name = raw.name ?? raw.title ?? raw.hashtag_name;
+  return nonEmptyString(name) ? [{ ...raw, name: name.trim() }] : [];
+});
+const normalizeExtra = (data: Record<string, unknown>): Record<string, unknown> => {
+  const extra = { ...recordOf(data.extra) };
+  const createTime = positiveNumber(extra.create_time) ?? positiveNumber(data.create_time) ?? positiveNumber(data.time);
+  if (createTime !== undefined) extra.create_time = createTime;
+  const publishTime = extra.publish_time ?? data.publish_time;
+  if (nonEmptyString(publishTime)) extra.publish_time = publishTime;
+  const source = { ...recordOf(data.statistics), ...recordOf(extra.statistics) };
+  const statistics: Record<string, number> = {};
+  const aliases: Record<string, unknown[]> = {
+    play_count: [source.play_count, extra.play_count, data.play_count],
+    digg_count: [source.digg_count, source.like_count, extra.digg_count, extra.like_count, data.digg_count, data.like_count, data.like],
+    comment_count: [source.comment_count, extra.comment_count, data.comment_count],
+    collect_count: [source.collect_count, source.favorite_count, extra.collect_count, data.collect_count],
+    share_count: [source.share_count, source.reposts_count, extra.share_count, extra.reposts_count, data.share_count],
+  };
+  for (const [key, candidates] of Object.entries(aliases)) {
+    const candidate = candidates.find((value) =>
+      (typeof value === "number" || nonEmptyString(value)) && Number.isFinite(Number(value)) && Number(value) >= 0);
+    if (candidate !== undefined) statistics[key] = Number(candidate);
+  }
+  if (Object.keys(statistics).length) extra.statistics = statistics;
+  else delete extra.statistics;
+  for (const key of ["hashtags", "video_tags"] as const) {
+    const tags = normalizeTags(extra[key] ?? data[key]);
+    if (tags.length) extra[key] = tags;
+    else delete extra[key];
+  }
+  return extra;
+};
 const hasResources = (data: Record<string, unknown>) =>
   nonEmptyString(data.url) ||
   (Array.isArray(data.images) && data.images.some(nonEmptyString)) ||
@@ -186,6 +266,7 @@ const toEpisodeVideo = (
     durationFormat: String(raw.durationFormat ?? raw.duration_format ?? ""),
     cover: String(raw.cover ?? raw.pic ?? raw.image ?? ""),
     quality: String(raw.quality ?? ""),
+    video_backup: normalizeBackups(raw.video_backup),
     _cid: cid || undefined,
     _bvid: bvid || undefined,
     _page: page > 1 ? page : undefined,
@@ -294,7 +375,8 @@ export function toMediaVideo(
 ): MediaVideo {
   if (typeof raw === "string")
     return { index: index + 1, title: `P${index + 1}`, url: raw };
-  const url =
+  const error = nonEmptyString(raw.error) ? raw.error : undefined;
+  const url = error ? "" :
     (typeof raw.url === "string" && raw.url.trim() ? raw.url : "") ||
     (typeof raw.video_url === "string" && raw.video_url) ||
     (typeof raw.url2 === "string" && raw.url2) ||
@@ -302,6 +384,8 @@ export function toMediaVideo(
     "";
   const pIndex = Math.floor(Number(raw.index));
   return {
+    ...raw,
+    ...videoMetadata(raw),
     index: Number.isFinite(pIndex) && pIndex > 0 ? pIndex : index + 1,
     title: String(raw.title ?? raw.part ?? raw.name ?? `P${index + 1}`),
     url,
@@ -309,13 +393,16 @@ export function toMediaVideo(
       typeof raw.duration === "number"
         ? raw.duration
         : Number.isFinite(Number(raw.duration_ms))
-          ? Number(raw.duration_ms)
+          ? Number(raw.duration_ms) / 1000
           : null,
     durationFormat: String(raw.durationFormat ?? raw.duration_format ?? ""),
     cover: String(raw.cover ?? raw.pic ?? ""),
     quality: String(raw.quality ?? ""),
-    error:
-      typeof raw.error === "string" && raw.error ? raw.error : undefined,
+    error,
+    _cid: String(raw._cid ?? raw.cid ?? ""),
+    _page: positiveNumber(raw._page ?? raw.page) ?? undefined,
+    _bvid: episodeBvid(raw) || undefined,
+    _resolved: Boolean(url),
   };
 }
 
@@ -410,7 +497,7 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
   const candidate = Array.isArray(raw) ? raw[0] : raw;
   if (!candidate || typeof candidate !== "object")
     throw new ParseError("解析接口没有返回有效数据");
-  const data = candidate as Record<string, unknown>;
+  const data = resourceFields(candidate as Record<string, unknown>);
   if (!hasResources(data))
     throw new ParseError("解析完成，但没有找到可用的视频、图片或音乐资源");
   const images = Array.isArray(data.images)
@@ -420,13 +507,15 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
     : [];
   const type =
     typeof data.type === "string"
-      ? data.type
+      ? data.type === "images" ? "image" : data.type
       : Array.isArray(data.live_photo) && data.live_photo.length
         ? "live"
         : images.length && !data.url
           ? "image"
           : "video";
-  const primaryUrl = typeof data.url === "string" ? data.url : null;
+  // Some image parsers also put the first still image in url. It is not a video.
+  const primaryUrl = type === "image" ? null
+    : nonEmptyString(data.url) ? data.url : null;
   // 优先级：B 站合集 / 自定义合集 → 通用多数组 → B 站多 P pages 合成
   let videos: MediaVideo[] = [];
   let collections: MediaCollection[] | undefined;
@@ -443,6 +532,26 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
   if (videos.length === 0) {
     videos = synthesizeBilibiliPages(data, primaryUrl);
   }
+  const rootExtra = recordOf(data.extra);
+  videos = videos.map((video) => {
+    const ownPage = nonEmptyString(video.pageUrl) ? video.pageUrl : undefined;
+    const bvid = video._bvid || episodeBvid(rootExtra)
+      || (ownPage || sourceUrl || "").match(/\bBV[0-9A-Za-z]{10}\b/)?.[0];
+    const page = video._page || (collections?.length ? 1 : video.index);
+    const stableSource = ownPage || (bvid
+      ? `https://www.bilibili.com/video/${bvid}/?p=${page}` : sourceUrl);
+    const currentMetadata: VideoMetadata & { quality?: string } = primaryUrl && video.url === primaryUrl
+      ? { ...videoMetadata(data), quality: String(data.quality || "") } : {};
+    return {
+      ...currentMetadata, ...video,
+      quality: video.quality || currentMetadata.quality || "",
+      _bvid: bvid || undefined, _page: page, _sourceUrl: stableSource,
+      video_backup: normalizeBackups([
+        ...(Array.isArray(video.video_backup) ? video.video_backup : []),
+        ...(primaryUrl && video.url === primaryUrl ? data.video_backup as VideoBackup[] : []),
+      ]),
+    };
+  });
   // The legacy PHP endpoint returns all parts and its top-level URL may belong
   // to the last part. Select the requested part explicitly instead of trusting it.
   let selectedUrl = primaryUrl;
@@ -450,7 +559,10 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
     try {
       const source = new URL(sourceUrl);
       if (/(^|\.)(bilibili\.com|b23\.tv)$/.test(source.hostname)) {
-        const current = Math.max(1, Math.floor(Number(source.searchParams.get("p"))) || 1);
+        const extra = data.extra && typeof data.extra === "object"
+          ? data.extra as Record<string, unknown> : {};
+        const requested = positiveNumber(source.searchParams.get("p"));
+        const current = Math.max(1, Math.floor(requested ?? positiveNumber(extra.current_page) ?? 1));
         videos = videos.map((video) => ({ ...video, _current: video.index === current }));
         selectedUrl = videos.find((video) => video._current)?.url || null;
       }
@@ -468,12 +580,14 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
     undefined;
   return {
     ...data,
+    ...videoMetadata(data),
     type,
     title: String(data.title || data.desc || data.description || ""),
     desc: String(data.desc || data.description || data.title || ""),
     author: normalizeAuthor(data),
     cover: String(data.cover || images[0] || ""),
-    url: selectedUrl,
+    url: selectedUrl || (!videos.length && type === "video"
+      ? (data.video_backup as VideoBackup[])[0]?.url || null : null),
     quality: String(data.quality || ""),
     duration: typeof data.duration === "number" ? data.duration : null,
     videos: videos.length ? videos : undefined,
@@ -485,16 +599,9 @@ export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => 
       (item) => item && typeof item === "object" &&
         (nonEmptyString(item.image) || nonEmptyString(item.video)),
     ) : [],
-    video_backup: Array.isArray(data.video_backup)
-      ? data.video_backup.filter(
-          (item) => item && typeof item === "object" && nonEmptyString(item.url),
-        )
-      : [],
+    video_backup: data.video_backup as VideoBackup[],
     music: data.music && typeof data.music === "object" ? data.music : {},
-    extra:
-      data.extra && typeof data.extra === "object"
-        ? (data.extra as Record<string, unknown>)
-        : {},
+    extra: normalizeExtra(data),
     _sourceUrl: sourceUrl || undefined,
   } as ParsedMedia;
 };
@@ -507,7 +614,7 @@ export const normalizeResponse = (payload: unknown, sourceUrl?: string) => {
   const explicit = rawCode !== undefined && rawCode !== null && rawCode !== "";
   const success = explicit
     ? numeric === 200 || rawCode === "success" || rawCode === true
-    : Boolean(root.data || root.url || root.images || root.live_photo);
+    : Boolean(root.data || root.result || root.url || root.video || root.images || root.imgurl || root.live_photo || root.music || root.video_backup);
   if (!success)
     throw new ParseError(
       messageOf(root) ||
@@ -520,9 +627,12 @@ export const normalizeResponse = (payload: unknown, sourceUrl?: string) => {
     );
   return normalizeData(root.data ?? root.result ?? root, sourceUrl);
 };
-export async function fetchJSON(url: string, timeout = 55000) {
+export async function fetchJSON(url: string, timeout = 55000, signal?: AbortSignal) {
   const controller = new AbortController(),
     timer = window.setTimeout(() => controller.abort(), timeout);
+  const cancel = () => controller.abort();
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener("abort", cancel, { once: true });
   try {
     const response = await fetch(url, {
       signal: controller.signal,
@@ -538,8 +648,8 @@ export async function fetchJSON(url: string, timeout = 55000) {
     return data;
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError")
-      throw new ParseError("请求超时，请稍后重试或切换平台接口", {
-        code: "timeout",
+      throw new ParseError(signal?.aborted ? "解析已取消" : "请求超时，请稍后重试或切换平台接口", {
+        code: signal?.aborted ? "cancelled" : "timeout",
       });
     if (error instanceof ParseError) throw error;
     if (error instanceof TypeError)
@@ -547,6 +657,7 @@ export async function fetchJSON(url: string, timeout = 55000) {
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
   }
 }
 
@@ -568,54 +679,80 @@ export function useVideoParser(options: {
     currentPlatform = shallowRef<PlatformKey>("all");
   const parseButton = useButtonControl({
     action: "parse",
-    throttleDelay: 1000,
-    antiReplay: true,
-    timeout: 60000,
+    antiReplay: false,
+    timeout: 0,
     retry: false,
   });
+  let requestId = 0;
+  let activeController: AbortController | null = null;
+  const clearMedia = () => {
+    videoStore.clearResult();
+    currentVideoUrl.value = "";
+    showBackup.value = false;
+  };
+  const invalidateInput = () => {
+    ++requestId;
+    activeController?.abort();
+    activeController = null;
+    parseButton.reset();
+    parseError.value = "";
+    clearMedia();
+  };
   async function parseVideo() {
+    // A repeated click while the same request is running must not reuse an old result.
+    if (activeController) return;
     parseError.value = "";
     const extracted = extractURL(inputUrl.value);
     if (extracted) inputUrl.value = extracted;
-    const url = extracted || inputUrl.value;
-    if (!url || !url.startsWith("http")) {
+    const url = (extracted || inputUrl.value).trim();
+    let validUrl = false;
+    try { validUrl = /^https?:$/.test(new URL(url).protocol); } catch { /* Invalid share text. */ }
+    if (!validUrl) {
+      clearMedia();
       const message = "请输入有效的视频分享链接";
       parseError.value = message;
       showToast(message, "warning", 4000);
       return;
     }
-    const result = await parseButton.execute(
-      async () => {
-        videoStore.clearResult();
-        currentVideoUrl.value = "";
-        showBackup.value = false;
-        const data = secureApiClient
-          ? await secureApiClient.parse({
-              platform: currentPlatform.value,
-              url,
-              locale: locale.value,
-            })
-          : await fetchJSON(
-              `${API[currentPlatform.value]}?url=${encodeURIComponent(url)}`,
-            );
-        const normalized = normalizeResponse(data, url);
-        videoStore.setResult(normalized);
-        await nextTick();
-        videoStore.initSwiper();
-        return normalized;
-      },
-      { disableRetry: true, disableTimeout: true },
-    );
-    if (!result) {
-      const buttonError = parseButton.error.value as unknown;
+    const currentRequest = ++requestId;
+    const controller = new AbortController();
+    activeController = controller;
+    const platform = currentPlatform.value;
+    clearMedia();
+    parseButton.reset();
+    parseButton.setLoading(true);
+    try {
+      const data = secureApiClient
+        ? await secureApiClient.parse({
+            platform,
+            url,
+            locale: locale.value,
+          }, { signal: controller.signal })
+        : await fetchJSON(
+            `${API[platform]}?url=${encodeURIComponent(url)}`,
+            55000,
+            controller.signal,
+          );
+      if (currentRequest !== requestId) return;
+      const normalized = normalizeResponse(data, url);
+      videoStore.setResult(normalized);
+      await nextTick();
+      if (currentRequest !== requestId) return;
+      videoStore.initSwiper();
+      showToast("解析成功", "success", 2200);
+    } catch (error) {
+      if (currentRequest !== requestId) return;
       const message =
-        buttonError instanceof Error
-          ? buttonError.message
+        error instanceof Error
+          ? error.message
           : "解析失败，请稍后重试";
       parseError.value = message;
       showToast(message, "error", 6000);
-    } else {
-      showToast("解析成功", "success", 2200);
+    } finally {
+      if (currentRequest === requestId) {
+        activeController = null;
+        parseButton.reset();
+      }
     }
   }
   function selectPlatform(key: PlatformKey) {
@@ -644,9 +781,10 @@ export function useVideoParser(options: {
    */
   async function resolveBilibiliVideo(
     video: Pick<MediaVideo, "index"> &
-      Partial<Pick<MediaVideo, "_bvid" | "_page" | "_cid">>,
-  ): Promise<{ url: string; video_backup: unknown[]; quality: string } | null> {
-    const source = videoStore.resultData?._sourceUrl || inputUrl.value;
+      Partial<Pick<MediaVideo, "_bvid" | "_page" | "_cid" | "_sourceUrl">>,
+  ): Promise<VideoMetadata & { url: string; video_backup: VideoBackup[]; quality: string } | null> {
+    const resolvingRequest = requestId;
+    const source = video._sourceUrl || videoStore.resultData?._sourceUrl || inputUrl.value;
     if (!source) return null;
     const bvid = video._bvid ?? "";
     let pageUrl: string;
@@ -672,19 +810,23 @@ export function useVideoParser(options: {
         : await fetchJSON(
             `${API.bilibili}?url=${encodeURIComponent(pageUrl)}`,
           );
-      const normalized = normalizeResponse(data, source);
+      if (requestId !== resolvingRequest) return null;
+      const normalized = normalizeResponse(data, pageUrl);
       // bilibili.php 型后端会一次返回该 BV 所有分P（videos，各带直链），
       // 且顶层 url 不一定对应当前页：按目标页码取对应分集的直链
       const wantPage = bvid
         ? Math.max(1, Number(video._page) || 1)
         : Math.max(1, Math.floor(Number(video.index)) || 1);
       const pageItem = (normalized.videos ?? []).find(
-        (item) => Number(item.index) === wantPage && Boolean(item.url),
+        (item) => Number(item.index) === wantPage && Boolean(item.url) && !item.error,
       );
       if (normalized.videos?.length && !pageItem) return null;
+      const url = pageItem?.url || (typeof normalized.url === "string" ? normalized.url : "");
+      if (!url) return null;
       return {
-        url: pageItem?.url || (typeof normalized.url === "string" ? normalized.url : ""),
-        video_backup: normalized.video_backup || [],
+        ...videoMetadata(pageItem || normalized),
+        url,
+        video_backup: normalizeBackups(pageItem?.video_backup ?? normalized.video_backup),
         quality: pageItem?.quality || normalized.quality || "",
       };
     } catch {
@@ -692,9 +834,7 @@ export function useVideoParser(options: {
     }
   }
 
-  watch(inputUrl, () => {
-    if (parseError.value) parseError.value = "";
-  });
+  watch([inputUrl, currentPlatform], invalidateInput, { flush: "sync" });
   return {
     inputUrl,
     parseError,

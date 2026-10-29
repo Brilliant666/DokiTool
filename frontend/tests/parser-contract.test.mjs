@@ -11,7 +11,7 @@ let vite, parser, config, selection, antiReplay;
 const originalFetch = globalThis.fetch;
 const originalWindow = globalThis.window;
 before(async () => {
-  vite = await createServer({ server: { middlewareMode: true, hmr: false, watch: null }, appType: 'custom' });
+  vite = await createServer({ server: { middlewareMode: true, hmr: false, ws: false, watch: null }, appType: 'custom' });
   parser = await vite.ssrLoadModule('/src/composables/useVideoParser.ts');
   config = await vite.ssrLoadModule('/src/services/apiConfig.ts');
   selection = await vite.ssrLoadModule('/src/composables/useVideoSelection.ts');
@@ -44,10 +44,12 @@ function harness(source = 'https://www.bilibili.com/video/BV1234567890?p=2') {
   return { store, instance, toasts };
 }
 
-test('default PHP API contract uses six same-origin routes; base does not enable encryption', async () => {
+test('all nine platform choices use the six existing same-origin routes', async () => {
   const expected = {
     all: '/api/short_videos', douyin: '/api/douyin', kuaishou: '/api/ksjx',
     bilibili: '/api/bilibili', xhs: '/api/xhsjx', toutiao: '/api/toutiao',
+    weibo: '/api/short_videos', pipixia: '/api/short_videos',
+    pipigx: '/api/short_videos', zuiyou: '/api/short_videos',
   };
   assert.deepEqual(config.resolveApiConfig({}).endpoints, expected);
   assert.equal(config.resolveApiConfig({ VITE_API_BASE_URL: 'https://snap.example.test/' }).mode, 'php');
@@ -121,6 +123,79 @@ test('video, images, live photos, music and backup links survive the PHP envelop
   assert.equal(parser.normalizeResponse(good({ music: data.music })).music.url, data.music.url);
 });
 
+test('legacy fields and both backup shapes retain usable media without overriding the main source', () => {
+  const higher = 'https://media.example.test/2160p.mp4';
+  const result = parser.normalizeResponse(good({
+    video: media, imgurl: ['https://media.example.test/still.jpg'],
+    music: 'https://media.example.test/audio.mp3',
+    width: '1280', height: '720', bit_rate: '1000000', codec: 'h264',
+    video_backup: [higher, { url: 'https://media.example.test/alternate.mp4', width: '2160', height: '3840', bitrate: '2500000', codec: 'hevc' }],
+  }));
+  assert.equal(result.url, media);
+  assert.deepEqual(result.images, ['https://media.example.test/still.jpg']);
+  assert.equal(result.music.url, 'https://media.example.test/audio.mp3');
+  assert.equal(result.video_backup[0].url, higher);
+  assert.equal(result.video_backup[1].width, 2160);
+  assert.equal(result.video_backup[1].bit_rate, 2500000);
+  assert.equal(result.video_backup[1].bitrate, 2500000);
+  assert.equal(result.width, 1280);
+  assert.equal(result.bit_rate, 1000000);
+  assert.equal(result.codec, 'h264');
+  assert.equal(parser.normalizeResponse(good({ video_backup: [higher] })).url, higher);
+  assert.equal(parser.normalizeResponse(good({ imgurl: ['https://media.example.test/1.jpg'] })).type, 'image');
+  assert.equal(parser.normalizeResponse(good({ music: 'https://media.example.test/audio.mp3' })).music.url, 'https://media.example.test/audio.mp3');
+  const still = parser.normalizeResponse(good({ type: 'image', url: 'https://media.example.test/1.jpg', images: ['https://media.example.test/1.jpg'] }));
+  assert.equal(still.url, null, 'an image URL must not be rendered as the main video');
+});
+
+test('top-level publication, stats and tags reach the UI with zero distinguished from missing', () => {
+  const result = parser.normalizeResponse(good({
+    url: media, create_time: 1786603757, publish_time: '2026-08-13 14:49:17',
+    statistics: { digg_count: 0, comment_count: '12' },
+    hashtags: ['风景', { name: '旅行' }, {}], video_tags: [{ name: '摄影' }],
+    extra: { statistics: { share_count: 3 } },
+  }));
+  assert.equal(result.extra.create_time, 1786603757);
+  assert.equal(result.extra.publish_time, '2026-08-13 14:49:17');
+  assert.deepEqual(result.extra.statistics, { digg_count: 0, comment_count: 12, share_count: 3 });
+  assert.deepEqual(result.extra.hashtags.map((tag) => tag.name), ['风景', '旅行']);
+  assert.equal(result.extra.video_tags[0].name, '摄影');
+  assert.equal(parser.normalizeResponse(good()).extra.statistics, undefined);
+});
+
+test('a new input after success makes a fresh request immediately', async () => {
+  const { instance, store } = harness('https://v.douyin.com/first/');
+  const requests = [];
+  globalThis.fetch = async (url) => { requests.push(url); return Response.json(good({ url: media, title: `Result ${requests.length}` })); };
+  await instance.parseVideo();
+  assert.equal(store.resultData.title, 'Result 1');
+  instance.inputUrl.value = 'https://v.douyin.com/second/';
+  assert.equal(store.resultData, null);
+  await instance.parseVideo();
+  assert.equal(requests.length, 2);
+  assert.equal(store.resultData.title, 'Result 2');
+});
+
+test('input changes cancel old parsing and stale responses cannot overwrite the next result', async () => {
+  const { instance, store, toasts } = harness('https://v.douyin.com/first/');
+  let finishFirst, firstSignal;
+  globalThis.fetch = async (_url, options) => {
+    firstSignal = options.signal;
+    return new Promise((resolve) => { finishFirst = resolve; });
+  };
+  const first = instance.parseVideo();
+  await instance.parseVideo(); // Duplicate click must not start another request.
+  instance.inputUrl.value = 'https://v.douyin.com/second/';
+  assert.equal(firstSignal.aborted, true);
+  globalThis.fetch = async () => Response.json(good({ url: media, title: 'Second' }));
+  await instance.parseVideo();
+  finishFirst(Response.json(good({ url: media, title: 'First' })));
+  await first;
+  assert.equal(store.resultData.title, 'Second');
+  assert.equal(toasts.filter((toast) => toast[1] === 'success').length, 1);
+  assert.equal(instance.parseButton.isLoading.value, false);
+});
+
 test('legacy Bilibili all-part response selects requested P and does not invent links for failures', () => {
   const data = {
     url: 'https://media.example.test/p3.mp4',
@@ -165,6 +240,20 @@ test('extra.pages lazy parts and collections keep current episode metadata', () 
   assert.equal(collection.videos[1].url, media);
 });
 
+test('short-link responses honor backend current_page and preserve lazy part identifiers', () => {
+  const result = parser.normalizeResponse(good({
+    url: media,
+    videos: [{ index: 1, cid: 11, page: 1, url: '', lazyResolve: true }, { index: 2, cid: 12, page: 2, url: media }],
+    extra: { current_page: 2 },
+  }), 'https://b23.tv/example');
+  assert.equal(result.url, media);
+  assert.equal(result.videos[1]._current, true);
+  assert.equal(result.videos[0]._cid, '11');
+  assert.equal(result.videos[0]._page, 1);
+  assert.equal(result.videos[0]._resolved, false);
+  assert.equal(result.videos[0].url, '');
+});
+
 test('lazy Bilibili resolution uses requested page and fails rather than returning another part', async () => {
   const { instance } = harness();
   let request;
@@ -185,6 +274,50 @@ test('lazy Bilibili resolution uses requested page and fails rather than returni
   assert.equal(await instance.resolveBilibiliPage({ index: 2 }), null);
   globalThis.fetch = async () => Response.json({ code: 404, msg: 'Not found' });
   assert.equal(await instance.resolveBilibiliPage({ index: 2 }), null);
+
+  // The lazy response's primary URL belongs to the newly requested P, not the input's P.
+  globalThis.fetch = async () => Response.json(good({ url: media,
+    extra: { current_page: 3, pages: [{ page: 1, cid: 11 }, { page: 2, cid: 12 }, { page: 3, cid: 13 }] },
+  }));
+  assert.equal((await instance.resolveBilibiliPage({ index: 3 })).url, media);
+});
+
+test('a lazy part response from the previous input is discarded', async () => {
+  const { instance } = harness();
+  let finish;
+  globalThis.fetch = async () => new Promise((resolve) => { finish = resolve; });
+  const resolving = instance.resolveBilibiliPage({ index: 2 });
+  instance.inputUrl.value = 'https://www.bilibili.com/video/BV9876543210?p=1';
+  finish(Response.json(good({ url: media })));
+  assert.equal(await resolving, null);
+});
+
+test('part metadata stays with its source and retry keeps the original work after a new parse', async () => {
+  const original = 'https://www.bilibili.com/video/BV1234567890?p=1';
+  const result = parser.normalizeResponse(good({url: media, quality: '1080p', width: 1920, height: 1080,
+    video_backup: [media + '?mirror=1'], extra: {current_page: 1, bvid: 'BV1234567890'},
+    videos: [{index: 1, cid: '11', url: media}, {index: 2, cid: '12', url: '', lazyResolve: true}],
+  }), original);
+  assert.equal(result.videos[0].video_backup[0].url, media + '?mirror=1');
+  assert.equal(result.videos[0].width, 1920);
+  assert.equal(result.videos[1].video_backup.length, 0);
+  assert.equal(result.videos[1].width, undefined);
+  const savedPart = {...result.videos[1]};
+  const {instance, store} = harness(original);
+  instance.inputUrl.value = 'https://www.bilibili.com/video/BV9876543210?p=1';
+  store.resultData = parser.normalizeResponse(good({url: media + '?new-work=1'}), instance.inputUrl.value);
+  let requested;
+  globalThis.fetch = async (url) => { requested = new URL(url, 'https://snap.example.test').searchParams.get('url');
+    return Response.json(good({url: media + '?old-part=2', quality:'720p', width:1280, height:720,
+      video_backup:[media+'?old-backup=2'], extra:{current_page:2},
+      videos:[{index:1,url:''},{index:2,url:media+'?old-part=2'}]})); };
+  const resolved = await instance.resolveBilibiliPage(savedPart);
+  assert.match(requested, /BV1234567890/);
+  assert.equal(new URL(requested).searchParams.get('p'), '2');
+  assert.equal(resolved.url, media + '?old-part=2');
+  assert.equal(resolved.video_backup[0].url, media+'?old-backup=2');
+  assert.equal(resolved.width,1280);
+  assert.equal(store.resultData.url, media+'?new-work=1');
 });
 
 test('the multi-part player never renders a different part as fallback for a failed part', async () => {

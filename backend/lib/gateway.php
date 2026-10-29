@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/runtime.php';
 
 /** DokiTool adapter. Original parser files and their MIT notices remain in api/. */
 function snapPlatforms(): array
@@ -115,8 +116,37 @@ function snapDecodeResponse(string $body, int $status = 200): array
         // Internal transport failures must not look like successful parsing.
         return [502, snapError(502, '内部解析接口请求失败')];
     }
+    if ((int)$decoded['code'] === 200 && is_array($decoded['data'] ?? null)) {
+        $decoded['data'] = snapNormalizeMedia($decoded['data']);
+    }
     // Preserve upstream business codes, including failures delivered with HTTP 200.
     return [200, $decoded];
+}
+
+/** Adapt known legacy field aliases without changing business failures or source selection. */
+function snapNormalizeMedia(array $data): array
+{
+    if (!snapMediaUrl($data['url'] ?? null) && snapMediaUrl($data['video'] ?? null)) {
+        $data['url'] = snapMediaUrl($data['video']);
+    }
+    if (empty($data['images']) && is_array($data['imgurl'] ?? null)) {
+        $data['images'] = array_values(array_filter(array_map('snapMediaUrl', $data['imgurl'])));
+    }
+    if (is_string($data['music'] ?? null)) {
+        $data['music'] = ['url' => snapMediaUrl($data['music'])];
+    }
+    if (is_array($data['video_backup'] ?? null)) {
+        $backups = [];
+        foreach ($data['video_backup'] as $item) {
+            $item = is_string($item) ? ['url' => $item] : $item;
+            if (is_array($item) && snapMediaUrl($item['url'] ?? null)) {
+                $item['url'] = snapMediaUrl($item['url']);
+                $backups[] = $item;
+            }
+        }
+        $data['video_backup'] = $backups;
+    }
+    return $data;
 }
 
 /** The aggregate request goes only to a configured loopback origin and a fixed Host. */

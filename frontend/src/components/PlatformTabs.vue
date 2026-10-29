@@ -1,4 +1,5 @@
 <script setup>
+import { platformTabs } from '../utils/platforms'
 defineProps({
   currentPlatform: String,
   locale: String
@@ -6,26 +7,7 @@ defineProps({
 
 const emit = defineEmits(['select'])
 
-const platforms = {
-  'zh-CN': [
-    { key: 'all', label: '所有平台', icon: 'fa-globe' },
-    { key: 'douyin', label: '抖音', icon: 'fa-music' },
-    { key: 'kuaishou', label: '快手', icon: 'fa-bolt' },
-    { key: 'bilibili', label: 'B站', icon: 'fa-play-circle', iconColor: '#FB7299' },
-    { key: 'xhs', label: '小红书', icon: 'fa-bookmark', iconColor: '#FE2C55' },
-    { key: 'toutiao', label: '今日头条', icon: 'fa-newspaper', iconColor: '#FE2C55' }
-  ],
-  'en': [
-    { key: 'all', label: 'All', icon: 'fa-globe' },
-    { key: 'douyin', label: 'Douyin', icon: 'fa-music' },
-    { key: 'kuaishou', label: 'Kuaishou', icon: 'fa-bolt' },
-    { key: 'bilibili', label: 'Bilibili', icon: 'fa-play-circle', iconColor: '#FB7299' },
-    { key: 'xhs', label: 'Xiaohongshu', icon: 'fa-bookmark', iconColor: '#FE2C55' },
-    { key: 'toutiao', label: 'Toutiao', icon: 'fa-newspaper', iconColor: '#FE2C55' }
-  ]
-}
-
-const getPlatforms = (locale) => platforms[locale] || platforms['zh-CN']
+const getPlatforms = (locale) => platformTabs(locale)
 </script>
 
 <template>

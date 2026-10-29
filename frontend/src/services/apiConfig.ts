@@ -18,6 +18,11 @@ export function resolveApiConfig(env: Record<string, string | undefined>) {
     bilibili: "/api/bilibili",
     xhs: "/api/xhsjx",
     toutiao: "/api/toutiao",
+    // These registered parsers are reached through the existing aggregate API.
+    weibo: "/api/short_videos",
+    pipixia: "/api/short_videos",
+    pipigx: "/api/short_videos",
+    zuiyou: "/api/short_videos",
   };
   const endpoints = Object.fromEntries(
     Object.entries(paths).map(([key, path]) => [key, baseUrl + path]),

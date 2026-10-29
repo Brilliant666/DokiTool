@@ -8,133 +8,122 @@ require_once __DIR__ . '/../../lib/runtime.php';
  * @Api: api.bugpk.com
  * @tip: bilibili解析-旧版
  */
-//这里填写你的B站cookie(不填解析不到1080P以上) 格式为_uuid=XXXXX
-$cookie = '';
-$headers = ['Content-type: application/json;charset=UTF-8'];
-$useragent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36';
-header("Access-Control-Allow-Origin: *");
-header('Content-Type: application/json');
-$urls = isset($_GET['url']) ? $_GET['url'] : '';
-if (empty($urls)) {
-    exit(json_encode(['code' => 201, 'msg' => '链接不能为空！'], 480));
-}
-$urls = cleanUrlParameters($urls);
-$array = parse_url($urls);
-if (empty($array)) {
-    exit(json_encode(['code' => -1, 'msg' => "视频链接不正确"], 480));
-} elseif ($array['host'] == 'b23.tv') {
-    $header = get_headers($urls, true);
-    // 修复点：处理可能返回数组的Location头
-    $redirectUrl = is_array($header['Location']) ? end($header['Location']) : $header['Location'];
-    $array = parse_url($redirectUrl);  // 现在确保传入字符串
-    $bvid = rtrim($array['path'], '/');
-} elseif ($array['host'] == 'www.bilibili.com') {
-    $bvid = $array['path'];
-} elseif ($array['host'] == 'm.bilibili.com') {
-    $bvid = $array['path'];
-} else {
-    exit(json_encode(['code' => -1, 'msg' => "视频链接好像不太对！"], 480));
-}
-if (strpos($bvid, '/video/') === false) {
-    exit(json_encode(['code' => -1, 'msg' => "好像不是视频链接"], 480));
-}
-
-$bvid = str_replace("/video/", "", $bvid);
-if (!str_starts_with($bvid, 'BV')) {
-    $bilibilihtml = getFinalHtmlContent($urls);
-    $bvid = extractBilibiliBVId($bilibilihtml);
-}
-if (empty($bvid)) {
-    echo json_encode(['code' => 404, 'msg' => "获取id失败"], 480);
-    exit;
-}
-
-//获取解析需要的cid值和图片以及标题
-$json1 = bilibili(
-    'https://api.bilibili.com/x/web-interface/view?bvid=' . $bvid
-    , $headers
-    , $useragent
-    , $cookie
-);
-$array = json_decode($json1, true);
-if ($array['code'] == '0') {
-    $title = $array['data']['title'];
-    $cover = $array['data']['pic'];
-    $desc = $array['data']['desc'];
-    $owner = $array['data']['owner'];
-
-    $videos = [];
-
-    // 循环获取所有分P的视频信息
-    foreach ($array['data']['pages'] as $index => $page) {
-        // 请求视频直链API
-        $apiUrl = "https://api.bilibili.com/x/player/playurl?otype=json&fnver=0&fnval=3&player=3&qn=112&bvid=" . $bvid . "&cid=" . $page['cid'] . "&platform=html5&high_quality=1";
-        $jsonResponse = bilibili($apiUrl, $headers, $useragent, $cookie);
-
-        // 解析API返回的JSON数据
-        $videoInfo = json_decode($jsonResponse, true);
-
-        // 检查API响应是否正常
-        if (isset($videoInfo['data']['durl'][0]['url'])) {
-            $videoUrl = $videoInfo['data']['durl'][0]['url'];
-
-            // 提取真实视频地址（去除镜像前缀）
-            $realVideoUrl = preg_replace('/^https?:\/\/[^\/]+\//', 'https://upos-sz-mirrorhw.bilivideo.com/', $videoUrl);
-
-            $videos[] = [
-                'title' => $page['part'],
-                'duration' => $page['duration'],
-                'durationFormat' => gmdate('H:i:s', $page['duration'] - 1),
-                'url' => $realVideoUrl,
-                'index' => $index + 1
-            ];
-        } else {
-            // 记录获取失败的分P
-            $videos[] = [
-                'title' => $page['part'],
-                'error' => '无法获取视频链接',
-                'index' => $index + 1
-            ];
+/** Resolve just the requested part; other parts remain available for lazy parsing. */
+function parseBilibili(string $source): array
+{
+    $url = cleanUrlParameters($source);
+    $parts = parse_url($url);
+    if (!$parts || !isset($parts['host'])) {
+        return ['code' => -1, 'msg' => '视频链接不正确'];
+    }
+    if (strtolower($parts['host']) === 'b23.tv') {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true, CURLOPT_TIMEOUT => 10]);
+        $ok = snapCurlExec($ch);
+        $target = (string)curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        curl_close($ch);
+        if ($ok === false || $target === '') {
+            return ['code' => 502, 'msg' => 'B站短链接解析失败，请重试或使用完整视频链接'];
         }
+        $url = bilibiliRedirectTarget($url, $target);
+        $parts = parse_url($url);
     }
-    if ($index > 0) {
-        // 构建最终返回的JSON数据
-        $JSON = [
-            'code' => 200,
-            'msg' => '解析成功！',
-            'data' => [
-                'title' => $title,
-                'cover' => $cover,
-                'description' => $desc,
-                'url' => $realVideoUrl ?? null,
-                'user' => [
-                    'name' => $owner['name'],
-                    'avatar' => $owner['face']
-                ],
-                'videos' => $videos,
-                'totalVideos' => count($videos)
-            ]
-        ];
-    } else {
-        $JSON = array(
-            'code' => 200,
-            'msg' => '解析成功！',
-            'data' => array(
-                'title' => $title,
-                'cover' => $cover,
-                'description' => $desc,
-                'url' => $realVideoUrl ?? null,
-                'user' => [
-                    'name' => $owner['name'],
-                    'avatar' => $owner['face']
-                ])
-        );
+    if (!in_array(strtolower($parts['host'] ?? ''), ['bilibili.com', 'www.bilibili.com', 'm.bilibili.com'], true)
+        || !str_starts_with($parts['path'] ?? '', '/video/')) {
+        return ['code' => -1, 'msg' => '好像不是视频链接'];
     }
-
-} else {
-    $JSON = ['code' => 0, 'msg' => "解析失败！"];
+    parse_str($parts['query'] ?? '', $query);
+    if (isset($query['p']) && (!is_string($query['p']) || !preg_match('/^[1-9][0-9]{0,5}$/D', $query['p']))) {
+        return ['code' => 400, 'msg' => '分P序号无效'];
+    }
+    $requested = (int)($query['p'] ?? 1);
+    preg_match('~/video/(BV[a-zA-Z0-9]{10})(?:/|$)~', $parts['path'], $match);
+    $bvid = $match[1] ?? extractBilibiliBVId(getFinalHtmlContent($url));
+    if (!$bvid) {
+        return ['code' => 404, 'msg' => '获取视频ID失败'];
+    }
+    // Credentials remain deployment configuration, never committed personal values.
+    $cookie = '';
+    $headers = ['Accept: application/json', 'Referer: https://www.bilibili.com/'];
+    $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+    $view = json_decode((string)bilibili('https://api.bilibili.com/x/web-interface/view?bvid=' . $bvid, $headers, $ua, $cookie), true);
+    if (!is_array($view) || ($view['code'] ?? null) !== 0 || !is_array($view['data'] ?? null)) {
+        return ['code' => 502, 'msg' => 'B站视频信息获取失败，请稍后重试'];
+    }
+    return buildBilibiliResponse($view['data'], $bvid, $requested, static function ($cid) use ($bvid, $headers, $ua, $cookie) {
+        $api = 'https://api.bilibili.com/x/player/playurl?' . http_build_query([
+            'otype' => 'json', 'fnver' => 0, 'fnval' => 3, 'player' => 3, 'qn' => 112,
+            'bvid' => $bvid, 'cid' => $cid, 'platform' => 'html5', 'high_quality' => 1,
+        ]);
+        return json_decode((string)bilibili($api, $headers, $ua, $cookie), true);
+    });
 }
-echo json_encode($JSON, 480);
+
+function bilibiliRedirectTarget(string $source, string $target): string
+{
+    parse_str((string)parse_url($source, PHP_URL_QUERY), $originalQuery);
+    $target = cleanUrlParameters($target);
+    if (array_key_exists('p', $originalQuery)) {
+        $parts = parse_url($target);
+        parse_str($parts['query'] ?? '', $query);
+        $query['p'] = $originalQuery['p'];
+        $target = preg_replace('/[?#].*$/', '', $target) . '?' . http_build_query($query);
+    }
+    return $target;
+}
+
+function buildBilibiliResponse(array $detail, string $bvid, int $requested, callable $fetchPlay): array
+{
+    $pages = is_array($detail['pages'] ?? null) ? $detail['pages'] : [];
+    $selected = null;
+    foreach ($pages as $i => $page) {
+        if (is_array($page) && (int)($page['page'] ?? $i + 1) === $requested) { $selected = $page; break; }
+    }
+    if (!$selected || empty($selected['cid'])) {
+        return ['code' => 404, 'msg' => '请求的分P不存在'];
+    }
+    $play = $fetchPlay($selected['cid']);
+    $stream = is_array($play) ? ($play['data']['durl'][0] ?? []) : [];
+    $url = snapMediaUrl($stream['url'] ?? null);
+    if (($play['code'] ?? null) !== 0 || $url === '') {
+        return ['code' => 404, 'msg' => '请求的分P暂时无法获取视频链接'];
+    }
+    $pageUrl = 'https://www.bilibili.com/video/' . rawurlencode($bvid) . '/';
+    $videos = [];
+    foreach ($pages as $i => $page) {
+        if (!is_array($page)) { continue; }
+        $number = (int)($page['page'] ?? $i + 1);
+        $duration = max(0, (int)($page['duration'] ?? 0));
+        $videos[] = [
+            'title' => (string)($page['part'] ?? 'P' . $number), 'duration' => $duration,
+            'durationFormat' => gmdate('H:i:s', $duration), 'index' => $number, 'page' => $number,
+            'cid' => (string)($page['cid'] ?? ''), 'url' => $number === $requested ? $url : '',
+            'pageUrl' => $pageUrl . '?p=' . $number, 'lazyResolve' => $number !== $requested,
+        ];
+    }
+    $backups = [];
+    foreach (is_array($stream['backup_url'] ?? null) ? $stream['backup_url'] : [] as $backup) {
+        if (snapMediaUrl($backup) && $backup !== $url) { $backups[] = ['url' => snapMediaUrl($backup), 'label' => '备用线路']; }
+    }
+    $data = [
+        'type' => 'video', 'title' => $detail['title'] ?? '', 'cover' => $detail['pic'] ?? '',
+        'description' => $detail['desc'] ?? '', 'url' => $url, 'pageUrl' => $pageUrl . '?p=' . $requested,
+        'user' => ['name' => $detail['owner']['name'] ?? '', 'avatar' => $detail['owner']['face'] ?? ''],
+        'video_backup' => $backups, 'duration' => $selected['duration'] ?? null,
+        'extra' => ['pages' => $pages, 'current_page' => $requested, 'bvid' => $bvid],
+    ];
+    if (count($videos) > 1) { $data['videos'] = $videos; $data['totalVideos'] = count($videos); }
+    return ['code' => 200, 'msg' => '解析成功', 'data' => $data];
+}
+
+if (!defined('DOKITOOL_PARSER_LIBRARY_ONLY')) {
+    header('Content-Type: application/json; charset=utf-8');
+    $input = $_GET['url'] ?? '';
+    $result = is_string($input) && $input !== '' ? parseBilibili($input) : ['code' => 201, 'msg' => '链接不能为空'];
+    echo json_encode($result, 480);
+}
+
 /**
  * 获取网页代码，自动跟随重定向直到最终页面
  *
@@ -205,7 +194,6 @@ function extractBilibiliBVId($html)
 {
     // 空值检查
     if (empty($html)) {
-        echo "错误：输入的HTML字符串为空\n";
         return null;
     }
 
@@ -222,10 +210,8 @@ function extractBilibiliBVId($html)
     if ($matchResult === 1 && isset($matches[1])) {
         return $matches[1]; // 返回提取到的BV号
     } elseif ($matchResult === 0) {
-        echo "提示：未匹配到B站BV号\n";
         return null;
     } else {
-        echo "错误：正则表达式匹配失败 - " . preg_last_error_msg() . "\n";
         return null;
     }
 }
@@ -249,29 +235,6 @@ function bilibili($url, $header, $user_agent, $cookie)
 
 function cleanUrlParameters($url)
 {
-    // Step 1: 分解URL结构
-    $parsed = parse_url($url);
-
-    // Step 2: 构建基础组件（自动解码编码字符）
-    $scheme = isset($parsed['scheme']) ? $parsed['scheme'] . '://' : '';
-    $host = $parsed['host'] ?? '';
-    $port = isset($parsed['port']) ? ':' . $parsed['port'] : '';
-    $path = isset($parsed['path']) ? rawurldecode($parsed['path']) : '';
-    $fragment = isset($parsed['fragment']) ? '#' . rawurldecode($parsed['fragment']) : '';
-
-    // Step 3: 处理国际化域名（Punycode转中文）
-    if (function_exists('idn_to_utf8') && preg_match('/^xn--/', $host)) {
-        $host = idn_to_utf8($host, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
-    }
-
-    // Step 4: 移除认证信息（如 user:pass@）
-    $host = preg_replace('/^.*@/', '', $host);
-
-    // 去掉路径末尾的斜杠
-    $path = rtrim($path, '/');
-
-    // Step 5: 拼接最终URL
-    return $scheme . $host . $port . $path . $fragment;
+    // Tracking parameters are harmless; preserving p is required for exact-part selection.
+    return is_string($url) ? preg_replace('/#.*$/', '', trim($url)) : '';
 }
-
-?>

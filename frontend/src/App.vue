@@ -1,10 +1,8 @@
 <script setup>
 import { computed, ref, onMounted, watch } from 'vue'
-import JSZip from 'jszip'
 import { useVideoStore } from './stores/video'
 import HeaderNav from './components/HeaderNav.vue'
 import HeroSection from './components/HeroSection.vue'
-import PlatformTabs from './components/PlatformTabs.vue'
 import ResultSection from './components/ResultSection.vue'
 import PlatformGrid from './components/PlatformGrid.vue'
 import TutorialSection from './components/TutorialSection.vue'
@@ -17,8 +15,7 @@ import DownloadCard from './components/DownloadCard.vue'
 import { useVideoParser } from './composables/useVideoParser'
 import { useMediaDownload } from './composables/useMediaDownload'
 import { useVideoSelection } from './composables/useVideoSelection'
-import { getDownloadFilename } from './utils/downloadFilename'
-import { buildMediaFilename, sanitizeFilename } from './utils/videoFilename'
+import { selectMediaSource } from './utils/mediaSource'
 
 const videoStore = useVideoStore()
 const isDark = ref(false)
@@ -47,7 +44,7 @@ watch(
   (data, previous) => {
     // A lazy-resolution patch creates a new result object. Keep the user's
     // selection during those patches; only a newly parsed source resets it.
-    if (data && (!previous || data._sourceUrl !== previous._sourceUrl)) selection.syncResult()
+    if (!data || !previous || data._sourceUrl !== previous._sourceUrl) selection.syncResult()
   }
 )
 
@@ -59,10 +56,7 @@ const showToast = (message, type = 'success', duration = 3000) => {
 const resolveVideoUrl = async (video) => {
   const resolved = await resolveBilibiliPage(video)
   if (!resolved) return null
-  return {
-    url: resolved.url,
-    video_backup: resolved.video_backup ?? [],
-  }
+  return { ...resolved, video_backup: resolved.video_backup ?? [] }
 }
 
 const {
@@ -72,10 +66,12 @@ const {
   downloadSelected,
   downloadAllVideos,
   downloadVideosAsZip,
+  downloadAllMedia,
   downloadBackupVideo,
   downloadMusic,
   downloadLiveVideo,
   downloadLiveCover,
+  downloadImage,
   handleCancelDownload,
   handleRetryDownload,
   handleClearCompleted
@@ -92,11 +88,13 @@ watch(
   () => selection.currentVideo.value,
   async (video) => {
     if ((video?._cid || video?._bvid) && !video.url && !video._resolving && !video.error && resolveVideoUrl) {
+      const resultVersion = videoStore.resultVersion
       videoStore.patchVideo(video, { _resolving: true })
       const resolved = await resolveVideoUrl(video)
+      if (videoStore.resultVersion !== resultVersion) return
       if (resolved?.url) {
         videoStore.patchVideo(video, {
-          url: resolved.url,
+          ...resolved,
           _resolved: true,
           _resolving: false,
         })
@@ -109,14 +107,6 @@ watch(
     }
   }
 )
-
-const fetchMediaBlob = async (url) => {
-  const response = await fetch(url, { method: 'GET', mode: 'cors' })
-  if (!response.ok) {
-    throw new Error(`资源请求失败（HTTP ${response.status}）`)
-  }
-  return response.blob()
-}
 
 const copyUrl = async (url) => {
   if (!url) {
@@ -131,190 +121,18 @@ const copyUrl = async (url) => {
   }
 }
 
-const downloadAll = async () => {
-  const resultData = videoStore.resultData
-  if (!resultData) return
-
-  const hasVideo = !!resultData.url
-  const hasImages = resultData.images?.length > 0
-  const livePhotos = resultData.live_photo || []
-  const hasLivePhotos = livePhotos.length > 0
-
-  if (!hasVideo && !hasImages && !hasLivePhotos) {
-    showToast('没有可下载的资源', 'warning')
-    return
-  }
-
-  const zipFilename = `download_${Date.now()}.zip`
-  const downloadId = videoStore.addDownload({ filename: zipFilename, status: 'preparing', statusText: '准备中...' })
-  videoStore.updateDownload(downloadId, { status: 'downloading', statusText: '正在打包...', percent: 0 })
-
-  try {
-    const zip = new JSZip()
-    let totalItems = (hasVideo ? 1 : 0) + (hasImages ? resultData.images.length : 0) + (hasLivePhotos ? livePhotos.length * 2 : 0)
-    let processedItems = 0
-
-    if (hasVideo) {
-      videoStore.updateDownload(downloadId, { percent: Math.round(((processedItems + 1) / totalItems) * 50), statusText: '打包视频...' })
-      const blob = await fetchMediaBlob(resultData.url)
-      zip.file(getDownloadFilename(resultData.url, 'mp4'), blob)
-      processedItems++
-    }
-
-    if (hasLivePhotos) {
-      for (let i = 0; i < livePhotos.length; i++) {
-        const item = livePhotos[i]
-        videoStore.updateDownload(downloadId, { percent: Math.round(((processedItems + 1) / totalItems) * 50), statusText: `打包实况 ${i + 1}/${livePhotos.length}...` })
-        const imgBlob = await fetchMediaBlob(item.image)
-        zip.file(getDownloadFilename(item.image, 'jpg'), imgBlob)
-        processedItems++
-
-        videoStore.updateDownload(downloadId, { percent: Math.round(((processedItems + 1) / totalItems) * 50), statusText: `打包实况 ${i + 1}/${livePhotos.length}...` })
-        const videoBlob = await fetchMediaBlob(item.video)
-        zip.file(getDownloadFilename(item.video, 'mp4'), videoBlob)
-        processedItems++
-      }
-    }
-
-    if (hasImages) {
-      for (let i = 0; i < resultData.images.length; i++) {
-        videoStore.updateDownload(downloadId, { percent: Math.round(((processedItems + 1) / totalItems) * 50), statusText: `打包图片 ${i + 1}/${resultData.images.length}...` })
-        const imgBlob = await fetchMediaBlob(resultData.images[i])
-        const ext = imgBlob.type.includes('png') ? 'png' : 'jpg'
-        zip.file(getDownloadFilename(resultData.images[i], ext), imgBlob)
-        processedItems++
-      }
-    }
-
-    videoStore.updateDownload(downloadId, { percent: 70, statusText: '正在压缩...' })
-
-    const zipBlob = await zip.generateAsync({
-      type: 'blob',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 6 }
-    }, (metadata) => {
-      videoStore.updateDownload(downloadId, {
-        percent: 70 + Math.round(metadata.percent * 0.3),
-        statusText: `压缩中 ${Math.round(metadata.percent)}%`
-      })
-    })
-
-    videoStore.updateDownload(downloadId, { percent: 95, statusText: '正在下载...' })
-
-    const zipUrl = URL.createObjectURL(zipBlob)
-    const a = document.createElement('a')
-    a.href = zipUrl
-    a.download = zipFilename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(zipUrl)
-
-    videoStore.updateDownload(downloadId, { status: 'completed', statusText: '已完成', percent: 100 })
-    showToast('下载完成')
-  } catch (e) {
-    console.error(e)
-    videoStore.updateDownload(downloadId, { status: 'failed', statusText: '下载失败', error: e.message })
-    showToast('下载失败', 'error')
-  }
-}
-
-const downloadAllLivePhotos = async () => {
-  if (!videoStore.resultData?.live_photo?.length) return
-  const photos = videoStore.resultData.live_photo
-
-  const zipFilename = `live_photos_${Date.now()}.zip`
-  const downloadId = videoStore.addDownload({ filename: zipFilename, status: 'preparing', statusText: '准备中...' })
-
-  try {
-    const zip = new JSZip()
-    let processedItems = 0
-    const totalItems = photos.length * 2
-
-    for (let i = 0; i < photos.length; i++) {
-      const item = photos[i]
-      videoStore.updateDownload(downloadId, { status: 'downloading', percent: Math.round(((processedItems + 1) / totalItems) * 80), statusText: `打包实况 ${i + 1}/${photos.length}...` })
-
-      if (item.image) {
-        const imgBlob = await fetchMediaBlob(item.image)
-        zip.file(getDownloadFilename(item.image, 'jpg'), imgBlob)
-        processedItems++
-      }
-
-      if (item.video) {
-        const videoBlob = await fetchMediaBlob(item.video)
-        zip.file(getDownloadFilename(item.video, 'mp4'), videoBlob)
-        processedItems++
-      }
-    }
-
-    videoStore.updateDownload(downloadId, { percent: 90, statusText: '生成压缩包...' })
-    const zipBlob = await zip.generateAsync({ type: 'blob' })
-    const blobUrl = URL.createObjectURL(zipBlob)
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = zipFilename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(blobUrl)
-
-    videoStore.updateDownload(downloadId, { status: 'completed', percent: 100, statusText: '下载完成' })
-    setTimeout(() => videoStore.removeDownload(downloadId), 3000)
-    showToast(`已下载 ${photos.length} 组实况文件`)
-  } catch (e) {
-    console.error('下载失败:', e)
-    videoStore.updateDownload(downloadId, { status: 'failed', statusText: '下载失败' })
-    showToast('下载失败，请重试', 'error')
-  }
-}
-
-const downloadAllLiveCovers = async () => {
-  if (!videoStore.resultData?.live_photo?.length) return
-  const photos = videoStore.resultData.live_photo
-
-  const zipFilename = `live_covers_${Date.now()}.zip`
-  const downloadId = videoStore.addDownload({ filename: zipFilename, status: 'preparing', statusText: '准备中...' })
-
-  try {
-    const zip = new JSZip()
-    let processedItems = 0
-    const totalItems = photos.length
-
-    for (let i = 0; i < photos.length; i++) {
-      const item = photos[i]
-      if (item.image) {
-        videoStore.updateDownload(downloadId, { status: 'downloading', percent: Math.round(((processedItems + 1) / totalItems) * 90), statusText: `打包封面 ${i + 1}/${photos.length}...` })
-        const imgBlob = await fetchMediaBlob(item.image)
-        zip.file(getDownloadFilename(item.image, 'jpg'), imgBlob)
-        processedItems++
-      }
-    }
-
-    videoStore.updateDownload(downloadId, { percent: 95, statusText: '生成压缩包...' })
-    const zipBlob = await zip.generateAsync({ type: 'blob' })
-    const blobUrl = URL.createObjectURL(zipBlob)
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = zipFilename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(blobUrl)
-
-    videoStore.updateDownload(downloadId, { status: 'completed', percent: 100, statusText: '下载完成' })
-    setTimeout(() => videoStore.removeDownload(downloadId), 3000)
-    showToast(`已下载 ${photos.length} 张封面`)
-  } catch (e) {
-    console.error('下载失败:', e)
-    videoStore.updateDownload(downloadId, { status: 'failed', statusText: '下载失败' })
-    showToast('下载失败，请重试', 'error')
-  }
-}
+const downloadAll = () => downloadAllMedia('all')
+const downloadAllImages = () => downloadAllMedia('images')
+const downloadAllLivePhotos = () => downloadAllMedia('live')
+const downloadAllLiveCovers = () => downloadAllMedia('covers')
 
 const switchVideo = (backup) => {
   if (backup?.url) {
     currentVideoUrl.value = backup.url
+    const data = videoStore.resultData
+    if ((data?.videos?.length > 1 || data?.collections?.length) && selection.currentVideo.value) {
+      videoStore.patchVideo(selection.currentVideo.value, selectMediaSource(selection.currentVideo.value, backup))
+    }
   }
 }
 
@@ -400,6 +218,8 @@ onMounted(() => {
         @download-main="downloadMainVideo"
         @download-backup="downloadBackupVideo"
         @download-all="downloadAll"
+        @download-images="downloadAllImages"
+        @download-image="downloadImage"
         @download-music="downloadMusic"
         @download-live-video="downloadLiveVideo"
         @download-live-cover="downloadLiveCover"

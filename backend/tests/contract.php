@@ -90,6 +90,16 @@ foreach ([
     check('public dispatch ' . $method . ' ' . $path . ' ' . $expected, http_response_code() === $expected && json_decode($body, true)['code'] === $expected);
 }
 
+$body = '';
+$write = snapResponseWriter($body, 16);
+check('bounded metadata accepts response at limit', $write(null, '12345678') === 8 && $write(null, 'abcdefgh') === 8 && strlen($body) === 16);
+check('bounded metadata aborts before growing buffer', $write(null, 'overflow') === 0 && $body === '12345678abcdefgh');
+check('media protocol-relative source normalized', snapMediaUrl('//media.example/video.mp4') === 'https://media.example/video.mp4');
+check('media userinfo rejected', snapMediaUrl('https://user@media.example/video.mp4') === '' && snapMediaUrl('https://user:pass@media.example/video.mp4') === '');
+$legacy = snapNormalizeMedia(['video' => 'https://media.example/v.mp4', 'imgurl' => ['https://media.example/p.jpg'], 'music' => 'https://media.example/m.mp3', 'video_backup' => ['https://media.example/b.mp4']]);
+check('legacy video image music aliases retained for frontend', $legacy['url'] === $legacy['video'] && $legacy['images'] === $legacy['imgurl'] && $legacy['music']['url'] === 'https://media.example/m.mp3');
+check('string backups converted without losing source', $legacy['video_backup'] === [['url' => 'https://media.example/b.mp4']]);
+
 $passed = count(array_filter($checks, static fn ($item) => $item['passed']));
 echo json_encode(['suite' => 'backend-contract', 'passed' => $passed, 'total' => count($checks), 'checks' => $checks], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL;
 exit($passed === count($checks) ? 0 : 1);

@@ -23,8 +23,17 @@ def run(arguments, env=None):
 
 result = run([str(backend / 'tests/contract.php')])
 contract = json.loads(result.stdout)
+parser_checks = []
+for suite in ['douyin', 'pipigx', 'bilibili', 'zuiyou', 'weibo']:
+    checked = run([str(backend / 'tests/parser-contract.php'), suite])
+    payload = json.loads(checked.stdout)
+    parser_checks.append(dict(payload, successful=checked.returncode == 0))
 lint = []
-for source in sorted(backend.rglob('*.php')):
+# Retained optional upstream files are ignored, not part of this product's API.
+inventory = json.loads((backend.parent / 'public-files.json').read_text(encoding='utf-8'))
+php_sources = {backend.parent / path for path in inventory['files'] if path.startswith('backend/') and path.endswith('.php')}
+php_sources.add(backend / 'tests/parser-contract.php')
+for source in sorted(php_sources):
     checked = run(['-l', str(source)])
     lint.append({'path': source.relative_to(backend).as_posix(), 'passed': checked.returncode == 0})
 
@@ -91,6 +100,7 @@ report = {
     'recorded_at': datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds'),
     'php_version': run(['-r', 'echo PHP_VERSION;']).stdout,
     'contract': contract,
+    'parser_contracts': parser_checks,
     'lint': lint,
     'process_checks': process_checks,
     'http_integration': http_integration,
@@ -101,7 +111,7 @@ report = {
         'No VPS, DNS or production access was performed.',
     ],
 }
-report['passed'] = result.returncode == 0 and all(x['passed'] for x in lint + process_checks)
+report['passed'] = result.returncode == 0 and all(x['passed'] for x in lint + process_checks) and all(x['successful'] for x in parser_checks)
 output = Path(args.output)
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

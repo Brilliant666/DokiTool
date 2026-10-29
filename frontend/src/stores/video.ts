@@ -10,6 +10,7 @@ import type {
 } from "../types/media";
 
 export const useVideoStore = defineStore("video", () => {
+  const resultVersion = ref(0);
   const resultData = shallowRef<ParsedMedia | null>(null),
     toasts = ref<ToastMessage[]>([]),
     showProgress = shallowRef(false),
@@ -20,9 +21,11 @@ export const useVideoStore = defineStore("video", () => {
     activeDownloads = shallowRef(new Map<number, DownloadTask>());
   let swiperInstance: { destroy: () => void } | null = null;
   const setResult = (data: ParsedMedia) => {
+    resultVersion.value++;
     resultData.value = data;
   };
   const clearResult = () => {
+    resultVersion.value++;
     resultData.value = null;
   };
   const addToast = (
@@ -183,6 +186,7 @@ export const useVideoStore = defineStore("video", () => {
     draw();
   };
   return {
+    resultVersion,
     resultData,
     toasts,
     showProgress,

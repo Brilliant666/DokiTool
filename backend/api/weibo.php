@@ -118,9 +118,14 @@ function fetchVideoInfo($videoId, $headers)
 
     $responseData = json_decode($response, true);
     if (JSON_ERROR_NONE !== json_last_error()) {
-        return ['code' => 500, 'msg' => 'API响应解析失败', 'raw' => $response];
+        return ['code' => 500, 'msg' => 'API响应解析失败'];
     }
 
+    return formatWeiboResponse($responseData);
+}
+
+function formatWeiboResponse(array $responseData): array
+{
     if (isset($responseData['code']) && $responseData['code'] == 100000 && !empty($responseData['data']['Component_Play_Playinfo'])) {
         $videoInfo = $responseData['data']['Component_Play_Playinfo'];
 
@@ -129,7 +134,8 @@ function fetchVideoInfo($videoId, $headers)
 
         if (isset($videoInfo['urls']) && is_array($videoInfo['urls'])) {
             foreach ($videoInfo['urls'] as $quality => $url) {
-                $fullUrl = str_starts_with($url, '//') ? 'https:' . $url : $url;
+                $fullUrl = snapMediaUrl($url);
+                if ($fullUrl === '') { continue; }
                 $qualityKey = 'unknown';
                 $priority = 0;
 
@@ -160,21 +166,15 @@ function fetchVideoInfo($videoId, $headers)
 
         $mainUrl = $bestQuality['url'];
         $mainQuality = $bestQuality['quality'];
+        if ($mainUrl === '') { return ['code' => 404, 'msg' => '作品没有可用的视频地址']; }
 
         $duration = 0;
         if (isset($videoInfo['duration_time'])) {
             $duration = is_numeric($videoInfo['duration_time']) ? (int)$videoInfo['duration_time'] : 0;
         }
 
-        $avatar = '';
-        if (!empty($videoInfo['avatar'])) {
-            $avatar = $proxyBase . base64_encode('https:' . $videoInfo['avatar']);
-        }
-
-        $cover = '';
-        if (!empty($videoInfo['cover_image'])) {
-            $cover = $proxyBase . base64_encode('https:' . $videoInfo['cover_image']);
-        }
+        $avatar = snapMediaUrl($videoInfo['avatar'] ?? null);
+        $cover = snapMediaUrl($videoInfo['cover_image'] ?? null);
 
         return [
             'code' => 200,
@@ -281,4 +281,4 @@ function outputError($message, $code = 500)
     exit;
 }
 
-main();
+if (!defined('DOKITOOL_PARSER_LIBRARY_ONLY')) { main(); }

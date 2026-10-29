@@ -41,7 +41,9 @@ function extractParamsFromUrl($url)
     parse_str($parsedUrl['query'], $params);
     $pid = $params['pid'] ?? null;
     $mid = $params['mid'] ?? null;
-    if ($pid === null || $mid === null) {
+    if (!is_string($pid) || !is_string($mid)
+        || !preg_match('/^[1-9][0-9]{0,18}$/D', $pid) || !preg_match('/^[0-9]{1,19}$/D', $mid)
+        || (float)$pid > PHP_INT_MAX || (float)$mid > PHP_INT_MAX) {
         return false;
     }
     return ['pid' => $pid, 'mid' => $mid];
@@ -87,13 +89,13 @@ function sendPostRequest($apiurl, $payload)
 function processApiResponse($apiResponse)
 {
     $httpCode = $apiResponse['code'];
-    $response = $apiResponse['response'];
+    $response = $apiResponse['response'] ?? '';
     if ($httpCode >= 400) {
         return formatResponse($httpCode, 'HTTP 错误发生: HTTP 状态码 '. $httpCode);
     }
     $decodedResponse = json_decode($response, true);
     if ($decodedResponse === null) {
-        return formatResponse(500, '响应内容不是有效的 JSON 数据: '. $response);
+        return formatResponse(502, '响应内容不是有效的 JSON 数据');
     }
     if (!isset($decodedResponse['data']['post'])) {
         return formatResponse(500, '响应中缺少 data.post 字段');
@@ -107,22 +109,30 @@ function processApiResponse($apiResponse)
             }
         }
     }
+    $url = snapMediaUrl($videoData[0]['url'] ?? null);
+    if ($url === '') {
+        return formatResponse(404, '作品没有可用的视频地址');
+    }
     $arr = [
-        'title' => $json['content'],
+        'type' => 'video',
+        'title' => $json['content'] ?? '',
         'cover' =>  "https://file.ippzone.com/img/frame/id/".($videoData[0]['thumb'] ?? ''),
-        'video' => $videoData[0]['url']
+        'url' => $url,
+        'video' => $url
     ];
     return formatResponse(200, '解析成功', $arr);
 }
 
-// 获取 URL 参数
+if (defined('DOKITOOL_PARSER_LIBRARY_ONLY')) { return; }
+
+// The gateway has already decoded the outer query. Keep the share URL intact.
 $url = null;
 if (isset($_GET['url'])) {
-    $url = $_SERVER['REQUEST_URI'];
+    $url = $_GET['url'];
 } elseif (isset($_POST['url'])) {
     $url = $_POST['url'];
 }
-if ($url === null) {
+if (!is_string($url) || $url === '') {
     http_response_code(400);
     echo json_encode(formatResponse(400, '未提供 url 参数'), 480);
     exit;

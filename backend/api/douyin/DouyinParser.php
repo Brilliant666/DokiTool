@@ -256,7 +256,7 @@ class DouyinParser
                 'url' => $this->toHttps($this->strv($musicPlayUrl)) ?: '',
                 'cover' => $this->toHttps($this->strv($musicCoverUrl)) ?: '',
             ],
-            'extra' => (object)[],
+            'extra' => $this->detailMetadata($detail),
         ];
 
         $images = is_array($detail['images'] ?? null) ? $detail['images'] : [];
@@ -315,35 +315,36 @@ class DouyinParser
                 $main = $this->toHttps(str_replace('playwm', 'play', $main));
             }
 
-            // 原画优先：拿 vid 302 后的原画直链作为主地址；失败则回退原来的 main
-            $resolvedOriginal = $this->resolveOriginalVideoUrl($playUri);
-            if ($resolvedOriginal) {
-                if ($main && $main !== $resolvedOriginal) {
-                    array_unshift($videoInfo['backup'], $main);
-                }
-                $main = $resolvedOriginal;
-                // 只要主链接是原画 302 出来的，画质统一标 original
-                $result['quality'] = 'original';
-            } elseif ($videoInfo['gearName'] !== '') {
-                $result['quality'] = $videoInfo['gearName'];
+            // The "original" redirect can be 720p. Keep the best metadata-backed
+            // source; the unmeasured play endpoint is only an alternate/fallback.
+            $fallback = $this->buildOriginalPlayUrl($playUri);
+            if (!$main && $fallback) {
+                $main = $this->resolveOriginalVideoUrl($playUri);
+            } elseif ($fallback && $fallback !== $main) {
+                $videoInfo['backup'][] = ['url' => $fallback, 'label' => '备用播放源', 'quality' => 'unknown'];
+            }
+            $result['quality'] = $videoInfo['gearName'];
+            foreach ($videoInfo['metadata'] as $key => $value) {
+                $result[$key] = $value;
             }
 
             // 补齐抖音 CDN 约定参数 mime_type=video_mp4；主地址先归一，保证下面去重比较口径一致
             $main = $this->ensureVideoMimeType($main);
 
             $backups = [];
+            $seen = [$main];
             foreach ($videoInfo['backup'] as $candidate) {
-                $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $candidate)));
-                if ($converted && $converted !== $main && !in_array($converted, $backups, true)) {
-                    $backups[] = $converted;
+                $item = is_string($candidate) ? ['url' => $candidate] : $candidate;
+                $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $item['url'] ?? '')));
+                if ($converted && !in_array($converted, $seen, true)) {
+                    $item['url'] = $converted;
+                    $backups[] = $item;
+                    $seen[] = $converted;
                 }
             }
 
             $result['url'] = $main;
-            if ($main) {
-                $result['size'] = $this->probeVideoSize($main);
-                $result['size_label'] = $this->formatSizeLabel($result['size']);
-            }
+            $result['size_label'] = $this->formatSizeLabel($result['size']);
             $result['video_backup'] = $backups;
             $result['video_id'] = $playUri ?: $fallbackVideoId;
         }
@@ -352,6 +353,36 @@ class DouyinParser
         $result['cover'] = $cover ? ($this->toHttps($cover) ?: '') : '';
 
         return $this->output(200, '解析成功', $result);
+    }
+
+    /** Keep only metadata actually supplied by the source, including zero counts. */
+    private function detailMetadata(array $detail)
+    {
+        $extra = [];
+        $statistics = [];
+        foreach (is_array($detail['statistics'] ?? null) ? $detail['statistics'] : [] as $key => $value) {
+            if (str_ends_with((string)$key, '_count') && is_numeric($value) && $value >= 0) {
+                $statistics[$key] = (int)$value;
+            }
+        }
+        if ($statistics) { $extra['statistics'] = $statistics; }
+        $hashtags = [];
+        foreach (['text_extra' => 'hashtag_name', 'cha_list' => 'cha_name'] as $field => $name) {
+            foreach (is_array($detail[$field] ?? null) ? $detail[$field] : [] as $item) {
+                if (is_array($item) && is_string($item[$name] ?? null) && trim($item[$name]) !== '') {
+                    $hashtags[] = trim($item[$name]);
+                }
+            }
+        }
+        if ($hashtags) { $extra['hashtags'] = array_values(array_unique($hashtags)); }
+        $tags = [];
+        foreach (is_array($detail['video_tag'] ?? null) ? $detail['video_tag'] : [] as $item) {
+            if (is_array($item) && is_string($item['tag_name'] ?? null) && trim($item['tag_name']) !== '') {
+                $tags[] = trim($item['tag_name']);
+            }
+        }
+        if ($tags) { $extra['video_tags'] = array_values(array_unique($tags)); }
+        return $extra ?: (object)[];
     }
 
     /**
@@ -472,7 +503,7 @@ class DouyinParser
     }
 
     /**
-     * 提取最高画质视频：bitRateList/bit_rate 按 bitRate 降序，v3-web 优先，v26-web 换域名，其余进备用
+     * Preserve source metadata and prefer known pixel dimensions, then bitrate.
      */
     private function extractHighestQualityVideo($detail)
     {
@@ -488,12 +519,15 @@ class DouyinParser
         $url = null;
         $gearName = '';
         $backup = [];
+        $metadata = [];
 
         if ($bitRateList) {
             usort($bitRateList, function ($a, $b) {
-                $ba = is_array($a) ? (float)($a['bitRate'] ?? $a['bit_rate'] ?? 0) : 0;
-                $bb = is_array($b) ? (float)($b['bitRate'] ?? $b['bit_rate'] ?? 0) : 0;
-                return $bb <=> $ba;
+                $ma = $this->videoMetadata(is_array($a) ? $a : []);
+                $mb = $this->videoMetadata(is_array($b) ? $b : []);
+                $pixelsA = ($ma['width'] ?? 0) * ($ma['height'] ?? 0);
+                $pixelsB = ($mb['width'] ?? 0) * ($mb['height'] ?? 0);
+                return ($pixelsB <=> $pixelsA) ?: (($mb['bit_rate'] ?? 0) <=> ($ma['bit_rate'] ?? 0));
             });
 
             foreach ($bitRateList as $rateItem) {
@@ -519,23 +553,24 @@ class DouyinParser
                 }
 
                 $currentBestUrl = $v3Link ?: ($v26Link ? $this->replacePlayHost($v26Link) : $candidates[0]);
+                $itemMetadata = $this->videoMetadata($rateItem);
+                $itemQuality = isset($itemMetadata['width'], $itemMetadata['height'])
+                    ? min($itemMetadata['width'], $itemMetadata['height']) . 'p'
+                    : $this->strv($rateItem['gearName'] ?? $rateItem['gear_name'] ?? 'unknown');
 
                 if (!$url) {
                     $url = $currentBestUrl;
-                    $gearName = $this->strv($rateItem['gearName'] ?? $rateItem['gear_name'] ?? '');
+                    $gearName = $itemQuality;
+                    $metadata = $itemMetadata;
                 }
 
                 foreach ($candidates as $candidate) {
                     if (strpos($candidate, 'v26-web') !== false) {
                         $candidate = $this->replacePlayHost($candidate);
                     }
-                    if ($candidate !== $url && !in_array($candidate, $backup, true)) {
-                        $backup[] = $candidate;
+                    if ($candidate !== $url) {
+                        $backup[] = array_merge($itemMetadata, ['url' => $candidate, 'quality' => $itemQuality, 'label' => $itemQuality]);
                     }
-                }
-
-                if ($url && $backup) {
-                    break;
                 }
             }
         }
@@ -556,6 +591,7 @@ class DouyinParser
 
             if ($playApi !== '') {
                 $url = str_replace('playwm', 'play', $playApi);
+                $metadata = $this->videoMetadata($video);
             } elseif ($uri !== '') {
                 // 原画兜底地址：formatData 会用 vid 走 resolveOriginalVideoUrl 做 302 解析，失败回退此地址
                 $url = $this->buildOriginalPlayUrl($uri);
@@ -568,14 +604,43 @@ class DouyinParser
                         continue;
                     }
                     $converted = str_replace('playwm', 'play', $link);
-                    if ($converted && $converted !== $url && !in_array($converted, $backup, true)) {
-                        $backup[] = $converted;
+                    if ($converted && $converted !== $url) {
+                        $backup[] = array_merge($metadata, ['url' => $converted, 'quality' => 'unknown', 'label' => '备用播放源']);
                     }
                 }
             }
         }
 
-        return ['url' => $url, 'backup' => $backup, 'gearName' => $gearName];
+        if ($gearName === '' && isset($metadata['width'], $metadata['height'])) {
+            $gearName = min($metadata['width'], $metadata['height']) . 'p';
+        }
+        return ['url' => $url, 'backup' => $backup, 'gearName' => $gearName ?: 'unknown', 'metadata' => $metadata];
+    }
+
+    /** Metadata belongs to this candidate, never copied from a different quality. */
+    private function videoMetadata(array $item): array
+    {
+        $address = is_array($item['play_addr'] ?? null) ? $item['play_addr'] : ($item['playAddr'][0] ?? []);
+        $address = is_array($address) ? $address : [];
+        $metadata = [];
+        foreach (['width' => ['width'], 'height' => ['height'], 'bit_rate' => ['bit_rate', 'bitRate'], 'size' => ['data_size', 'dataSize']] as $key => $aliases) {
+            foreach ($aliases as $alias) {
+                $value = $item[$alias] ?? $address[$alias] ?? null;
+                if (is_numeric($value) && $value > 0) {
+                    $metadata[$key] = (int)$value;
+                    break;
+                }
+            }
+        }
+        $codec = strtolower((string)($item['codec'] ?? $item['codec_type'] ?? ''));
+        if (in_array($codec, ['h264', 'avc', 'avc1', 'h.264'], true)) {
+            $metadata['codec'] = 'h264';
+        } elseif (in_array($codec, ['hevc', 'h265', 'h.265'], true)) {
+            $metadata['codec'] = 'hevc';
+        } elseif (isset($item['is_h265']) && in_array($item['is_h265'], [0, 1, '0', '1'], true)) {
+            $metadata['codec'] = (int)$item['is_h265'] === 1 ? 'hevc' : 'h264';
+        }
+        return $metadata;
     }
 
     /**
@@ -693,6 +758,7 @@ class DouyinParser
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_HEADER => true,
+                CURLOPT_NOBODY => true,
                 CURLOPT_TIMEOUT => 10,
                 CURLOPT_SSL_VERIFYPEER => true,
                 CURLOPT_SSL_VERIFYHOST => 2,

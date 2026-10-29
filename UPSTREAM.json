@@ -93,7 +93,10 @@
     "TLS verification and bounded requests; deployment egress isolation remains required",
     "Business error handling and media fields including Bilibili parts and lazy resolution",
     "Bundled browser dependencies, original upstream licenses and dependency notices",
-    "Delay normal video Blob URL revocation by 4000 ms to allow browser download initiation"
+    "Delay normal video Blob URL revocation by 4000 ms to allow browser download initiation",
+    "Existing nine-platform UI, media field aliases, metadata preservation and consistent playback/download sources",
+    "Bounded parser responses, metadata-backed Douyin source selection and on-demand Bilibili parts",
+    "Complete mixed image/LivePhoto display and cancellable, retryable archives with stable source identity"
   ],
   "upstream_updates": "See docs/UPSTREAM-MAINTENANCE.md"
 }
