@@ -1579,3 +1579,86 @@ if (process.env.DOKITOOL_MEDIA_INTEGRATION === '1') {
     assert.equal(new URL(resolveRequests[0], 'https://snap.example.test').searchParams.get('item_id'), original.id);
   });
 }
+
+if (process.env.DOKITOOL_MEDIA_INTEGRATION === '1') {
+  const readPolicyEnvelopes = () => JSON.parse(execFileSync(
+    process.env.DOKITOOL_PHP_BINARY || 'php',
+    [fileURLToPath(new URL('../../backend/tests/media-policy-contract.php', import.meta.url)), '--export-integration'],
+    { encoding: 'utf8' },
+  ).replace(/^\uFEFF/, ''));
+
+  test('PR9 integration: public policy views validate and preserve complete-file identities', () => {
+    const exported = readPolicyEnvelopes();
+    const views = Object.fromEntries(Object.entries(exported).map(([name, envelope]) => [name, mediaContract.validateMediaEnvelope(envelope)]));
+    const normal = views.normal.items[0], debug = views.debug.items.find(item => item.id === normal.id);
+    assert.ok(normal.variants.length < debug.variants.length, 'actual PHP public view removes eligible mux candidates');
+    const complete = item => item.variants.filter(variant => variant.delivery?.kind === 'file');
+    assert.deepEqual(complete(normal), complete(debug), 'every complete representation and source survives unchanged');
+    assert.deepEqual(normal.default, debug.default, 'the frontend consumes the same server-selected file');
+    const retained = views.protected.items[0];
+    assert.ok(retained.variants.some(variant => variant.delivery?.kind === 'mux'), 'a protected processing version remains in the public contract');
+    assert.equal(views.unavailable.items[0].default, null);
+  });
+
+  test('PR9 integration: actual public views and renewal preserve explicit selection and a frozen download plan', async t => {
+    const exported = readPolicyEnvelopes();
+    const debug = mediaContract.validateMediaEnvelope(exported.debug);
+    const normal = mediaContract.validateMediaEnvelope(exported.normal);
+    const renewed = mediaContract.validateMediaEnvelope(exported.renewed);
+    const original = debug.items[0], fresh = renewed.items.find(item => item.id === original.id);
+    const choice = { variant_id: original.default.variant_id, source_id: original.default.source_id };
+    const { instance, store, selection } = harness(debug);
+    selection.choose(choice);
+    store.replaceItem(normal.items.find(item => item.id === original.id));
+    assert.deepEqual(selection.currentSelection.value, choice);
+    store.replaceItem(fresh);
+    const expected = mediaContract.getDownloadTarget(fresh, choice, { apiOrigin: configuration.apiConfig.baseUrl });
+    assert.equal(expected.kind, 'file');
+    assert.notEqual(expected.url, original.default.url, 'the actual formatter fixture changes delivery credentials');
+    const calls = [];
+    globalThis.__uiDownloadManager = { async run(request, _signal, observe) {
+      calls.push(structuredClone(request));
+      // A later response must not rewrite a plan already delivered to the manager.
+      store.replaceItem(original);
+      const outcome = { id: request.id, transport: 'browser_streaming', status: 'completed', url: request.url,
+        filename: request.filename, loaded: 4, total: 4, speed: 0, elapsed: 1, averageSpeed: 4 };
+      observe(outcome); return outcome;
+    } };
+    t.after(() => { delete globalThis.__uiDownloadManager; });
+    await instance.downloadMainVideo(); await settled(store.downloads[0]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, expected.url);
+    assert.equal(store.downloads[0].status, 'completed');
+    assert.deepEqual(selection.currentSelection.value, choice, 'neither filtering nor renewal resets explicit identity');
+  });
+
+  test('PR9 integration: an explicitly selected version removed by the public view never borrows default', async () => {
+    const exported = readPolicyEnvelopes();
+    const debug = mediaContract.validateMediaEnvelope(exported.debug), normal = mediaContract.validateMediaEnvelope(exported.normal);
+    const original = debug.items[0], visible = normal.items.find(item => item.id === original.id);
+    const removed = original.variants.find(variant => !visible.variants.some(candidate => candidate.id === variant.id));
+    assert.ok(removed, 'fixture contains a policy-filtered explicit candidate');
+    const { instance, store, selection } = harness(debug);
+    selection.choose({ variant_id: removed.id });
+    store.replaceItem(visible);
+    assert.equal(selection.currentTarget.value.kind, 'invalid');
+    assert.match(selection.currentTarget.value.message, /已选版本不存在/);
+    assert.deepEqual(selection.currentSelection.value, { variant_id: removed.id });
+    await instance.downloadMainVideo();
+    assert.equal(fetched.length, 0); assert.equal(clicked.length, 0);
+  });
+
+  for (const mode of ['normal', 'debug']) test(`PR9 integration: actual ${mode} resolve link preserves its candidate view`, async () => {
+    const exported = readPolicyEnvelopes(), envelope = exported[mode];
+    const data = mediaContract.validateMediaEnvelope(envelope), original = data.items[0];
+    const { store } = harness(data), requests = [];
+    const resolver = parser.useVideoParser({ videoStore: store, locale: ref('zh-CN'), showToast() {} });
+    globalThis.fetch = async url => { requests.push(url); return Response.json(envelope); };
+    const resolved = await resolver.resolveItem(original);
+    assert.equal(resolved.id, original.id);
+    assert.deepEqual(resolved.variants.map(variant => variant.id), original.variants.map(variant => variant.id));
+    assert.equal(requests.length, 1);
+    const resolveUrl = new URL(requests[0], 'https://snap.example.test');
+    assert.equal(resolveUrl.searchParams.get('debug'), mode === 'debug' ? '1' : null);
+  });
+}
