@@ -95,7 +95,7 @@ answered by an active Worker only. HTTPS (or localhost) is required.
 
 The client checks `registration.update()` once per page without blocking an active
 Worker. There is no forced `skipWaiting`; installing a new version must not replace
-a Worker with in-flight downloads. Worker build `downloads-20261030.2` is returned
+a Worker with in-flight downloads. Worker build `downloads-20261030.3` is returned
 by ping/query/progress and exposed as `data-worker-build` on download cards; an old
 Worker without a build marker is labelled `legacy` in this diagnostic attribute.
 Bump BUILD when changing Worker behavior. Legacy statistics keep their original
