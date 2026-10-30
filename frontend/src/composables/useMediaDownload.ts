@@ -83,11 +83,17 @@ export function useMediaDownload({
     videoStore.downloads.find((task) => task.id === id);
   const ownsTask = (id: number, controller: AbortController) =>
     taskFor(id)?.abortController === controller;
+  const clearableUnknown = (task: DownloadTask) =>
+    task.transport === "browser_streaming" &&
+    task.observation === "unknown" &&
+    task.ownerGone === true && task.recoveryExpired === true;
+  const clearable = (task: DownloadTask) => clearableUnknown(task) ||
+    (!task.observation && ["completed", "cancelled", "failed", "handed-off", "interrupted"].includes(task.status));
   const matchesSettledAttempt = (snapshot: DownloadTask) => {
     const current = taskFor(snapshot.id);
     return (
       current &&
-      !current.observation &&
+      clearable(current) &&
       current.deliveryId === snapshot.deliveryId &&
       current.abortController === snapshot.abortController &&
       current.status === snapshot.status &&
@@ -272,6 +278,10 @@ export function useMediaDownload({
       transferElapsed: snapshot.transferElapsed,
       observation: snapshot.observation,
       workerBuild: snapshot.workerBuild,
+      workerInstance: snapshot.workerInstance,
+      recoveryDeadline: snapshot.recoveryDeadline,
+      recoveryExpired: snapshot.recoveryExpired,
+      ownerGone: snapshot.ownerGone,
       transferred: snapshot.loaded,
       error: snapshot.error || null,
       progressKind: "bytes",
@@ -316,7 +326,7 @@ export function useMediaDownload({
       );
     const active = (status: string) =>
       ["queued", "preparing", "downloading"].includes(status);
-    let duplicate = matchingTasks().some((task) => active(task.status));
+    let duplicate = matchingTasks().some((task) => active(task.status) && !task.ownerGone);
     if (
       !duplicate &&
       matchingTasks().some(
@@ -327,7 +337,7 @@ export function useMediaDownload({
         const { hasStreamingTask } = await import("../downloads/streaming");
         duplicate = matchingTasks().some(
           (task) =>
-            active(task.status) ||
+            (active(task.status) && !task.ownerGone) ||
             (task.status === "interrupted" &&
               task.deliveryId &&
               hasStreamingTask(task.deliveryId)),
@@ -1206,6 +1216,14 @@ export function useMediaDownload({
     }
   }
 
+  async function handleQueryDownload(id: number): Promise<void> {
+    const task = taskFor(id);
+    if (!task?.deliveryId || task.transport !== "browser_streaming" || !task.recoveryExpired) return;
+    const { queryStreaming } = await import("../downloads/streaming");
+    if (taskFor(id)?.deliveryId !== task.deliveryId) return;
+    await queryStreaming(task.deliveryId);
+  }
+
   /** Called synchronously by a real user click. Browser-owned progress is unknowable here. */
   function handleBrowserDownload(id: number): void {
     if (pendingTaskActions.has(id)) return;
@@ -1241,19 +1259,11 @@ export function useMediaDownload({
   }
 
   async function handleClearCompleted(id: number | "all"): Promise<void> {
-    const settled = [
-      "completed",
-      "cancelled",
-      "failed",
-      "handed-off",
-      "interrupted",
-    ];
     const tasks = videoStore.downloads
       .filter(
         (task) =>
-          !task.observation &&
+          clearable(task) &&
           !pendingTaskActions.has(task.id) &&
-          settled.includes(task.status) &&
           (id === "all" || task.id === id),
       )
       .map((task) => ({ ...task }));
@@ -1283,6 +1293,9 @@ export function useMediaDownload({
         archiveRetries.delete(task.id);
         videoRetries.delete(task.id);
         sourceContexts.delete(task.id);
+        // Clearing a confirmed-gone execution is history cleanup, not a new
+        // cancellation intent. Pinia's removeDownload aborts a saved controller.
+        if (clearableUnknown(task)) videoStore.updateDownload(task.id, { abortController: null });
         videoStore.removeDownload(task.id);
       }
     } finally {
@@ -1307,6 +1320,7 @@ export function useMediaDownload({
     downloadAllImages,
     handleCancelDownload,
     handleRetryDownload,
+    handleQueryDownload,
     handleBrowserDownload,
     handleClearCompleted,
   };

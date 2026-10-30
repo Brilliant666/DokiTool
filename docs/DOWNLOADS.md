@@ -2,17 +2,17 @@
 
 The existing download button resolves the selected work, episode and source before
 handing a complete file to `frontend/src/downloads/manager.ts`. Parser APIs now use
-the [unified media v1 contract](API.md); the confirmed layout and PR #7 download
-transport/lifecycle modules are retained. Ordinary
+the [unified media v1 contract](API.md); the confirmed layout and existing download
+transport routes are retained. Ordinary
 CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
 
 The policy, ownership and deployment sections describe the current implementation
-(`downloads-20261030.4`). Dated acceptance entries preserve the investigation
+(`downloads-20261031.1`). Dated acceptance entries preserve the investigation
 history; earlier blockers and fallback behavior are not the current release
-contract. The latest SW file-integrity results are under
-[State and admission consolidation](#state-and-admission-consolidation-2026-10-30),
-followed by the task-panel acceptance. Publishing the source or passing a local
+contract. The latest controlled refresh, saved-file integrity and natural upgrade results are in
+[the unified-media acceptance record](UNIFIED-MEDIA-ACCEPTANCE.md#下载恢复与候选精简验收2026-10-31).
+Publishing the source or passing a local
 build does not itself establish the production version.
 
 ## Unified media input boundary
@@ -26,9 +26,10 @@ different quality. Multi-part resolution uses the backend's opaque item ID.
 New download plans freeze the selected item, version, source, filename and routes
 before entering the existing manager. Later parsing and resolution cannot rewrite
 an active plan. File delivery continues to use native attachment eligibility,
-Service Worker streaming and capability-only Blob fallback. PR #7 task snapshots,
-refresh recovery, admission, bridge retention and natural Worker upgrades remain
-unchanged; there is no migration or forced Worker activation for this schema switch.
+Service Worker streaming and capability-only Blob fallback. The unified schema
+switch retained PR #7 lifecycle behavior; the current recovery change adds durable
+outcome records and bounded observation, without changing frozen media plans,
+admission, transport selection or natural Worker upgrades.
 
 Explicit HLS, validated byte-concatenable segments and live-photo pairs use their
 corresponding media preparation paths. DASH/mux/remux are preserved and explained
@@ -49,7 +50,7 @@ the unified parser or of any real platform's current availability.
    popup. The server chooses the actual filename. Status is **handed off**, never
    verified completion; the iframe remains until the document is destroyed because
    native completion cannot be observed safely.
-2. `streaming.ts`, `session.ts`, `bridge.ts` and `public/downloads/worker.js`: other readable complete files
+2. `streaming.ts`, `session.ts`, `bridge.ts`, `public/downloads/worker.js` and `task-store.js`: other readable complete files
    use a download-only Service Worker. It supplies an attachment filename and
    forwards bytes with backpressure; it never buffers the entire file. Only the
    `/downloads/` scope is controlled, not the application or API. Sources still
@@ -73,16 +74,16 @@ limits transfers across tabs to two, and Blob has its stricter memory queue.
 Native transfers leave application control and cannot count toward an observable
 browser-wide concurrency budget.
 
-Worker `downloads-20261030.4` advertises admission support in its protocol-1 ping.
+Worker `downloads-20261031.1` advertises admission and recovery support in its protocol-1 ping.
 New clients queue START before opening an attachment request. Waiting has no total
 deadline and sends no media GET. A ready task reserves a slot and has 60 seconds
 for the browser to claim the attachment; only then do the 120-second preparation
 deadline and source attempts begin. Returning attachment headers clears that
 deadline; it never limits the streaming body. A maximum of 100 unfinished tasks is
-independent of the last 100 terminal summaries, which expire after ten minutes.
+independent of the last 100 terminal summaries, which expire after 24 hours.
 
 Compatibility is negotiated with each task's actual owner. A new client with an
-old Worker uses the original attachment URL. An old client with `.4` retains its
+old Worker uses the original attachment URL. An old client with the current Worker retains its
 original URL and 120-second combined queue/preparation deadline. Both generations
 share the same two transfer slots. START messages finish after acknowledgement;
 neither message nor fetch events wait for the whole file through `waitUntil`.
@@ -94,19 +95,43 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   CDN URLs. All unfinished IDs/tokens survive history trimming; at most 100 terminal
   summaries remain for 24 hours after confirmation. Worker terminal history does
   not consume the active-task quota, and authenticated cleanup rejects live tasks.
+- Same-origin IndexedDB stores only IDs/access tokens, original build/execution ID,
+  lifecycle timestamps/revisions and small filename/byte summaries. It stores no
+  media bytes or source URLs. Every Worker execution generates a new instance ID,
+  including restarts of the same build. A new execution can report an old durable
+  terminal, but cannot adopt its old active stream. This is outcome recovery, not
+  network resume. Writes occur at lifecycle transitions, not on each media chunk.
+  Storage operations have a 1.5-second bound; a storage failure disables further
+  persistence in that execution and never turns a successful transfer into failure.
+  Terminal persistence is attempted before notification and in-memory cleanup;
+  trusted live outcomes remain valid when persistence fails. Only short result
+  writes may receive event lifetime protection, never the complete transfer.
 - Refresh queries the existing Worker, re-subscribes and permits cancellation. It
   never resends START or replaces an already claimed transfer. A task still waiting
   for admission can later become ready; an unclaimed ready task can be claimed once
-  after refresh. Missing tasks are interrupted;
-  temporary communication failure preserves the latest progress and active state,
-  shows unknown observation, and can recover on a later reply. Saved progress omits
+  after refresh. Missing records, RPC timeouts or an ended owner without a confirmed
+  terminal mean **unconfirmed**, not failed. Temporary communication failure
+  preserves the latest progress and can recover on a later reply. Saved progress omits
   signed URLs and is throttled to at most one sessionStorage write per five seconds.
 - `streaming.ts` owns one record per task, with a single reducer for push/query/ACK
-  snapshots. Revision ordering and absorbing terminal outcomes prevent late progress
-  from undoing completion. Legacy Workers use monotonic bytes/stages instead.
+  snapshots. Revision ordering is scoped to the execution identity. Authoritative
+  completed/failed/cancelled outcomes are absorbing; observation failure is not a
+  terminal. Late evidence from the same execution can correct an unconfirmed card,
+  but a new execution or stale revision cannot overwrite it. Legacy Workers use
+  monotonic bytes/stages instead. Old client-inferred `interrupted` summaries are
+  rechecked; confirmed terminal summaries never downgrade because a query is empty.
   Cancellation intent is persisted immediately and prevents unclaimed delivery;
   only a Worker outcome confirms cancellation. A refresh retries that idempotent
   cancel on the same owner, never starts another download.
+- Automatic observation recovery lasts a fixed 60 seconds from the first lost
+  observation. Empty queries, retries and page refresh do not extend that deadline.
+  Trusted activity or a terminal ends recovery early. At expiry, polling stops and
+  the compact history row says “无法确认下载结果，请查看浏览器下载列表。” with
+  “重新查询状态”. That explicit action starts another bounded query window, never
+  START, cancellation, transport fallback or a second media request. Sixty seconds
+  is not a transfer duration limit. A possible live owner keeps its bridge; confirmed
+  termination or confirmed execution loss permits release. Unconfirmed history is
+  excluded from the panel's active count.
 - `session.ts` coalesces discovery and the capability handshake. It distinguishes
   explicit refusals from lost replies; a lost START acknowledgement keeps an
   uncertain task rather than permitting Blob or another START. Dead page subscribers
@@ -128,7 +153,9 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   limit; no speculative replacement transfer is started.
 - HTTP 206/Content-Range are not accepted as complete files. Known length, empty
   bodies and media/error-page responses are checked. Unknown source length remains
-  unknown in the UI. Stream completion means bytes were handed to the browser,
+  unknown in the UI. `loaded === total` alone never establishes completion: real
+  upstream EOF, integrity checks and normal response stream close are required.
+  Stream completion means bytes were handed to the browser,
   not independently verified disk persistence.
 - Manual opening of a source is available only after confirmed failure,
   cancellation or loss of the original task. It is absent from active/uncertain
@@ -145,8 +172,10 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
 The summary bar expands a bounded, internally scrolling task list. Active and
 uncertain tasks come first; ended records keep compact status rows with optional
 details. Completion means stream delivery, not verified disk persistence.
-Clearing ended records is available while other tasks run and excludes uncertain
-observations. It does not delete saved files.
+Clearing ended records is available while other tasks run. An unconfirmed record
+can be cleared only after its recovery window expires and its original execution
+is confirmed gone; possibly live unknown tasks remain protected. Clearing history
+does not send cancellation, establish a result or delete saved files.
 
 Folding only changes presentation. A new active task opens the panel unless the
 user has manually folded it; that preference is stored locally when available.
@@ -155,7 +184,7 @@ keyboard focus. Automatic folding does not overwrite the manual preference.
 
 ## Deployment
 
-Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build.
+Publish `frontend/dist/downloads/worker.js`, `task-store.js` and `bridge.html` along with the build.
 Verify the existing `/downloads/*` static-file rules against
 `ops/examples/snap.caddy`, adding the block only if missing: use revalidation
 (`Cache-Control: no-cache`), correct JavaScript MIME, and **404 for missing files**.
@@ -180,15 +209,29 @@ IDs/tokens, without START or a replacement GET for a claimed transfer. Completed
 does not hold a bridge. Closing all pages or suspending the browser remains outside
 this guarantee; the bridge is not a native background download service.
 
-Worker build `downloads-20261030.4` is returned
+Worker build `downloads-20261031.1` and a fresh per-execution instance are returned
 by ping/query/progress and exposed as `data-worker-build` on download cards; an old
 Worker without a build marker is labelled `legacy` in this diagnostic attribute.
+`data-worker-instance` and `data-task-id` allow inspection of execution/task
+continuity without exposing an access token or signed source URL.
 Bump BUILD when changing Worker behavior. Legacy statistics keep their original
 meaning until that Worker retires. Future protocol-breaking updates need a
 migration plan. The download modules load on demand; an empty-history homepage
 does not register a Worker or load its client.
 
 ## Acceptance
+
+The recovery regression suite exercises the real Worker and page modules with
+deterministic IndexedDB, client and timer fault injection. It covers a lost terminal
+notification followed by a same-build restart, stale active records, bounded storage
+failure, 60-second observation expiry/manual query, legacy inferred interruption,
+execution-scoped revisions, history pruning and real EOF. Run from `frontend/`:
+`node --test --test-concurrency=1 tests/download-worker.test.mjs tests/download-streaming.test.mjs tests/download-panel.test.mjs`.
+These are deterministic regressions, not browser disk-save acceptance. See the
+current [unified media acceptance record](UNIFIED-MEDIA-ACCEPTANCE.md) for final-head
+browser outcomes. The historical full-file-save/page-interruption observation below
+does not establish a unique cause; the proven in-memory-history gap and the new
+durable recovery behavior must remain distinct from that historical attribution.
 
 Automated tests cover native eligibility, serial Blob, delivery selection,
 concurrency, cancellation, Worker streams, first-byte failover, truncation, token

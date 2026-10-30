@@ -136,6 +136,7 @@ const {
   downloadImage,
   handleCancelDownload,
   handleRetryDownload,
+  handleQueryDownload,
   handleBrowserDownload,
   handleClearCompleted,
 } = useMediaDownload({
@@ -245,6 +246,7 @@ onMounted(() => {
       :downloads="videoStore.downloads"
       @cancel="handleCancelDownload"
       @retry="handleRetryDownload"
+      @query="handleQueryDownload"
       @handoff="handleBrowserDownload"
       @clear-completed="handleClearCompleted"
     />

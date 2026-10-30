@@ -76,6 +76,7 @@ async function mount(t, downloads = [], { storageBlocked = false, preference } =
   const root = element('root');
   const app = renderer.createApp({ render: () => h(DownloadCard, { downloads: state.value,
     onCancel: id => events.push(['cancel', id]), onRetry: id => events.push(['retry', id]),
+    onQuery: id => events.push(['query', id]),
     onHandoff: id => events.push(['handoff', id]), onClearCompleted: id => events.push(['clear-completed', id]),
   }) });
   let stopped = false;
@@ -319,4 +320,33 @@ test('server rendering is safe without window, document or browser storage', asy
   assert.match(html, /取消\s*13/);
   assert.match(html, /aria-expanded="false"/);
   assert.match(html, /hidden/);
+});
+
+test('expired observation becomes compact history with query only, never an active transfer or retry', async t => {
+  const view = await mount(t, [task('uncertain', 'downloading', {
+    observation: 'unknown', recoveryExpired: true, deliveryId: 'task-opaque', workerBuild: 'build', workerInstance: 'execution',
+    url: 'https://cdn.test/private', nativeAvailable: true,
+  })]);
+  assert.equal(view.expanded(), false); assert.match(textOf(view.root), /未确认 1/);
+  assert.doesNotMatch(textOf(view.root), /个进行中/);
+  await view.click(view.toggle());
+  const row = view.row('uncertain');
+  assert.match(textOf(row), /无法确认下载结果，请查看浏览器下载列表。/);
+  assert.equal(view.button('取消', row), undefined); assert.equal(view.button('重试', row), undefined);
+  assert.equal(view.button('打开源链接', row), undefined);
+  assert.equal(row.props['data-task-id'], 'task-opaque'); assert.equal(row.props['data-worker-instance'], 'execution');
+  await view.click(view.button('重新查询状态', row)); assert.deepEqual(view.events, [['query', 'uncertain']]);
+});
+
+test('only expired unknown history with a confirmed gone owner can be cleared', async t => {
+  const view = await mount(t, [task('lost', 'downloading', { observation: 'unknown', recoveryExpired: true, ownerGone: true, transport: 'browser_streaming', deliveryId: 'old-task' }),
+    task('possible', 'downloading', { observation: 'unknown', recoveryExpired: true, transport: 'browser_streaming' }),
+    task('recovering', 'downloading', { observation: 'unknown', ownerGone: true, transport: 'browser_streaming' })]);
+  if (!view.expanded()) await view.click(view.toggle());
+  assert.ok(view.button('清除', view.row('lost')));
+  assert.equal(view.button('清除', view.row('possible')), undefined);
+  assert.equal(view.button('清除', view.row('recovering')), undefined);
+  assert.match(textOf(view.row('lost')), /结果未确认/);
+  await view.click(view.button('清除', view.row('lost')));
+  assert.deepEqual(view.events, [['clear-completed', 'lost']]);
 });

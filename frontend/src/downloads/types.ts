@@ -30,6 +30,11 @@ export interface DownloadSnapshot {
   averageSpeed: number;
   transferElapsed?: number;
   workerBuild?: string;
+  workerInstance?: string;
+  finishedAt?: number;
+  recoveryDeadline?: number;
+  recoveryExpired?: boolean;
+  ownerGone?: boolean;
   /** Worker snapshots are ordered independently of message arrival. Legacy workers omit this. */
   revision?: number;
   /** Admission precedes the browser's attachment request. */

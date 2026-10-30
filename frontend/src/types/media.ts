@@ -240,6 +240,10 @@ export interface DownloadTask {
   transferElapsed?: number;
   observation?: "unknown" | "stalled";
   workerBuild?: string;
+  workerInstance?: string;
+  recoveryDeadline?: number;
+  recoveryExpired?: boolean;
+  ownerGone?: boolean;
   /** Bytes actually received, including failed routes when retried. */
   transferred?: number;
   progressKind?: "bytes" | "segments" | "archive";

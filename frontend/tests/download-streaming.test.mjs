@@ -226,14 +226,14 @@ for (const oldPing of ['reply', 'timeout']) test(`an activating update is resele
   assert.equal((await task).status, 'completed');
 });
 
-test('confirmed missing task keeps its last progress but stops polling and duplicate prevention', async t => {
+test('query miss is observation uncertainty, never proof that the transfer failed', async t => {
   const h = await harness(t, message => message.action === 'ping' ? { protocol: 1, workerBuild: build } : { snapshots: [] });
   const { url, routes, ...last } = state();
   h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
   const [missing] = await h.api.reconnectStreaming(() => {});
-  assert.equal(missing.status, 'interrupted'); assert.equal(missing.observation, undefined);
-  assert.equal(missing.loaded, 10 * 1024 ** 2); assert.equal(h.api.hasStreamingTask(request.id), false);
-  assert.equal([...h.timers.values()].filter(timer => timer.delay === 5000).length, 0);
+  assert.equal(missing.status, 'downloading'); assert.equal(missing.observation, 'unknown');
+  assert.equal(missing.loaded, 10 * 1024 ** 2); assert.equal(h.api.hasStreamingTask(request.id), true);
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
 });
 
 for (const restoring of [false, true]) {
@@ -404,18 +404,22 @@ test('query, cancellation and terminal cleanup retain the original task owner af
   for (const action of ['query', 'cancel', 'forget']) assert.ok(h.messages.some(message => message.action === action));
 });
 
-test('a redundant owner is an interruption, not permission to resume through the replacement Worker', async t => {
+test('a redundant owner permits result lookup only, never replacement START or false failure', async t => {
   const h = await harness(t, message => message.action === 'ping' ? { protocol: 1, workerBuild: build }
     : { snapshot: state(), downloadUrl: `/downloads/file/${request.id}/${message.token}` });
   const observed = [], replacementMessages = [];
   const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
-  const interrupted = assert.rejects(task, /原下载任务已失效/);
+  const interrupted = assert.rejects(task, error => error.name === 'StreamingStateUnknownError');
   await flush();
   h.worker.state = 'redundant';
-  h.registration.active = { scriptURL: origin + '/downloads/worker.js', state: 'activated', postMessage: message => replacementMessages.push(message) };
-  await h.poll(); await interrupted;
-  assert.equal(observed.at(-1).status, 'interrupted'); assert.equal(observed.at(-1).loaded, 10 * 1024 ** 2);
-  assert.equal(h.api.hasStreamingTask(request.id), false); assert.deepEqual(replacementMessages, []);
+  h.registration.active = { scriptURL: origin + '/downloads/worker.js', state: 'activated', postMessage(message, [port]) {
+    replacementMessages.push(message); port.postMessage(message.action === 'ping' ? { protocol: 1, workerBuild: 'next-build' } : { snapshots: [], unavailable: [{ id: request.id, ownerGone: true }] });
+  } };
+  await h.poll(); h.advance(60_001); await h.poll(); await interrupted;
+  assert.equal(observed.at(-1).status, 'downloading'); assert.equal(observed.at(-1).recoveryExpired, true);
+  assert.equal(observed.at(-1).loaded, 10 * 1024 ** 2);
+  assert.equal(h.api.hasStreamingTask(request.id), false);
+  assert.ok(replacementMessages.every(message => ['ping', 'query'].includes(message.action)));
   assert.equal(h.messages.filter(message => message.action === 'start').length, 1);
   h.tick(4000); assert.equal(h.bridges[0].removed, true);
 });
@@ -526,6 +530,72 @@ for (const failure of ['missing bridge document', 'bridge timeout', 'protocol mi
 const admissionPing = { protocol: 1, workerBuild: 'downloads-admission', capabilities: { admission: true } };
 const admittedState = (delivery, revision, patch = {}) => state(delivery === 'claimed' ? 'downloading' : 'queued', {
   delivery, revision, loaded: 0, workerBuild: admissionPing.workerBuild, ...patch,
+});
+
+test('a fixed recovery deadline survives empty queries and refresh, then manual query can restore terminal', async t => {
+  let found = false;
+  const instance = 'owner-instance';
+  const h = await harness(t, message => message.action === 'ping' ? { ...admissionPing, workerInstance: instance }
+    : { workerInstance: instance, snapshots: found ? [admittedState('claimed', 12, { status: 'completed', workerInstance: instance })] : [] });
+  const { url, ...last } = admittedState('claimed', 10, { workerInstance: instance });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+  const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+  const deadline = observed.at(-1).recoveryDeadline;
+  h.advance(35_000); await h.poll(); assert.equal(observed.at(-1).recoveryDeadline, deadline);
+  h.advance(25_001); await h.poll();
+  assert.equal(observed.at(-1).recoveryExpired, true);
+  assert.match(observed.at(-1).error, /无法确认下载结果，请查看浏览器下载列表/);
+  assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+  h.tick(4000); assert.notEqual(h.bridges[0].removed, true, 'query misses alone cannot release a possibly live owner');
+  const count = h.messages.length;
+  await h.api.reconnectStreaming(() => {});
+  assert.equal(h.messages.length, count, 'refreshing an expired window cannot renew automatic polling');
+  found = true; await h.api.queryStreaming(request.id);
+  assert.equal(observed.at(-1).status, 'completed');
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+  assert.equal(h.attachments.length, 0);
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+});
+
+test('old client-inferred interrupted is rechecked, but confirmed terminal summaries remain absorbing', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : { snapshots: [admittedState('claimed', 5, { workerInstance: 'old-instance', status: 'completed' })] });
+  const { url, ...result } = admittedState('claimed', 900, { status: 'interrupted' });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), result }]));
+  const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+  assert.equal(observed.at(-1).status, 'completed', 'legacy revision without an execution identity must not reject durable evidence');
+  const queries = h.messages.length; await h.api.queryStreaming(request.id);
+  assert.equal(h.messages.length, queries); h.update(admittedState('claimed', 901, { status: 'failed', workerInstance: 'old-instance' }));
+  assert.equal(observed.at(-1).status, 'completed');
+});
+
+test('same-build restart reports old active ownership gone without adopting a new execution', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? { ...admissionPing, workerInstance: 'new-instance' }
+    : { snapshots: [], workerInstance: 'new-instance', unavailable: [{ id: request.id, ownerGone: true }] });
+  const { url, ...last } = admittedState('claimed', 20, { workerInstance: 'old-instance' });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+  const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+  assert.equal(observed.at(-1).observation, 'unknown'); assert.equal(observed.at(-1).ownerGone, true);
+  assert.equal(observed.at(-1).workerInstance, 'old-instance');
+  h.update(admittedState('claimed', 100, { status: 'completed', workerInstance: 'new-instance' }));
+  assert.notEqual(observed.at(-1).status, 'completed');
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+  h.advance(60_001); await h.poll(); assert.equal(observed.at(-1).recoveryExpired, true);
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+});
+
+test('uncertainty accepts the same execution authoritative failure and rejects older or conflicting terminals', async t => {
+  const instance = 'original-instance';
+  const h = await harness(t, message => message.action === 'ping' ? { ...admissionPing, workerInstance: instance } : { snapshots: [] });
+  const { url, ...last } = admittedState('claimed', 10, { workerInstance: instance });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+  const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+  h.update(admittedState('claimed', 9, { status: 'completed', workerInstance: instance }));
+  assert.equal(observed.at(-1).observation, 'unknown');
+  h.update(admittedState('claimed', 11, { status: 'failed', error: 'truncated', workerInstance: instance }));
+  assert.equal(observed.at(-1).status, 'failed');
+  h.update(admittedState('claimed', 12, { status: 'completed', workerInstance: instance }));
+  assert.equal(observed.at(-1).status, 'failed', 'completed is not privileged over a confirmed failure');
 });
 
 test('admission waits without an attachment and opens exactly once when the Worker reports ready', async t => {

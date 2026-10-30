@@ -32,6 +32,7 @@ before(async () => {
         if (id !== '\0ui-download-streaming') return;
         return `import * as actual from '/src/downloads/streaming.ts';
           export const cancelStreaming = (...args) => (globalThis.__uiDownloadStreaming?.cancelStreaming || actual.cancelStreaming)(...args);
+          export const queryStreaming = (...args) => (globalThis.__uiDownloadStreaming?.queryStreaming || actual.queryStreaming)(...args);
           export const hasStreamingTask = (...args) => (globalThis.__uiDownloadStreaming?.hasStreamingTask || actual.hasStreamingTask)(...args);
           export const reconnectStreaming = (...args) => (globalThis.__uiDownloadStreaming?.reconnectStreaming || actual.reconnectStreaming)(...args);
           export const forgetStreaming = (...args) => (globalThis.__uiDownloadStreaming?.forgetStreaming || actual.forgetStreaming)(...args);`;
@@ -625,6 +626,32 @@ function retryRaceHarness(t) {
   });
   return { ...context, id, acknowledgements, deliveries };
 }
+
+test('expired unknown cleanup requires confirmed owner loss and preserves possibly live records', async t => {
+  const { instance, store } = harness(base), forgotten = [];
+  const common = { filename: 'old.mp4', status: 'downloading', observation: 'unknown', transport: 'browser_streaming', abortController: null };
+  const safe = store.addDownload({ ...common, deliveryId: 'gone', ownerGone: true, recoveryExpired: true });
+  const live = store.addDownload({ ...common, deliveryId: 'possible', recoveryExpired: true });
+  const observing = store.addDownload({ ...common, deliveryId: 'observing', ownerGone: true });
+  globalThis.__uiDownloadStreaming = { forgetStreaming: async id => { forgotten.push(id); } };
+  t.after(() => { delete globalThis.__uiDownloadStreaming; });
+  await instance.handleClearCompleted('all');
+  assert.deepEqual(forgotten, ['gone']);
+  assert.deepEqual(store.downloads.map(item => item.id), [live, observing]);
+  assert.ok(!store.downloads.some(item => item.id === safe));
+});
+
+test('unknown cleanup cannot clear a task that regained authoritative activity during acknowledgement', async t => {
+  const { instance, store } = harness(base); let resolveForget;
+  const id = store.addDownload({ filename: 'old.mp4', status: 'downloading', observation: 'unknown', transport: 'browser_streaming', deliveryId: 'old', ownerGone: true, recoveryExpired: true });
+  globalThis.__uiDownloadStreaming = { forgetStreaming: () => new Promise(resolve => { resolveForget = resolve; }) };
+  t.after(() => { delete globalThis.__uiDownloadStreaming; });
+  const clearing = instance.handleClearCompleted(id);
+  await waitUntil(() => resolveForget);
+  store.updateDownload(id, { observation: undefined, ownerGone: undefined, recoveryExpired: undefined });
+  resolveForget(); await clearing;
+  assert.equal(store.downloads.length, 1);
+});
 
 test('double retry clicks share one pending acknowledgement and start only one new delivery', async (t) => {
   const { instance, id, acknowledgements, deliveries } = retryRaceHarness(t);
