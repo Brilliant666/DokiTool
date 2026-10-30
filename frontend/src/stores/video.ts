@@ -103,7 +103,7 @@ export const useVideoStore = defineStore("video", () => {
     const download = downloads.value.find((item) => item.id === id);
     if (download) {
       download.abortController?.abort();
-      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, abortController: null });
+      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, observation: undefined, abortController: null });
     }
   };
   const clearCompletedDownloads = () => {

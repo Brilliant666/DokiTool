@@ -39,6 +39,29 @@ test('unknown native eligibility chooses streaming', async () => {
   assert.deepEqual(calls, ['probe', 'sw']);
 });
 
+test('the same-attempt complete-response probe avoids a second GET for both attachment and inline media', async () => {
+  for (const attachment of [null, { url: request().url, filename: '附件.mp4' }]) {
+    const { manager, calls } = harness();
+    await manager.run({ ...request(), probe: { url: request().url, attachment } }, new AbortController().signal, () => {});
+    assert.deepEqual(calls, attachment ? ['native'] : ['sw']);
+  }
+});
+
+test('metadata from a different URL never skips the real native check', async () => {
+  const { manager, calls } = harness();
+  await manager.run({ ...request(), probe: { url: 'https://other.test/video.mp4', attachment: null } }, new AbortController().signal, () => {});
+  assert.deepEqual(calls, ['probe', 'sw']);
+});
+
+test('the original click time reaches the transport and includes preparation in total elapsed time', async () => {
+  const startedAt = Date.now() - 5000, updates = [];
+  const { manager } = harness({ downloadStreaming: async input => {
+    assert.equal(input.startedAt, startedAt); return done(input);
+  } });
+  await manager.run({ ...request(), startedAt }, new AbortController().signal, value => updates.push(value));
+  assert.ok(updates[0].elapsed >= 5);
+});
+
 test('only explicit pre-start capability failure permits Blob', async () => {
   const { manager, calls } = harness({ downloadStreaming: async () => { throw new StreamingUnavailableError('unsupported'); } });
   assert.equal((await manager.run(request(), new AbortController().signal, () => {})).transport, 'browser_blob');

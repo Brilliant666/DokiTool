@@ -30,10 +30,10 @@ function harness(fetcher) {
   const send = (message, client = 'page') => new Promise(resolve => {
     events.get('message')({ data: { protocol: 1, ...message }, source: { id: client }, ports: [{ postMessage: resolve }], waitUntil: promise => lifetime.push(promise) });
   });
-  const start = async (number, routes = []) => send({ action: 'start', token, request: { id: id(number), filename: '作品_P1.mp4', url: 'https://cdn.test/primary.mp4', routes } });
-  const download = async (number, suppliedToken = token) => {
+  const start = async (number, routes = [], extra = {}) => send({ action: 'start', token, request: { id: id(number), filename: '作品_P1.mp4', url: 'https://cdn.test/primary.mp4', routes, ...extra } });
+  const download = async (number, suppliedToken = token, signal) => {
     let response;
-    events.get('fetch')({ request: new Request(`${origin}/downloads/file/${id(number)}/${suppliedToken}`), respondWith: value => { response = value; }, waitUntil: promise => lifetime.push(promise) });
+    events.get('fetch')({ request: new Request(`${origin}/downloads/file/${id(number)}/${suppliedToken}`, { signal }), respondWith: value => { response = value; }, waitUntil: promise => lifetime.push(promise) });
     return await response;
   };
   const query = async (number, client = 'page') => (await send({ action: 'query', tasks: [{ id: id(number), token }] }, client)).snapshots[0];
@@ -109,6 +109,66 @@ test('a browser cancel releases the worker-owned transfer', async t => {
   assert.equal((await h.download(1)).status, 404, 'the attachment URL cannot start a duplicate transfer');
 });
 
+test('aborted attachment requests release occupied slots even without a stream cancel callback', async t => {
+  const upstreamSignals = [];
+  const h = harness(async (_url, options) => { upstreamSignals.push(options.signal); return media(); }); t.after(() => h.close());
+  for (const number of [1, 2, 3]) await h.start(number);
+  const controllers = [new AbortController(), new AbortController()];
+  const first = await h.download(1, token, controllers[0].signal);
+  const second = await h.download(2, token, controllers[1].signal);
+  const thirdPromise = h.download(3);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await h.query(3)).status, 'queued');
+  assert.equal(upstreamSignals.length, 2);
+  controllers.forEach(controller => controller.abort());
+  const third = await thirdPromise;
+  assert.equal((await h.query(1)).status, 'cancelled');
+  assert.equal((await h.query(2)).status, 'cancelled');
+  assert.equal((await h.query(3)).status, 'downloading');
+  assert.ok(upstreamSignals[0].aborted && upstreamSignals[1].aborted);
+  assert.equal(upstreamSignals.length, 3);
+  await assert.rejects(first.arrayBuffer(), /取消/);
+  await assert.rejects(second.arrayBuffer(), /取消/);
+  await third.body.cancel();
+  assert.equal(h.timers.size, 0);
+});
+
+test('a queued or already-aborted attachment never starts an upstream request', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  for (const number of [1, 2, 3, 4]) await h.start(number);
+  const first = await h.download(1), second = await h.download(2);
+  const queued = new AbortController();
+  const third = h.download(3, token, queued.signal);
+  queued.abort();
+  assert.equal((await third).status, 502);
+  const aborted = new AbortController(); aborted.abort();
+  assert.equal((await h.download(4, token, aborted.signal)).status, 502);
+  assert.equal((await h.query(3)).status, 'cancelled');
+  assert.equal((await h.query(4)).status, 'cancelled');
+  await first.body.cancel(); await second.body.cancel();
+  assert.equal(fetched, 2);
+});
+
+test('backpressure is reported as stalled without cancelling a paused download', async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  await h.start(1);
+  const reader = (await h.download(1)).body.getReader();
+  await reader.read();
+  h.advance(20_000);
+  const paused = await h.query(1);
+  assert.equal(paused.status, 'downloading');
+  assert.equal(paused.observation, 'stalled');
+  assert.equal(paused.loaded, 4);
+  assert.equal(paused.speed, 0);
+  assert.equal(h.timers.size, 0, 'downstream backpressure must not start an upstream timeout');
+  await reader.read();
+  assert.equal((await h.query(1)).observation, undefined);
+  assert.equal((await h.query(1)).status, 'downloading', 'known length alone is not proof of EOF');
+  assert.equal((await reader.read()).done, true);
+  assert.equal((await h.query(1)).status, 'completed');
+});
+
 test('at most two complete-file transfers run, queued tasks are cancellable', async t => {
   let fetched = 0;
   const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
@@ -135,6 +195,8 @@ test('only pending upstream reads time out; a failed stream never starts another
   await reader.read();
   const pending = reader.read();
   await new Promise(resolve => setImmediate(resolve));
+  h.advance(20_000);
+  assert.equal((await h.query(1)).observation, undefined, 'an upstream wait is not a downstream pause');
   const timer = [...h.timers.values()].find(timer => timer.delay === 45_000);
   assert.ok(timer); timer.callback();
   await assert.rejects(pending, /45 秒/);
@@ -178,6 +240,47 @@ test('finished elapsed time and average speed remain stable across later queries
   const later = await h.query(1);
   assert.equal(finished.elapsed, 2); assert.equal(finished.averageSpeed, 4);
   assert.equal(later.elapsed, finished.elapsed); assert.equal(later.averageSpeed, finished.averageSpeed);
+});
+
+test('worker reports its build and separates total elapsed time from transfer speed', async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  const ping = await h.send({ action: 'ping' });
+  assert.equal(ping.workerBuild, 'downloads-20261030.2');
+  await h.start(1, [], { startedAt: 995_000 });
+  assert.equal((await h.query(1)).elapsed, 5);
+  assert.equal((await h.query(1)).transferElapsed, 0);
+  const response = await h.download(1);
+  assert.equal(response.headers.get('x-dokitool-worker-build'), ping.workerBuild);
+  h.advance(2000);
+  await response.arrayBuffer();
+  const finished = await h.query(1);
+  assert.equal(finished.elapsed, 7);
+  assert.equal(finished.transferElapsed, 2);
+  assert.equal(finished.averageSpeed, 4);
+  assert.equal(finished.workerBuild, ping.workerBuild);
+  h.advance(5000);
+  assert.equal((await h.query(1)).transferElapsed, 2);
+  assert.equal((await h.send({ action: 'query', tasks: [] })).workerBuild, ping.workerBuild);
+});
+
+test('short delivery bursts are smoothed without delaying reads and idle speed becomes zero', async t => {
+  let pulls = 0;
+  const h = harness(async () => media([bytes[0], new Uint8Array(40), bytes[1]], 48, () => pulls++));
+  t.after(() => h.close());
+  await h.start(1);
+  const reader = (await h.download(1)).body.getReader();
+  h.advance(1000);
+  await reader.read();
+  h.advance(300);
+  await reader.read();
+  const burst = await h.query(1);
+  assert.equal(burst.loaded, 44);
+  assert.equal(pulls, 2, 'progress smoothing does not schedule or delay upstream reads');
+  assert.ok(burst.speed > 0 && burst.speed < 40 / 0.3, 'a short burst is averaged over recent delivery history');
+  h.advance(4000);
+  assert.equal((await h.query(1)).speed, 0);
+  await reader.read();
+  await reader.read();
 });
 
 async function clientHarness(t, respond) {
@@ -294,12 +397,13 @@ test('reconnect query failure still exposes an unknown card and keeps observing'
   h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: id(1), token, filename: request.filename, savedAt: Date.now() }]));
   const observed = [];
   const initial = await h.api.reconnectStreaming(snapshot => observed.push(snapshot.status));
-  assert.equal(initial[0].status, 'interrupted');
+  assert.equal(initial[0].status, 'queued');
+  assert.equal(initial[0].observation, 'unknown');
   assert.equal(h.api.hasStreamingTask(id(1)), true);
   queryFails = false;
   [...h.timers.values()].find(timer => timer.delay === 5000).callback();
   await flush();
-  assert.deepEqual(observed, ['interrupted', 'completed']);
+  assert.deepEqual(observed, ['queued', 'completed']);
   assert.equal(h.api.hasStreamingTask(id(1)), false);
 });
 
@@ -317,7 +421,7 @@ test('a transient query timeout does not reject or detach a running stream', asy
   await flush();
   [...h.timers.values()].find(timer => timer.delay === 8000).callback();
   await flush();
-  assert.equal(settled, false); assert.equal(observed.at(-1), 'interrupted');
+  assert.equal(settled, false); assert.equal(observed.at(-1), 'queued');
   assert.equal(h.frames[0].removed, undefined);
   queryFails = false;
   h.update({ ...state('completed'), loaded: 8 });
@@ -347,7 +451,7 @@ test('live cancellation acknowledgement failure reports unknown, not cancelled',
   await flush();
   [...h.timers.values()].find(timer => timer.delay === 8000).callback();
   await assert.rejects(task, error => error.name === 'StreamingStateUnknownError' && !error.safeToFallback);
-  assert.equal(observed.at(-1), 'interrupted');
+  assert.equal(observed.at(-1), 'queued');
   assert.equal(h.api.hasStreamingTask(request.id), true);
   h.update(state('cancelled'));
   assert.equal(observed.at(-1), 'cancelled');

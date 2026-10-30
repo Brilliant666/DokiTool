@@ -1,7 +1,10 @@
 /* Download-only service worker. It never caches or intercepts the application/API. */
 const PROTOCOL = 1;
+const BUILD = "downloads-20261030.2";
 const MAX_ACTIVE = 2;
 const IDLE_MS = 45_000;
+const STALLED_MS = 15_000;
+const SPEED_WINDOW_MS = 2000;
 const CLAIM_MS = 60_000;
 const RETAIN_MS = 10 * 60_000;
 const tasks = new Map();
@@ -21,16 +24,27 @@ const sourceUrl = value => {
 };
 
 function snapshot(task) {
-  const elapsed = Math.max(0.001, ((task.finishedAt || Date.now()) - task.startedAt) / 1000);
-  return { ...task.state, speed: Date.now() - (task.lastReceivedAt || 0) > 3000 ? 0 : task.state.speed, elapsed, averageSpeed: task.state.loaded / elapsed };
+  const now = Date.now(), end = task.finishedAt ?? now;
+  const elapsed = Math.max(0, (end - task.startedAt) / 1000);
+  const transferElapsed = task.transferStartedAt === undefined ? 0 : Math.max(0, (end - task.transferStartedAt) / 1000);
+  // Lack of downstream demand may be a normal browser pause. Report it without
+  // cancelling the transfer, starting another route, or releasing its slot.
+  const observation = task.state.status === "downloading" && !task.pendingUpstream &&
+    now - Math.max(task.lastPullAt ?? task.transferStartedAt, task.lastReceivedAt ?? 0) >= STALLED_MS ? "stalled" : undefined;
+  return { ...task.state, workerBuild: BUILD, observation, elapsed, transferElapsed,
+    speed: now - (task.lastReceivedAt || 0) > 3000 ? 0 : task.state.speed,
+    averageSpeed: task.state.loaded / Math.max(0.001, transferElapsed) };
 }
 
 function publish(task, force = false) {
   const now = Date.now();
   if (!force && now - task.publishedAt < 300) return;
-  task.state.speed = terminal(task.state.status) ? 0 :
-    (task.state.loaded - task.sampleBytes) / Math.max(0.001, (now - task.publishedAt) / 1000);
-  task.sampleBytes = task.state.loaded;
+  if (task.state.status === "downloading") {
+    const samples = task.speedSamples;
+    samples.push({ at: now, loaded: task.state.loaded });
+    while (samples.length > 2 && samples[1].at <= now - SPEED_WINDOW_MS) samples.shift();
+    task.state.speed = (task.state.loaded - samples[0].loaded) / Math.max(0.001, (now - samples[0].at) / 1000);
+  } else task.state.speed = 0;
   task.publishedAt = now;
   const message = { channel: "dokitool-download", protocol: PROTOCOL, snapshot: snapshot(task) };
   for (const clientId of task.subscribers) {
@@ -54,8 +68,20 @@ function settle(task, status, error) {
   task.state.status = status;
   task.state.error = error;
   task.finishedAt = Date.now();
+  task.detachRequestAbort?.();
+  task.detachRequestAbort = undefined;
+  const queuedIndex = queue.indexOf(task);
+  if (queuedIndex !== -1) queue.splice(queuedIndex, 1);
+  if (status !== "completed") {
+    // A consumer need not pull again after stopping. Error the output now rather
+    // than waiting for a future pull to notice the aborted upstream request.
+    task.outputController?.error(status === "cancelled" ? abortError() : new Error(error || "下载失败"));
+  }
+  task.outputController = undefined;
   task.controller.abort();
-  void task.reader?.cancel().catch(() => {});
+  const reader = task.reader;
+  task.reader = undefined;
+  void reader?.cancel().catch(() => {}).finally(() => { reader.releaseLock(); });
   task.rejectSlot?.(abortError());
   if (task.hasSlot) { task.hasSlot = false; active--; }
   publish(task, true);
@@ -69,6 +95,7 @@ function prune() {
 
 async function timed(task, operation) {
   if (task.controller.signal.aborted) throw abortError();
+  task.pendingUpstream = (task.pendingUpstream || 0) + 1;
   let timer;
   let onAbort;
   try {
@@ -81,6 +108,7 @@ async function timed(task, operation) {
       }),
     ]);
   } finally {
+    task.pendingUpstream--;
     clearTimeout(timer);
     task.controller.signal.removeEventListener("abort", onAbort);
   }
@@ -121,6 +149,7 @@ async function prepare(task) {
       const prefix = new TextDecoder().decode(first.value.subarray(0, 100)).trimStart();
       if (/^(?:<!doctype|<html|#EXTM3U|\{"|\[\{)/i.test(prefix)) throw new Error("资源返回了页面或播放清单，不能作为完整视频保存");
       if (metadata.total && first.value.length > metadata.total) throw new Error("下载长度与来源声明不一致");
+      if (task.controller.signal.aborted) throw abortError();
       Object.assign(task.state, metadata);
       // Keep this attempt alive; cancelling the task aborts its source request as well.
       return { first: first.value, mime: metadata.mime };
@@ -138,6 +167,7 @@ async function prepare(task) {
 }
 
 async function attachment(task) {
+  if (task.controller.signal.aborted) throw abortError();
   await new Promise((resolve, reject) => {
     task.resolveSlot = resolve; task.rejectSlot = reject;
     queue.push(task); drain();
@@ -146,18 +176,24 @@ async function attachment(task) {
   task.state.status = "preparing";
   publish(task, true);
   const prepared = await prepare(task);
+  if (task.controller.signal.aborted) throw abortError();
   let first = prepared.first;
   task.state.status = "downloading";
+  task.transferStartedAt = Date.now();
+  task.speedSamples = [{ at: task.transferStartedAt, loaded: 0 }];
   publish(task, true);
   const stream = new ReadableStream({
+    start(controller) { task.outputController = controller; },
     async pull(controller) {
       try {
         if (task.controller.signal.aborted) throw abortError();
+        task.lastPullAt = Date.now();
         const item = first ? { value: first, done: false } : await timed(task, () => task.reader.read());
         first = undefined;
         if (item.done) {
           if (!task.state.loaded || (task.state.total && task.state.loaded !== task.state.total)) throw new Error("下载不完整，请重新下载");
           controller.close();
+          task.outputController = undefined;
           settle(task, "completed");
           return;
         }
@@ -167,7 +203,6 @@ async function attachment(task) {
         controller.enqueue(item.value);
         publish(task);
       } catch (error) {
-        controller.error(error);
         settle(task, task.controller.signal.aborted ? "cancelled" : "failed", error.message);
       }
     },
@@ -178,6 +213,7 @@ async function attachment(task) {
     "Content-Type": prepared.mime,
     "Content-Disposition": `attachment; filename="download.${task.state.filename.split(".").pop()}"; filename*=UTF-8''${encoded}`,
     "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    "X-DokiTool-Worker-Build": BUILD,
   };
   if (task.state.total) headers["Content-Length"] = String(task.state.total);
   return new Response(stream, { headers });
@@ -198,7 +234,7 @@ self.addEventListener("message", event => {
     prune();
     const message = event.data;
     try {
-      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL }); return; }
+      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL, workerBuild: BUILD }); return; }
       if (message.action === "start") {
         const request = message.request;
         if (!validKey(request?.id) || !validKey(message.token)) throw new Error("无效下载任务");
@@ -208,9 +244,11 @@ self.addEventListener("message", event => {
           if (tasks.size >= 100) throw new Error("下载任务过多，请清理后重试");
           const routes = [...new Set([request.url, ...(request.routes || [])].slice(0, 10).map(sourceUrl))].slice(0, 3);
           if (!routes.length) throw new Error("资源地址为空");
+          const now = Date.now();
+          const startedAt = Number.isFinite(request.startedAt) && request.startedAt > 0 && request.startedAt <= now ? request.startedAt : now;
           task = {
             token: message.token, routes, controller: new AbortController(), subscribers: new Set(),
-            startedAt: Date.now(), publishedAt: Date.now(), sampleBytes: 0,
+            startedAt, publishedAt: now,
             state: { id: request.id, transport: "browser_streaming", status: "queued", filename: cleanFilename(request.filename), url: routes[0], loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0 },
           };
           task.settled = new Promise(resolve => { task.resolveSettled = resolve; });
@@ -229,7 +267,7 @@ self.addEventListener("message", event => {
           const task = tasks.get(key.id);
           if (task && task.token === key.token) { task.subscribers.add(client.id); result.push(snapshot(task)); }
         }
-        port.postMessage({ snapshots: result }); return;
+        port.postMessage({ snapshots: result, workerBuild: BUILD }); return;
       }
       const task = tasks.get(message.id);
       if (!task && message.action === "forget") { port.postMessage({ forgotten: true }); return; }
@@ -252,6 +290,11 @@ self.addEventListener("fetch", event => {
   }
   task.claimed = true;
   clearTimeout(task.claimTimer);
+  const signal = event.request.signal;
+  const abort = () => settle(task, "cancelled");
+  task.detachRequestAbort = () => signal.removeEventListener("abort", abort);
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   event.waitUntil(task.settled);
   event.respondWith(attachment(task).catch(error => {
     settle(task, task.controller.signal.aborted ? "cancelled" : "failed", error.message);

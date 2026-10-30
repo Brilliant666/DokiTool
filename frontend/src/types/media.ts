@@ -150,6 +150,10 @@ export interface DownloadTask {
   /** Seconds from the beginning of this attempt, including preparation/waiting. */
   elapsed?: number;
   averageSpeed?: number;
+  /** Active transfer duration, excluding preparation and queue waits. */
+  transferElapsed?: number;
+  observation?: 'unknown' | 'stalled';
+  workerBuild?: string;
   /** Bytes actually received, including failed routes when retried. */
   transferred?: number;
   progressKind?: "bytes" | "segments" | "archive";

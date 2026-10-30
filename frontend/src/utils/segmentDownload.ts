@@ -13,6 +13,10 @@
  * - 提供按分片打包为 ZIP 的能力（配合 JSZip）。
  */
 
+import type { SourceProbe } from "../downloads/types";
+import { inspectNativeResponse } from "../downloads/native";
+import { extensionsFor, mediaCredentials, mediaUrl, mimeType } from "../downloads/file";
+
 /** 带可选字节区间的分片描述（HLS BYTERANGE / 普通整文件分片通用） */
 export interface HlsSegment {
   url: string;
@@ -193,23 +197,35 @@ function parseByteRange(
 export async function resolveHlsSegments(
   url: string,
   signal?: AbortSignal,
+  onProbe?: (probe: SourceProbe) => void,
 ): Promise<HlsSegment[] | null> {
+  let probeResponse: Response | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    // 轻量预探测：只读前 4KB 就取消，判断是否为 m3u8 清单，
-    // 避免对完整 mp4（几十 MB）做全量下载后再丢弃（探测 = 白下整个文件）。
-    const probeResponse = await fetch(url, {
+    // Read only the first chunk, then cancel. A real complete GET also lets the
+    // download coordinator reuse attachment headers instead of probing again.
+    probeResponse = await fetch(url, {
       method: "GET",
       mode: "cors",
       signal,
-      headers: { Range: "bytes=0-4095" },
+      credentials: mediaCredentials(url),
+      referrerPolicy: "no-referrer",
     });
     if (!probeResponse.ok || !probeResponse.body) return null;
-    const reader = probeResponse.body.getReader();
+    reader = probeResponse.body.getReader();
     const firstChunk = await reader.read();
-    void reader.cancel();
-    const headBytes = firstChunk.value ?? new Uint8Array(0);
+    void reader.cancel().catch(() => {});
+    const headBytes = firstChunk.value?.subarray(0, 4096) ?? new Uint8Array(0);
     const probeText = new TextDecoder().decode(headBytes);
-    if (!probeText.includes("#EXTM3U")) return null;
+    if (!probeText.includes("#EXTM3U")) {
+      const type = mimeType(probeResponse.headers.get("content-type"));
+      const mediaType = extensionsFor(type).length > 0 || /^(?:application|binary)\/octet-stream$/.test(type);
+      if (headBytes.length && mediaType && probeResponse.status === 200 && probeResponse.type !== "opaque" && !probeResponse.headers.has("content-range")
+          && !/^(?:<!doctype|<html|\{"|\[\{)/i.test(probeText.trimStart())) {
+        onProbe?.({ url: mediaUrl(url), attachment: inspectNativeResponse(probeResponse, url) });
+      }
+      return null;
+    }
     if (/^#EXT-X-KEY:/m.test(probeText)) return null; // 加密流，前端无法合并
 
     // 确认为清单后再全量拉取
@@ -265,6 +281,8 @@ export async function resolveHlsSegments(
     return segments.length > 1 ? segments : null;
   } catch {
     return null;
+  } finally {
+    void (reader ? reader.cancel() : probeResponse?.body?.cancel())?.catch(() => {});
   }
 }
 
@@ -305,13 +323,14 @@ export function detectSegmentContainer(segments: (HlsSegment | string)[]): "ts" 
 export async function prepareSegments(
   candidates: (string | null | undefined)[],
   signal?: AbortSignal,
+  onProbe?: (probe: SourceProbe) => void,
 ): Promise<HlsSegment[] | null> {
   const seen = new Set<string>();
   for (const candidate of candidates) {
     const url = (candidate ?? "").trim();
     if (!url || seen.has(url)) continue;
     seen.add(url);
-    const hls = await resolveHlsSegments(url, signal);
+    const hls = await resolveHlsSegments(url, signal, onProbe);
     if (hls) return hls;
     if (looksLikeSegmentUrl(url)) {
       const siblings = await probeSiblingSegments(url, 24, signal);

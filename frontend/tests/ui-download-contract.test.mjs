@@ -19,10 +19,12 @@ before(async () => {
       name: 'ui-download-acknowledgements',
       enforce: 'pre',
       transform(code, id) {
-        if (/[\\/]composables[\\/]useMediaDownload\.ts$/.test(id)) return code.replaceAll('"../downloads/streaming"', '"virtual:ui-download-streaming"');
+        if (/[\\/]composables[\\/]useMediaDownload\.ts$/.test(id)) return code.replaceAll('"../downloads/streaming"', '"virtual:ui-download-streaming"').replaceAll('"../downloads/manager"', '"virtual:ui-download-manager"');
       },
-      resolveId(id) { if (id === 'virtual:ui-download-streaming') return '\0ui-download-streaming'; },
+      resolveId(id) { if (id === 'virtual:ui-download-streaming') return '\0ui-download-streaming'; if (id === 'virtual:ui-download-manager') return '\0ui-download-manager'; },
       load(id) {
+        if (id === '\0ui-download-manager') return `import { downloadManager as actual } from '/src/downloads/manager.ts';
+          export const downloadManager = { run: (...args) => (globalThis.__uiDownloadManager || actual).run(...args) };`;
         if (id !== '\0ui-download-streaming') return;
         return `import * as actual from '/src/downloads/streaming.ts';
           export const cancelStreaming = (...args) => (globalThis.__uiDownloadStreaming?.cancelStreaming || actual.cancelStreaming)(...args);
@@ -347,12 +349,10 @@ const retryData = () => ({ ...base, ...sourceMetadata, video_backup: [
 ] });
 const sampleResponse = () => new Response(new Uint8Array([1, 2, 3, 4]), { headers: { 'content-type': 'video/mp4', 'content-length': '4' } });
 
-/** A bounded native-eligibility GET precedes delivery. Its non-attachment response
- * is deliberately separate from the complete-file attempts asserted below. */
+/** One shared media/attachment probe precedes complete-file delivery. */
 function mockFileTransfer(transfer) {
   const probes = [];
   globalThis.fetch = async (url, options = {}) => {
-    if (options.headers?.Range) return sampleResponse();
     if (!probes.length) { probes.push(url); return sampleResponse(); }
     return transfer(url, options);
   };
@@ -403,7 +403,6 @@ test('eligible native attachment hands off once without Blob progress or a false
   const { instance, store } = harness(base);
   let qualificationRequests = 0;
   globalThis.fetch = async (_url, options) => {
-    if (options.headers?.Range) return sampleResponse();
     qualificationRequests++;
     return new Response(new Uint8Array([1, 2, 3, 4]), { headers: { 'content-type': 'video/mp4', 'content-length': '4', 'content-disposition': 'attachment; filename="upstream.mp4"' } });
   };
@@ -431,7 +430,72 @@ test('queued cards remain cancellable and interrupted cards never claim completi
   assert.match(await render([{ ...interrupted, url: base.url }]), /title="重试"/);
 });
 
-test('missing crypto.randomUUID still permits bounded browser downloads with distinct page task IDs', async () => {
+test('ordinary MP4 shares one preparation probe before its complete-file transfer', async () => {
+  const { instance, store } = harness(base);
+  await instance.downloadMainVideo(); await settled(store.downloads[0]);
+  assert.deepEqual(fetched, [base.url, base.url]);
+  assert.equal(blobs.length, 1); assert.equal(await blobs[0].arrayBuffer().then(value => value.byteLength), 4);
+});
+
+test('uncertain and stalled downloads preserve progress, allow cancellation, and hide source navigation', async () => {
+  const render = item => renderToString(createSSRApp({ render: () => h(DownloadCard, { downloads: [item] }) }));
+  const item = { id: 1, status: 'downloading', filename: 'sample.mp4', progressKind: 'bytes',
+    loaded: 10 * 1024 ** 2, total: 100 * 1024 ** 2, percent: 10, transferred: 10 * 1024 ** 2,
+    elapsed: 7, transferElapsed: 5, averageSpeed: 2 * 1024 ** 2, nativeAvailable: true, url: base.url, workerBuild: 'test-build' };
+  for (const observation of [undefined, 'unknown', 'stalled']) {
+    const html = await render({ ...item, observation });
+    assert.match(html, /10 MB/); assert.match(html, /100 MB/); assert.match(html, /title="取消"/);
+    assert.doesNotMatch(html, /打开源链接|title="重试"|清除全部|下载连接已中断/);
+    assert.match(html, /总用时 7.0 秒/); assert.match(html, /传输均速 2 MB\/s/);
+    assert.match(html, /data-worker-build="test-build"/);
+    if (observation === 'unknown') assert.match(html, /暂时无法获取进度/);
+    if (observation === 'stalled') assert.match(html, /传输暂无进展/);
+  }
+  assert.match(await render({ ...item, status: 'failed' }), /打开源链接/);
+  assert.match(await render({ ...item, status: 'cancelled' }), /打开源链接/);
+});
+
+test('an unconfirmed cancellation keeps progress and cannot open a second download', async (t) => {
+  const { instance, store } = harness(base);
+  const controller = new AbortController();
+  const id = store.addDownload({ filename: 'sample.mp4', url: base.url, status: 'downloading', transport: 'browser_streaming',
+    deliveryId: 'original-task', abortController: controller, nativeAvailable: true, loaded: 1024, total: 4096 });
+  await mockStreamingCancellation(t, async () => { throw new Error('temporary communication failure'); });
+  await instance.handleCancelDownload(id);
+  assert.equal(store.downloads[0].observation, 'unknown');
+  assert.equal(store.downloads[0].status, 'downloading'); assert.equal(store.downloads[0].loaded, 1024);
+  instance.handleBrowserDownload(id);
+  assert.equal(clicked.length, 0); assert.equal(controller.signal.aborted, false);
+});
+
+test('a late unknown-start error cannot erase the observed active transfer progress', async (t) => {
+  const { instance, store } = harness(base);
+  globalThis.__uiDownloadManager = { async run(request, _signal, observe) {
+    observe({ id: request.id, transport: 'browser_streaming', status: 'downloading', url: base.url, filename: request.filename,
+      loaded: 1024, total: 4096, elapsed: 6, transferElapsed: 4, speed: 256, averageSpeed: 256, observation: 'unknown' });
+    const error = new Error('acknowledgement lost'); error.name = 'StreamingStateUnknownError'; throw error;
+  } };
+  t.after(() => { delete globalThis.__uiDownloadManager; });
+  const id = store.addDownload({ filename: 'sample.mp4', url: base.url });
+  await instance.downloadFile(base.url, 'sample.mp4', id);
+  assert.equal(store.downloads[0].status, 'downloading'); assert.equal(store.downloads[0].observation, 'unknown');
+  assert.equal(store.downloads[0].loaded, 1024); assert.equal(store.downloads[0].total, 4096);
+});
+
+test('confirmed loss of a Worker task wins over a late cancellation error', async (t) => {
+  const { instance, store } = harness(base);
+  const id = store.addDownload({ filename: 'sample.mp4', url: base.url, status: 'downloading', transport: 'browser_streaming',
+    deliveryId: 'original-task', abortController: new AbortController(), loaded: 1024 });
+  await mockStreamingCancellation(t, async () => {
+    store.updateDownload(id, { status: 'interrupted', observation: undefined, error: '原任务已失效' });
+    throw new Error('task missing');
+  });
+  await instance.handleCancelDownload(id);
+  assert.equal(store.downloads[0].status, 'interrupted'); assert.equal(store.downloads[0].observation, undefined);
+  assert.equal(store.downloads[0].error, '原任务已失效');
+});
+
+test('missing crypto.randomUUID still permits Blob downloads with distinct page task IDs', async () => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) } });
   try {
     const { instance, store } = harness(base);
@@ -652,7 +716,8 @@ test('waiting and stalled transfer speed use elapsed time and all timers stop at
   await waitUntil(() => store.downloads[0].status === 'downloading');
   bodyController.enqueue(new Uint8Array([1, 2, 3, 4])); await flush(); tick(1000);
   assert.equal(store.downloads[0].speed, 4);
-  assert.equal(store.downloads[0].averageSpeed, 0.8);
+  assert.equal(store.downloads[0].averageSpeed, 4);
+  assert.equal(store.downloads[0].transferElapsed, 1, 'preparation waits are excluded from transfer speed');
   tick(4000);
   assert.equal(store.downloads[0].speed, 0); assert.equal(store.downloads[0].elapsed, 9);
   bodyController.close(); await pending;
@@ -661,7 +726,7 @@ test('waiting and stalled transfer speed use elapsed time and all timers stop at
   assert.equal(intervals.size, 0);
 });
 
-test('browser handoff aborts the page transfer without later rewriting its status to cancelled', async () => {
+test('a stale source-link click never aborts an active transfer; recovery is available after cancellation', async () => {
   const { instance, store } = harness(base);
   let signal;
   mockFileTransfer(async (_, options) => new Promise((resolve, reject) => {
@@ -671,7 +736,11 @@ test('browser handoff aborts the page transfer without later rewriting its statu
   const id = store.addDownload({ filename: 'large.mp4', url: base.url });
   const pending = instance.downloadFile(base.url, 'large.mp4', id);
   await waitUntil(() => signal);
-  instance.handleBrowserDownload(id); await pending;
+  instance.handleBrowserDownload(id);
+  assert.equal(signal.aborted, false); assert.equal(clicked.length, 0);
+  await instance.handleCancelDownload(id); await pending;
+  assert.equal(store.downloads[0].status, 'cancelled');
+  instance.handleBrowserDownload(id);
   assert.ok(signal.aborted); assert.equal(store.downloads[0].status, 'handed-off');
   assert.equal(clicked.length, 1);
 });
@@ -752,7 +821,7 @@ test('multi-P failover follows the effective selected episode instead of the glo
   assert.equal(currentVideoUrl.value, 'https://media.test/same-1.mp4');
 });
 
-test('browser handoff during failover opens the active route', async () => {
+test('a source-link click during failover is ignored and explicit cancellation preserves the recovery route', async () => {
   const { instance, store } = harness(retryData());
   let secondSignal;
   mockFileTransfer(async (url, options) => {
@@ -765,6 +834,10 @@ test('browser handoff during failover opens the active route', async () => {
   assert.equal(store.downloads[0].url, 'https://media.test/same-1.mp4');
   instance.handleBrowserDownload(store.downloads[0].id);
   for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(secondSignal.aborted, false); assert.equal(clicked.length, 0);
+  await instance.handleCancelDownload(store.downloads[0].id);
+  await settled(store.downloads[0]);
+  instance.handleBrowserDownload(store.downloads[0].id);
   assert.ok(secondSignal.aborted);
   assert.equal(clicked[0].href, 'https://media.test/same-1.mp4');
   assert.equal(store.downloads[0].status, 'handed-off');

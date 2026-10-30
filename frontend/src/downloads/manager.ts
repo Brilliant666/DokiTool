@@ -1,6 +1,7 @@
 import { probeNative, handoffNative } from "./native";
 import { downloadBlob } from "./blob";
 import { downloadStreaming } from "./streaming";
+import { mediaUrl } from "./file";
 import { StreamingUnavailableError, type DownloadObserver, type DownloadRequest, type DownloadSnapshot } from "./types";
 
 const transports = { probeNative, handoffNative, downloadStreaming, downloadBlob };
@@ -32,19 +33,24 @@ export function createDownloadManager(implementations: Transports = transports) 
   }
 
   async function run(request: DownloadRequest, signal: AbortSignal, observe: DownloadObserver): Promise<DownloadSnapshot> {
+    const startedAt = request.startedAt ?? Date.now();
+    request = { ...request, startedAt };
     let snapshot: DownloadSnapshot = {
       id: request.id, transport: "browser_streaming", status: "queued",
       filename: request.filename, url: request.url,
       loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0,
     };
-    const publish: DownloadObserver = next => { snapshot = next; observe(next); };
+    const publish: DownloadObserver = next => { snapshot = { ...next, elapsed: Math.max(next.elapsed, (Date.now() - startedAt) / 1000) }; observe(snapshot); };
     publish(snapshot);
     let release: (() => void) | undefined;
     try {
       release = await acquire(signal);
       signal.throwIfAborted();
       publish({ ...snapshot, status: "preparing" });
-      const attachment = await implementations.probeNative(request, signal);
+      // The format check may already have examined this exact complete GET response.
+      // Never infer native eligibility from a partial/failed probe or another source.
+      const attachment = request.probe?.url === mediaUrl(request.url)
+        ? request.probe.attachment : await implementations.probeNative(request, signal);
       signal.throwIfAborted();
       if (attachment) {
         implementations.handoffNative(attachment.url, attachment.filename);

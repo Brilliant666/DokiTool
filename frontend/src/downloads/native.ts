@@ -1,4 +1,4 @@
-import type { DownloadRequest } from "./types";
+import type { DownloadRequest, SourceProbe } from "./types";
 import { extensionOf, extensionsFor, isSafeFilename, mediaCredentials, mediaUrl, mimeType, networkWait, throwIfAborted } from "./file";
 
 const PROBE_TIMEOUT_MS = 3000;
@@ -17,8 +17,17 @@ function attachmentFilename(value: string | null): string | null {
   return plain ? plain[1] ?? plain[2].trim() : null;
 }
 
+/** Shared by the format probe and the standalone native check; a partial response is never an attachment proof. */
+export function inspectNativeResponse(response: Response, requestedUrl: string): SourceProbe["attachment"] {
+  if (response.status !== 200 || response.type === "opaque" || response.headers.has("content-range") || response.headers.get("content-length") === "0") return null;
+  const filename = attachmentFilename(response.headers.get("content-disposition"));
+  const type = mimeType(response.headers.get("content-type"));
+  if (!filename || !isSafeFilename(filename) || !extensionsFor(type).includes(extensionOf(filename))) return null;
+  return { url: mediaUrl(response.url || requestedUrl), filename };
+}
+
 /** One bounded GET checks the actual attachment headers, then immediately releases its body. */
-export async function probeNative(request: DownloadRequest, signal: AbortSignal): Promise<{ url: string; filename: string } | null> {
+export async function probeNative(request: DownloadRequest, signal: AbortSignal): Promise<SourceProbe["attachment"]> {
   throwIfAborted(signal);
   const url = mediaUrl(request.url);
   const controller = new AbortController();
@@ -28,11 +37,7 @@ export async function probeNative(request: DownloadRequest, signal: AbortSignal)
   try {
     response = await networkWait(fetch(url, { method: "GET", mode: "cors", credentials: mediaCredentials(url), referrerPolicy: "no-referrer", signal: controller.signal }), controller, PROBE_TIMEOUT_MS);
     throwIfAborted(signal);
-    if (response.status !== 200 || response.type === "opaque" || response.headers.has("content-range") || response.headers.get("content-length") === "0") return null;
-    const filename = attachmentFilename(response.headers.get("content-disposition"));
-    const type = mimeType(response.headers.get("content-type"));
-    if (!filename || !isSafeFilename(filename) || !extensionsFor(type).includes(extensionOf(filename))) return null;
-    return { url: mediaUrl(response.url || url), filename };
+    return inspectNativeResponse(response, url);
   } catch {
     throwIfAborted(signal);
     // A hidden header, blocked probe or short timeout is unknown eligibility, never proof of a native attachment.

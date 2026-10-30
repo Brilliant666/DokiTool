@@ -2,11 +2,19 @@
 export type DownloadTransport = "browser_native" | "browser_streaming" | "browser_blob";
 export type DeliveryStatus = "queued" | "preparing" | "downloading" | "completed" | "failed" | "cancelled" | "handed-off" | "interrupted";
 
+/** Metadata from this attempt's complete-file probe; never reused across attempts. */
+export interface SourceProbe {
+  url: string;
+  attachment: { url: string; filename: string } | null;
+}
+
 export interface DownloadRequest {
   id: string;
   url: string;
   routes: string[];
   filename: string;
+  startedAt?: number;
+  probe?: SourceProbe;
 }
 
 export interface DownloadSnapshot {
@@ -20,6 +28,10 @@ export interface DownloadSnapshot {
   speed: number;
   elapsed: number;
   averageSpeed: number;
+  transferElapsed?: number;
+  workerBuild?: string;
+  /** Observation trouble is not proof that the underlying transfer stopped. */
+  observation?: "unknown" | "stalled";
   error?: string;
 }
 

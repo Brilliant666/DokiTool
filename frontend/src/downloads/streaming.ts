@@ -3,11 +3,16 @@ import { StreamingUnavailableError, type DownloadObserver, type DownloadRequest,
 const PROTOCOL = 1;
 const SCOPE = "/downloads/";
 const STORAGE_KEY = "dokitool-downloads-v1";
-interface TaskKey { id: string; token: string; filename: string; savedAt: number; result?: Omit<DownloadSnapshot, "url"> }
-interface WorkerReply { protocol?: number; error?: string; snapshot?: DownloadSnapshot; snapshots?: DownloadSnapshot[]; downloadUrl?: string }
+type SavedSnapshot = Omit<DownloadSnapshot, "url">;
+interface TaskKey { id: string; token: string; filename: string; savedAt: number; last?: SavedSnapshot; result?: SavedSnapshot }
+interface WorkerReply { protocol?: number; workerBuild?: string; error?: string; snapshot?: DownloadSnapshot; snapshots?: DownloadSnapshot[]; downloadUrl?: string }
 const observers = new Map<string, Set<DownloadObserver>>();
 const frames = new Map<string, HTMLIFrameElement>();
 const keys = new Map<string, TaskKey>();
+const latest = new Map<string, DownloadSnapshot>();
+const workerBuilds = new WeakMap<ServiceWorker, string>();
+const checkedUpdates = new Set<string>();
+let savedProgressAt = 0;
 let listening = false;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let polling = false;
@@ -32,6 +37,16 @@ function saveKeys(): void {
 
 function notify(snapshot: DownloadSnapshot, confirmed = true): void {
   if (confirmed) uncertain.delete(snapshot.id); else uncertain.add(snapshot.id);
+  if (confirmed) {
+    latest.set(snapshot.id, snapshot);
+    const key = keys.get(snapshot.id);
+    if (key) {
+      const { url: _url, ...progress } = snapshot;
+      key.last = progress;
+      // Refresh can retain progress without storing signed URLs or writing storage per chunk.
+      if (Date.now() - savedProgressAt >= 5000) { savedProgressAt = Date.now(); saveKeys(); }
+    }
+  }
   for (const observer of observers.get(snapshot.id) || []) observer(snapshot);
   if (terminal(snapshot)) {
     started.delete(snapshot.id);
@@ -48,12 +63,23 @@ function notify(snapshot: DownloadSnapshot, confirmed = true): void {
   }
 }
 
-function interrupted(key: TaskKey, error = "原下载任务已失效，请重新解析后下载"): DownloadSnapshot {
-  return { id: key.id, transport: "browser_streaming", status: "interrupted", filename: key.filename, url: "", loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0, error };
+function lastSnapshot(key: TaskKey): DownloadSnapshot {
+  return latest.get(key.id) || (key.last ? { ...key.last, url: "" } : {
+    id: key.id, transport: "browser_streaming", status: "queued", filename: key.filename,
+    url: "", loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0,
+  });
+}
+
+function interrupted(key: TaskKey): DownloadSnapshot {
+  return { ...lastSnapshot(key), status: "interrupted", observation: undefined, speed: 0, error: "原下载任务已失效，请重新解析后下载" };
 }
 
 function unknown(key: TaskKey): DownloadSnapshot {
-  return interrupted(key, "无法确认下载状态，请先检查浏览器下载列表；不要重复启动");
+  return { ...lastSnapshot(key), observation: "unknown", speed: 0, error: "暂时无法获取进度，传输可能仍在继续；请勿重复启动" };
+}
+
+function fromWorker(snapshot: DownloadSnapshot, worker: ServiceWorker): DownloadSnapshot {
+  return { ...snapshot, workerBuild: snapshot.workerBuild || workerBuilds.get(worker) || "legacy" };
 }
 
 /** A query never starts a fetch. Missing workers must not leave a frozen progress card. */
@@ -68,7 +94,7 @@ function watch(id: string): void {
       try {
         const worker = await workerFor(false);
         const reply = worker ? await rpc(worker, { action: "query", tasks: current.map(({ id, token }) => ({ id, token })) }) : {};
-        const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, snapshot]));
+        const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, fromWorker(snapshot, worker!)]));
         for (const key of current) if (watched.has(key.id)) notify(found.get(key.id) || interrupted(key));
       } catch {
         // A lost acknowledgement is not proof that the browser download stopped.
@@ -85,7 +111,7 @@ function listen(): void {
     const data = event.data;
     const source = event.source as ServiceWorker | null;
     if (source?.scriptURL !== new URL("/downloads/worker.js", location.origin).href || data?.channel !== "dokitool-download" || data.protocol !== PROTOCOL || !keys.has(data.snapshot?.id)) return;
-    notify(data.snapshot);
+    notify(fromWorker(data.snapshot, source));
   });
 }
 
@@ -117,6 +143,12 @@ async function workerFor(create: boolean): Promise<ServiceWorker | null> {
     if (registration && new URL(registration.scope).pathname !== SCOPE) registration = undefined;
     if (!registration && create) registration = await bounded(navigator.serviceWorker.register("/downloads/worker.js", { scope: SCOPE, type: "module", updateViaCache: "none" }));
     if (!registration) return null;
+    if (registration.active && !checkedUpdates.has(registration.scope)) {
+      checkedUpdates.add(registration.scope);
+      // Check once per page without delaying an existing transfer. No skipWaiting:
+      // the browser activates an update only when the old worker can retire safely.
+      try { void registration.update?.().catch(() => {}); } catch { /* Offline update checks must not break downloads. */ }
+    }
     let worker = registration.active;
     if (!worker && create) {
       const pending = registration.installing || registration.waiting;
@@ -131,10 +163,25 @@ async function workerFor(create: boolean): Promise<ServiceWorker | null> {
       });
     }
     if (!worker) return null;
-    const reply = await rpc(worker, { action: "ping" });
-    if (reply.protocol !== PROTOCOL) throw new Error("下载服务版本不兼容");
-    listen();
-    return worker;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const reply = await rpc(worker, { action: "ping" });
+        // An update can activate between selecting the worker and its ping reply.
+        // Verify the currently active object before START, without replacing live tasks.
+        if (worker.state === "redundant" || registration.active && registration.active !== worker) {
+          throw new Error("下载服务正在更新，请稍后重试");
+        }
+        if (reply.protocol !== PROTOCOL) throw new Error("下载服务版本不兼容");
+        workerBuilds.set(worker, reply.workerBuild || "legacy");
+        listen();
+        return worker;
+      } catch (error) {
+        const replacement = registration.active;
+        if (attempt || !replacement || replacement === worker || replacement.state === "redundant") throw error;
+        worker = replacement;
+      }
+    }
+    return null;
   } catch (error) {
     if (!create) throw error;
     throw new StreamingUnavailableError(error instanceof Error ? error.message : "流式下载不可用");
@@ -154,6 +201,11 @@ export async function downloadStreaming(request: DownloadRequest, signal: AbortS
   if (!worker) throw new StreamingUnavailableError("流式下载服务不可用");
   const key = { id: request.id, token: crypto.randomUUID().replaceAll("-", ""), filename: request.filename, savedAt: Date.now() };
   keys.set(key.id, key); saveKeys();
+  latest.set(key.id, {
+    ...lastSnapshot(key), status: "preparing", url: request.url,
+    elapsed: Math.max(0, (Date.now() - (request.startedAt || Date.now())) / 1000),
+    workerBuild: workerBuilds.get(worker) || "legacy",
+  });
   return new Promise<DownloadSnapshot>((resolve, reject) => {
     let finished = false;
     const cleanup = () => { unsubscribe(); signal.removeEventListener("abort", cancel); };
@@ -166,7 +218,7 @@ export async function downloadStreaming(request: DownloadRequest, signal: AbortS
     });
     const cancel = () => {
       // An abort after START is not permission to launch another transport.
-      void rpc(worker, { action: "cancel", id: key.id, token: key.token }).then(reply => { if (reply.snapshot) notify(reply.snapshot); }).catch(error => {
+      void rpc(worker, { action: "cancel", id: key.id, token: key.token }).then(reply => { if (reply.snapshot) notify(fromWorker(reply.snapshot, worker)); }).catch(error => {
         if (!finished) {
           notify(unknown(key), false);
           const failure = new Error(error instanceof Error ? error.message : "无法确认取消结果，请检查浏览器下载列表");
@@ -182,7 +234,7 @@ export async function downloadStreaming(request: DownloadRequest, signal: AbortS
     started.add(request.id);
     void rpc(worker, { action: "start", request, token: key.token }).then(reply => {
       if (finished) return;
-      if (reply.snapshot) notify(reply.snapshot);
+      if (reply.snapshot) notify(fromWorker(reply.snapshot, worker));
       if (finished) return;
       if (signal.aborted) { cancel(); return; }
       if (!reply.downloadUrl?.startsWith(`/downloads/file/${key.id}/`)) throw new Error("下载服务返回了无效交付地址");
@@ -211,14 +263,14 @@ export async function reconnectStreaming(onUpdate: DownloadObserver): Promise<Do
   try {
     const worker = await workerFor(false);
     const reply = worker ? await rpc(worker, { action: "query", tasks: saved.map(({ id, token }) => ({ id, token })) }) : {};
-    const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, snapshot]));
+    const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, fromWorker(snapshot, worker!)]));
     snapshots = saved.map(key => found.get(key.id) || (key.result ? { ...key.result, url: "" } : interrupted(key)));
   } catch {
     confirmed = false;
     snapshots = saved.map(key => key.result ? { ...key.result, url: "" } : unknown(key));
   }
   for (const snapshot of snapshots) {
-    notify(snapshot, confirmed || snapshot.status !== "interrupted");
+    notify(snapshot, confirmed || snapshot.observation !== "unknown");
     if (!terminal(snapshot)) { started.add(snapshot.id); watch(snapshot.id); }
   }
   return snapshots;
@@ -229,17 +281,23 @@ export function hasStreamingTask(id: string): boolean { return started.has(id); 
 
 export async function cancelStreaming(id: string): Promise<void> {
   const key = keys.get(id) || readKeys().find(item => item.id === id);
-  const worker = await workerFor(false);
-  if (!key || !worker) throw new Error("原下载任务已失效");
-  const reply = await rpc(worker, { action: "cancel", id, token: key.token });
-  if (reply.snapshot) notify(reply.snapshot);
+  if (!key) throw new Error("原下载任务已失效");
+  try {
+    const worker = await workerFor(false);
+    if (!worker) { notify(interrupted(key)); throw new Error("原下载任务已失效"); }
+    const reply = await rpc(worker, { action: "cancel", id, token: key.token });
+    if (reply.snapshot) notify(fromWorker(reply.snapshot, worker));
+  } catch (error) {
+    if (started.has(id)) { notify(unknown(key), false); watch(id); }
+    throw error;
+  }
 }
 
 export async function forgetStreaming(id: string): Promise<void> {
   const key = keys.get(id) || readKeys().find(item => item.id === id);
   const worker = await workerFor(false);
   if (key && worker) await rpc(worker, { action: "forget", id, token: key.token });
-  keys.delete(id); saveKeys(); observers.delete(id); watched.delete(id); uncertain.delete(id); started.delete(id);
+  keys.delete(id); latest.delete(id); saveKeys(); observers.delete(id); watched.delete(id); uncertain.delete(id); started.delete(id);
   if (!watched.size) { clearInterval(pollTimer); pollTimer = undefined; }
   const frame = frames.get(id); frames.delete(id); frame?.remove();
 }
