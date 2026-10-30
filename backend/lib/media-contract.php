@@ -124,7 +124,10 @@ function snapVariantVideoMetadata(array $variant): array
     $metadata = $variant['metadata'] ?? [];
     if (($variant['delivery']['kind'] ?? '') === 'mux') {
         foreach ($variant['delivery']['resources'] as $resource) {
-            if ($resource['role'] === 'video') return array_replace($resource['metadata'] ?? [], $metadata);
+            if ($resource['role'] !== 'video') continue;
+            $combined = array_replace($resource['metadata'] ?? [], $metadata);
+            foreach (['width', 'height'] as $field) if (isset($metadata[$field], $resource['metadata'][$field]) && $metadata[$field] !== $resource['metadata'][$field]) unset($combined[$field]);
+            return $combined;
         }
     }
     return $metadata;
@@ -221,12 +224,14 @@ function snapValidateMetadata(array $m, ?string $role = null): void
     if ($technical) snapAssert(in_array($m['evidence'] ?? '', ['probe', 'upstream', 'mixed'], true), 'Technical metadata needs evidence');
     if (($m['evidence'] ?? '') === 'mixed') {
         foreach ($technical as $field) snapAssert(in_array($m['field_evidence'][$field] ?? '', ['probe', 'upstream'], true), 'Mixed metadata evidence incomplete');
+        snapAssert(!array_diff(array_keys($m['field_evidence'] ?? []), $technical), 'Unknown field evidence');
     }
+    if (isset($m['audio_language_role'])) snapAssert(isset($m['audio_language']) && trim($m['audio_language']) !== '', 'Language role requires an explicit language');
     if (($m['has_audio'] ?? null) === false || in_array($role, ['video', 'image', 'subtitle'], true)) {
-        foreach (['audio_codec', 'audio_language', 'audio_channels', 'sample_rate_hz', 'audio_bitrate_bps'] as $field) snapAssert(!isset($m[$field]), 'Contradictory audio metadata');
+        foreach (['audio_codec', 'audio_language', 'audio_language_role', 'audio_channels', 'sample_rate_hz', 'audio_bitrate_bps'] as $field) snapAssert(!isset($m[$field]), 'Contradictory audio metadata');
         if ($role !== null) snapAssert(($m['has_audio'] ?? false) === false, 'Track cannot claim embedded audio');
     }
-    if ($role === 'audio') foreach (['width', 'height', 'fps', 'video_codec', 'video_bitrate_bps'] as $field) snapAssert(!isset($m[$field]), 'Audio cannot carry video metadata');
+    if ($role === 'audio') foreach (['width', 'height', 'fps', 'hdr_type', 'video_codec', 'video_bitrate_bps'] as $field) snapAssert(!isset($m[$field]), 'Audio cannot carry video metadata');
 }
 
 function snapValidateDelivery(array $delivery, ?int $generatedAt, bool $leaf = false): void
@@ -281,13 +286,8 @@ function snapValidateEnvelope(array $payload): void
             if (in_array($variant['delivery']['kind'], ['hls', 'dash'], true) && $variant['delivery']['scope'] === 'adaptive' && !isset($variant['delivery']['selection'])) {
                 snapAssert(!isset($variant['metadata']['width']) && !isset($variant['metadata']['height']), 'Adaptive manifest has no fixed resolution');
             }
-            if ($variant['delivery']['kind'] === 'mux') {
-                foreach ($variant['delivery']['resources'] as $r) if ($r['role'] === 'video') {
-                    foreach (['width', 'height', 'fps', 'video_codec', 'video_bitrate_bps'] as $key) {
-                        if (isset($variant['metadata'][$key], $r['metadata'][$key])) snapAssert($variant['metadata'][$key] === $r['metadata'][$key], 'Mux video metadata conflict');
-                    }
-                }
-            }
+            // Each layer remains validated. Conflicting upstream summaries do
+            // not delete the candidate; policy/comparison decline that evidence.
         }
         // Validate references independently of array order. Selection itself runs once,
         // when the backend creates the response, not again in public consumers.

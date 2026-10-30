@@ -4,6 +4,7 @@ require_once __DIR__ . '/runtime.php';
 
 require_once __DIR__ . '/platforms.php';
 require_once __DIR__ . '/media-adapters.php';
+require_once __DIR__ . '/media-policy.php';
 
 function snapPublicRoutes(): array
 {
@@ -31,34 +32,51 @@ function snapEnvelopeStatus(array $payload): int
 }
 
 /** Only a registered successful Weibo result may mint a fixed-provider relay ticket. */
-function snapPreparePublicMedia(string $platform, array $payload, int $status = 200, ?string $key = null): array
+function snapPreparePublicMedia(string $platform, array $payload, int $status = 200, ?string $key = null, bool $debug = false): array
 {
-    if ($platform !== 'weibo' || $status !== 200 || ($payload['code'] ?? '') !== 'OK') return [$status, $payload];
+    if ($status !== 200 || ($payload['code'] ?? '') !== 'OK') return [$status, $payload];
+    // Filtering must not hide malformed metadata or broken full-inventory references.
+    snapValidateEnvelope($payload);
+    if ($platform !== 'weibo') {
+        $payload = snapPublicMediaView($payload, $debug); snapValidateEnvelope($payload);
+        return [$status, $payload];
+    }
     require_once __DIR__ . '/weibo-media.php';
     $key ??= getenv('SNAP_MEDIA_SIGNING_KEY') ?: '';
     if (snapWeiboMediaKey($key) === null) return [503, snapError(503, '微博播放服务尚未配置，请联系站点维护者')];
     $now = time(); $recognized = 0;
     foreach ($payload['data']['items'] as &$item) {
         foreach ($item['variants'] ?? [] as $i => $variant) {
-            if (($variant['state'] ?? 'ready') !== 'ready' || $variant['delivery']['kind'] !== 'file') continue;
-            foreach ($variant['delivery']['sources'] as &$source) {
-                if (!snapWeiboMediaAllowedUrl($source['url'])) { $source['availability'] = 'unavailable'; continue; }
+            if (($variant['state'] ?? 'ready') !== 'ready') continue;
+            $variant['delivery'] = snapMapDeliverySources($variant['delivery'], static function (array $source) use ($key, $now, &$recognized): array {
+                if (!snapWeiboMediaAllowedUrl($source['url'])) { $source['availability'] = 'unavailable'; return $source; }
                 $recognized++;
-                if (!snapSourceUsable($source, $now)) continue;
+                if (!snapSourceUsable($source, $now)) return $source;
                 $expiry = min(isset($source['expires_at']) ? (int)strtotime($source['expires_at']) : $now + SNAP_WEIBO_MEDIA_TTL, $now + SNAP_WEIBO_MEDIA_TTL);
                 $ticket = snapWeiboMediaUrl($source['url'], $key, $now, $expiry);
-                if ($ticket === null) { $source['availability'] = 'unavailable'; continue; }
+                if ($ticket === null) { $source['availability'] = 'unavailable'; return $source; }
                 $source['url'] = $ticket; $source['access'] = 'relay';
                 $source['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', $expiry);
-            }
-            unset($source); $item['variants'][$i] = $variant;
+                return $source;
+            });
+            $item['variants'][$i] = $variant;
         }
     }
     unset($item);
     if (!$recognized) return [502, snapError(502, '微博暂未提供本站支持的视频源，请稍后重试')];
-    $payload = snapFinalizeData($payload['data'], $now);
+    $payload = snapPublicMediaView($payload, $debug, $now);
     snapValidateEnvelope($payload);
     return [200, $payload];
+}
+
+/** Apply the same source boundary to simple and composed deliveries. IDs stay intact. */
+function snapMapDeliverySources(array $delivery, callable $map): array
+{
+    if (isset($delivery['sources'])) $delivery['sources'] = array_map($map, $delivery['sources']);
+    if (isset($delivery['init'])) $delivery['init']['sources'] = array_map($map, $delivery['init']['sources']);
+    foreach ($delivery['pieces'] ?? [] as $index => $piece) $delivery['pieces'][$index]['sources'] = array_map($map, $piece['sources']);
+    foreach ($delivery['resources'] ?? [] as $index => $resource) $delivery['resources'][$index]['delivery'] = snapMapDeliverySources($resource['delivery'], $map);
+    return $delivery;
 }
 
 function snapSend(array $payload, int $status = 200): void
@@ -144,13 +162,14 @@ function snapDecodeResponse(string $body, int $status = 200): array
 }
 
 /** The aggregate request goes only to a configured loopback origin and a fixed Host. */
-function snapForward(string $platform, string $url, ?callable $transport = null, ?array $settings = null): array
+function snapForward(string $platform, string $url, ?callable $transport = null, ?array $settings = null, bool $debug = false): array
 {
     if (!isset(snapPlatforms()[$platform]) || snapPlatformForUrl($url) !== $platform) {
         return [400, snapError(400, '链接平台不匹配或不受支持')];
     }
     $config = snapInternalSettings($settings);
     $endpoint = $config['origin'] . '/parse?platform=' . rawurlencode($platform) . '&url=' . rawurlencode($url);
+    if ($debug) $endpoint .= '&debug=1';
     if ($transport !== null) {
         $response = $transport($endpoint, $config['host']);
     } else {
@@ -182,7 +201,7 @@ function snapForward(string $platform, string $url, ?callable $transport = null,
 }
 
 /** Run one legacy entrypoint, including entrypoints that exit, without leaking PHP warnings as HTML. */
-function snapRunParser(string $platform, string $url): void
+function snapRunParser(string $platform, string $url, bool $debug = false): void
 {
     $file = __DIR__ . '/../api/' . snapPlatforms()[$platform]['file'];
     $_GET = ['url' => $url];
@@ -195,11 +214,14 @@ function snapRunParser(string $platform, string $url): void
         'http' => ['timeout' => 20, 'max_redirects' => 5],
         'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
     ]);
-    ob_start(static function (string $body) use ($platform, $url): string {
+    ob_start(static function (string $body) use ($platform, $url, $debug): string {
         try {
             $raw = json_decode($body, true, 128, JSON_THROW_ON_ERROR);
             if (!is_array($raw)) throw new UnexpectedValueException('Invalid parser output');
             $payload = snapAdaptParser($platform, $raw, $url);
+            // Internal transport always retains the normalized inventory. Only
+            // the public gateway can filter after source signing/availability.
+            if ($debug && ($payload['code'] ?? '') === 'OK') $payload = snapPublicMediaView($payload, true);
             if ((http_response_code() ?: 200) >= 400 && $payload['code'] === 'OK') throw new UnexpectedValueException('Failed parser returned success');
             snapValidateEnvelope($payload);
             $status = snapEnvelopeStatus($payload);
@@ -256,9 +278,10 @@ function snapHandle(bool $internal = false): void
         snapSend(snapError(400, '缺少有效的媒体条目标识'), 400); return;
     }
     if (!extension_loaded('curl')) { snapSend(snapError(503, '解析服务未配置完成'), 503); return; }
-    if ($internal) { snapRunParser($platform, $url); return; }
-    [$status, $payload] = snapForward($platform, $url);
-    [$status, $payload] = snapPreparePublicMedia($platform, $payload, $status);
+    $debug = ($_GET['debug'] ?? null) === '1';
+    if ($internal) { snapRunParser($platform, $url, $debug); return; }
+    [$status, $payload] = snapForward($platform, $url, debug: $debug);
+    [$status, $payload] = snapPreparePublicMedia($platform, $payload, $status, debug: $debug);
     if ($status === 200 && $path === '/api/resolve') {
         $items = array_values(array_filter($payload['data']['items'], static fn ($i) => $i['id'] === $itemId));
         if (!$items || ($items[0]['state'] ?? 'ready') !== 'ready') {

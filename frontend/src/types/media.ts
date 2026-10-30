@@ -14,6 +14,7 @@ export interface MediaMetadata {
   height?: number;
   duration_ms?: number;
   fps?: number;
+  hdr_type?: "sdr" | "hdr10" | "hdr10_plus" | "hlg" | "dolby_vision" | "hdr_unknown";
   bitrate_bps?: number;
   video_bitrate_bps?: number;
   audio_bitrate_bps?: number;
@@ -21,6 +22,7 @@ export interface MediaMetadata {
   audio_codec?: string;
   has_audio?: boolean;
   audio_language?: string;
+  audio_language_role?: "main" | "alternate";
   audio_channels?: number;
   sample_rate_hz?: number;
   container?: string;

@@ -36,7 +36,7 @@ for suite in ['weibo', 'toutiao', 'pipixia', 'weibo-media', 'douyin-media']:
                               and payload.get('total', 0) > 0
                               and payload.get('passed') == payload.get('total')))
 for filename in ['unified-contract.php', 'test_unified_xhs.php',
-                 'unified-review-identity.php', 'unified-review-platforms.php']:
+                 'unified-review-identity.php', 'unified-review-platforms.php', 'media-policy-contract.php']:
     checked = run([str(backend / 'tests' / filename)])
     payload = json.loads(checked.stdout)
     parser_checks.append(dict(payload, successful=checked.returncode == 0 and payload.get('passed') == payload.get('total')))

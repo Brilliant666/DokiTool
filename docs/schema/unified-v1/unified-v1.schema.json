@@ -547,6 +547,11 @@
           "title": "Fps",
           "type": "number"
         },
+        "hdr_type": {
+          "type": "string",
+          "enum": ["sdr", "hdr10", "hdr10_plus", "hlg", "dolby_vision", "hdr_unknown"],
+          "description": "Omitted means unknown. hdr_unknown confirms HDR without a known type; it cannot prove coverage."
+        },
         "bitrate_bps": {
           "exclusiveMinimum": 0,
           "title": "Bitrate Bps",
@@ -580,6 +585,11 @@
           "minLength": 1,
           "title": "Audio Language",
           "type": "string"
+        },
+        "audio_language_role": {
+          "type": "string",
+          "enum": ["main", "alternate"],
+          "description": "Explicit upstream language role; requires audio_language. A track ID or non-default bitrate is not language evidence."
         },
         "audio_channels": {
           "exclusiveMinimum": 0,

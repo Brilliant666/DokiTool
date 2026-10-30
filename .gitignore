@@ -88,6 +88,8 @@
 !/backend/lib/gateway.php
 !/backend/lib/media-adapters.php
 !/backend/lib/media-contract.php
+!/backend/lib/media-metadata.php
+!/backend/lib/media-policy.php
 !/backend/lib/media-probe.php
 !/backend/lib/platforms.php
 !/backend/lib/runtime.php
@@ -99,6 +101,10 @@
 !/backend/tests/contract.php
 !/backend/tests/douyin-media-contract.php
 !/backend/tests/http-smoke.php
+!/backend/tests/media-policy-contract.php
+!/backend/tests/media-policy-fixtures.php
+!/backend/tests/media-policy-http-router.php
+!/backend/tests/media-policy-http.php
 !/backend/tests/mock-internal.php
 !/backend/tests/parser-contract.php
 !/backend/tests/pipixia-contract.php
@@ -297,6 +303,8 @@
 !/docs/schema/unified-v1/examples/25-variant-order-does-not-change-default.json
 !/docs/schema/unified-v1/examples/26-expired-mux-needs-refresh.json
 !/docs/schema/unified-v1/examples/27-deferred-original-variant.json
+!/docs/schema/unified-v1/examples/28-protected-mux-capabilities.json
+!/docs/schema/unified-v1/examples/29-conflicting-mux-evidence.json
 /frontend/src/assets/brand/*
 !/frontend/src/assets/brand/dokitool-icon-48.png
 !/frontend/src/assets/brand/dokitool-touch-180.png

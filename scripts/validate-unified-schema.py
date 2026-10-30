@@ -22,9 +22,9 @@ Draft202012Validator.check_schema(SCHEMA)
 STRUCTURE = Draft202012Validator({k: v for k, v in SCHEMA.items() if k != '$id'}, format_checker=FormatChecker())
 TECHNICAL = {'width', 'height', 'duration_ms', 'fps', 'bitrate_bps', 'video_bitrate_bps',
              'audio_bitrate_bps', 'has_audio', 'video_codec', 'audio_codec', 'audio_language',
-             'audio_channels', 'sample_rate_hz'}
-AUDIO = {'audio_bitrate_bps', 'audio_codec', 'audio_language', 'audio_channels', 'sample_rate_hz'}
-VIDEO = {'width', 'height', 'fps', 'video_codec', 'video_bitrate_bps'}
+             'audio_channels', 'sample_rate_hz', 'hdr_type', 'audio_language_role'}
+AUDIO = {'audio_bitrate_bps', 'audio_codec', 'audio_language', 'audio_language_role', 'audio_channels', 'sample_rate_hz'}
+VIDEO = {'width', 'height', 'fps', 'hdr_type', 'video_codec', 'video_bitrate_bps'}
 
 
 def require(condition, message):
@@ -106,7 +106,11 @@ def dimensions(variant):
     m = variant.get('metadata', {})
     if variant['delivery']['kind'] == 'mux':
         video = next((r.get('metadata', {}) for r in variant['delivery']['resources'] if r['role'] == 'video'), {})
-        m = {**video, **m}
+        merged = {**video, **m}
+        for field in ('width', 'height'):
+            if field in video and field in m and video[field] != m[field]:
+                merged.pop(field, None)
+        m = merged
     if 'width' in m and 'height' in m:
         return sorted((m['width'], m['height']))
     return None
@@ -121,6 +125,8 @@ def higher(left, right):
 
 
 def metadata_valid(metadata, role=None):
+    if 'audio_language_role' in metadata:
+        require(bool(metadata.get('audio_language', '').strip()), 'language role requires an explicit language')
     known = TECHNICAL.intersection(metadata)
     evidence = metadata.get('evidence', 'unknown')
     require(not known or evidence in {'probe', 'upstream', 'mixed'}, 'technical fields require evidence')
@@ -166,10 +172,8 @@ def delivery_valid(delivery, metadata=None):
         require(sorted(roles) == ['image', 'motion'], 'pair requires one image and one motion')
     else:
         require(roles.count('video') == 1 and roles.count('audio') >= 1 and set(roles) <= {'video', 'audio'}, 'mux requires a video and audio resources')
-        video = next(r.get('metadata', {}) for r in resources if r['role'] == 'video')
-        for key in VIDEO:
-            if key in (metadata or {}) and key in video:
-                require(metadata[key] == video[key], 'mux metadata conflicts with its video resource')
+        # Conflicting summaries stay observable; dimensions() excludes disputed
+        # geometry and the public policy conservatively retains the candidate.
     for resource in resources:
         metadata_valid(resource.get('metadata', {}), resource['role'])
         delivery_valid(resource['delivery'], resource.get('metadata'))

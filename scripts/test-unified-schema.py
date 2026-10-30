@@ -142,6 +142,42 @@ class ContractTests(unittest.TestCase):
         contract.validate(r)
         self.assertEqual(item(r)['default'], selected)
 
+    def test_protected_capabilities_require_known_enums_and_field_evidence(self):
+        r = example(28)
+        contract.validate(r)
+        for update in [
+            {'hdr_type': 'HDR'}, {'hdr_type': 'hdr10', 'evidence': 'unknown'},
+            {'hdr_type': 'hdr10', 'evidence': 'mixed', 'field_evidence': {'width': 'upstream', 'height': 'upstream'}},
+        ]:
+            changed = deepcopy(r)
+            item(changed)['variants'][1]['delivery']['resources'][0]['metadata'].update(update)
+            with self.assertRaises(ValueError):
+                contract.validate(changed)
+        for update in [{'audio_language_role': 'dub'}, {'audio_language': ''}, {'audio_language_role': 'alternate', 'evidence': 'unknown'}]:
+            changed = deepcopy(r)
+            item(changed)['variants'][1]['delivery']['resources'][1]['metadata'].update(update)
+            with self.assertRaises(ValueError):
+                contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['delivery']['resources'][1]['metadata'].pop('audio_language')
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+
+    def test_hdr_fps_language_channels_do_not_invent_higher_spatial_quality(self):
+        r = example(28)
+        contract.validate(r)
+        item(r)['higher_quality_variants'] = [{'variant_id': item(r)['variants'][1]['id'], 'requires': ['mux']}]
+        with self.assertRaises(ValueError):
+            contract.validate(r)
+
+    def test_conflicting_resource_evidence_is_retained_without_false_spatial_order(self):
+        r = example(29)
+        contract.validate(r)
+        self.assertIsNone(contract.dimensions(item(r)['variants'][1]))
+        item(r)['higher_quality_variants'] = [{'variant_id': item(r)['variants'][1]['id'], 'requires': ['mux']}]
+        with self.assertRaises(ValueError):
+            contract.validate(r)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

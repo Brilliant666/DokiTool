@@ -187,6 +187,43 @@ function validateSources(value: unknown): asserts value is Source[] {
     "来源 ID",
   );
 }
+/** Check each layer's facts independently; conflicting layers remain diagnostic data. */
+function validateCapabilityMetadata(value: unknown, role?: Resource["role"]): void {
+  if (value === undefined) return;
+  if (!object(value)) return fail("媒体规格无效");
+  if (
+    value.hdr_type !== undefined &&
+    !["sdr", "hdr10", "hdr10_plus", "hlg", "dolby_vision", "hdr_unknown"].includes(value.hdr_type as string)
+  )
+    fail("HDR 类型无效");
+  if (value.audio_language !== undefined && !nonempty(value.audio_language))
+    fail("音轨语言无效");
+  if (
+    value.audio_language_role !== undefined &&
+    (!["main", "alternate"].includes(value.audio_language_role as string) || !nonempty(value.audio_language))
+  )
+    fail("音轨语言角色缺少有效语言或类型");
+  const facts = ["hdr_type", "audio_language", "audio_language_role"].filter(
+    (field) => value[field] !== undefined,
+  );
+  if (!facts.length) return;
+  if (!["upstream", "probe", "mixed"].includes(value.evidence as string)) fail("媒体能力缺少可靠证据");
+  if (value.evidence === "mixed") {
+    const technical = Object.keys(value).filter(
+      (field) => !["container", "extension", "mime_type", "evidence", "field_evidence"].includes(field),
+    );
+    for (const field of technical) {
+      if (!object(value.field_evidence) || !["upstream", "probe"].includes(value.field_evidence[field] as string))
+        fail("媒体能力字段缺少可靠证据");
+    }
+  }
+  if (role === "audio" && value.hdr_type !== undefined) fail("音频资源不能声明 HDR");
+  if (
+    (value.has_audio === false || ["video", "image", "subtitle"].includes(role || "")) &&
+    (value.audio_language !== undefined || value.audio_language_role !== undefined)
+  )
+    fail("无音频资源不能声明音轨语言");
+}
 function validateDelivery(delivery: Delivery): void {
   if (!object(delivery)) fail("缺少交付结构");
   if (
@@ -260,6 +297,7 @@ function validateDelivery(delivery: Delivery): void {
       )
         fail("组合只允许叶资源");
       validateDelivery(resource.delivery);
+      validateCapabilityMetadata(resource.metadata, resource.role);
     });
     const roles = delivery.resources.map((resource) => resource.role);
     if (
@@ -371,6 +409,12 @@ export function getDefaultFileUrl(
   const target = getDefaultDownloadTarget(item, context);
   return target.kind === "file" ? target.url : null;
 }
+function hasAdaptiveHls(delivery: Delivery): boolean {
+  if (delivery.kind === "hls") return delivery.scope !== "single";
+  return "resources" in delivery && delivery.resources.some(
+    (resource) => hasAdaptiveHls(resource.delivery),
+  );
+}
 export function getDownloadTarget(
   item: MediaItem,
   selection?: MediaSelection | null,
@@ -399,6 +443,7 @@ export function getDownloadTarget(
   }
   const capabilities = requiredCapabilities(delivery);
   if (
+    hasAdaptiveHls(delivery) ||
     capabilities.some((capability) =>
       ["dash", "mux", "segment_remux"].includes(capability),
     )
@@ -542,6 +587,7 @@ export function validateMediaEnvelope(value: unknown): UnifiedMedia {
         return;
       }
       validateDelivery(variant.delivery);
+      validateCapabilityMetadata(variant.metadata, item.type === "audio" ? "audio" : item.type === "image" ? "image" : undefined);
       if (
         sourcesOf(variant.delivery).some((source) => source.expires_at) &&
         !media.generated_at
@@ -586,8 +632,10 @@ export function validateMediaEnvelope(value: unknown): UnifiedMedia {
       !group.item_ids.every((id) => media.items.some((item) => item.id === id))
     )
       fail("分组引用无效");
-  for (const attachment of media.attachments || [])
+  for (const attachment of media.attachments || []) {
     validateDelivery(attachment.resource.delivery);
+    validateCapabilityMetadata(attachment.resource.metadata, attachment.resource.role);
+  }
   if (media.cover) validateSources([media.cover]);
   if (media.author?.avatar) validateSources([media.author.avatar]);
   return media;

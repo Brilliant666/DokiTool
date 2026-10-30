@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/runtime.php';
 require_once __DIR__ . '/platforms.php';
 require_once __DIR__ . '/media-contract.php';
+require_once __DIR__ . '/media-metadata.php';
 
 /** Upstream/private parser fields end here. Public consumers only receive unified-v1. */
 function snapAdaptParser(string $platform, array $payload, string $url): array
@@ -104,7 +105,7 @@ function snapResourceIdentity(array $resource): array
 
 function snapCandidateMetadata(array $raw): array
 {
-    $metadata = [];
+    $metadata = snapVideoFacts($raw) + snapAudioFacts($raw);
     foreach (['width' => 'width', 'height' => 'height', 'bitrate_bps' => 'bitrate_bps', 'video_bitrate_bps' => 'video_bitrate_bps',
         'audio_bitrate_bps' => 'audio_bitrate_bps', 'sample_rate_hz' => 'sample_rate_hz', 'audio_channels' => 'audio_channels'] as $from => $to) {
         if (is_numeric($raw[$from] ?? null) && $raw[$from] > 0) $metadata[$to] = (int)round($raw[$from]);
@@ -404,7 +405,8 @@ function snapBilibiliVariants(array $raw): array
     $variants = [];
     if (count($durl) === 1) {
         $part = $durl[0];
-        $variants = snapFileVariants([['sources' => array_merge([['url' => $part['url'], 'size' => $part['size'] ?? null]], $part['backup_url'] ?? []), 'label' => $raw['quality'] ?? '规格未知']]);
+        $variants = snapFileVariants([['sources' => array_merge([['url' => $part['url'], 'size' => $part['size'] ?? null]], $part['backup_url'] ?? []), 'label' => $raw['quality'] ?? '规格未知']
+            + snapVideoFacts($part) + snapVideoFacts($play) + snapAudioFacts($part) + snapAudioFacts($play)]);
     } elseif (count($durl) > 1) {
         $pieces = [];
         foreach ($durl as $i => $part) {
@@ -443,10 +445,14 @@ function snapBilibiliTrack(array $track, string $role, string $id): ?array
     $resource = ['id' => $id, 'role' => $role, 'delivery' => ['kind' => 'file', 'sources' => $sources]];
     $m = ['evidence' => 'upstream'];
     if ($role === 'video') {
+        $m += snapVideoFacts($track);
+        // These IDs are explicit HDR profiles in the upstream playurl catalogue.
+        if (!isset($m['hdr_type']) && in_array((int)($track['id'] ?? 0), [125, 126], true)) $m['hdr_type'] = (int)$track['id'] === 126 ? 'dolby_vision' : 'hdr_unknown';
         foreach (['width', 'height'] as $field) if (is_numeric($track[$field] ?? null) && $track[$field] > 0) $m[$field] = (int)$track[$field];
         if ($codec = snapText($track['codecs'] ?? null)) $m['video_codec'] = $codec;
         if (is_numeric($track['bandwidth'] ?? null) && $track['bandwidth'] > 0) $m['video_bitrate_bps'] = (int)$track['bandwidth'];
     } else {
+        $m += snapAudioFacts($track);
         if ($codec = snapText($track['codecs'] ?? null)) $m['audio_codec'] = $codec;
         if (is_numeric($track['bandwidth'] ?? null) && $track['bandwidth'] > 0) $m['audio_bitrate_bps'] = (int)$track['bandwidth'];
     }

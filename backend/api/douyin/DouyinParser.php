@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../lib/runtime.php';
 require_once __DIR__ . '/../../lib/douyin-media-probe.php';
+require_once __DIR__ . '/../../lib/media-metadata.php';
 /**
  * @Author: JH-Ahua
  * @CreateTime: 2026/2/12 下午9:47
@@ -671,7 +672,12 @@ class DouyinParser
     {
         $address = is_array($item['play_addr'] ?? null) ? $item['play_addr'] : ($item['playAddr'][0] ?? []);
         $address = is_array($address) ? $address : [];
-        $metadata = [];
+        $extra = is_string($item['video_extra'] ?? null) ? json_decode($item['video_extra'], true) : [];
+        $extra = is_array($extra) ? $extra : [];
+        $sub = is_string($extra['sub_info'] ?? null) ? json_decode($extra['sub_info'], true) : [];
+        $sub = is_array($sub) ? $sub : [];
+        $metadata = snapVideoFacts($item) + snapVideoFacts($address) + snapVideoFacts($extra) + snapVideoFacts($sub);
+        if (($item['format'] ?? $extra['format'] ?? '') !== 'dash' && empty($item['is_dash'])) $metadata += snapAudioFacts($item) + snapAudioFacts($extra) + snapAudioFacts($sub);
         foreach (['width' => ['width'], 'height' => ['height'], 'bit_rate' => ['bit_rate', 'bitRate'], 'size' => ['data_size', 'dataSize']] as $key => $aliases) {
             foreach ($aliases as $alias) {
                 $value = $item[$alias] ?? $address[$alias] ?? null;
@@ -719,6 +725,7 @@ class DouyinParser
             unset($source);
             $candidate = ['private_audio_id' => $audio['file_id'], 'private_media_identity' => 'douyin:audio:' . $audio['file_id'], 'sources' => $sources];
             $info = is_string($audio['sub_info'] ?? null) ? json_decode($audio['sub_info'], true) : [];
+            $candidate += snapAudioFacts($audio) + snapAudioFacts(is_array($info) ? $info : []);
             if (is_string($info['audio_profile'] ?? null)) $candidate['audio_codec'] = $info['audio_profile'];
             if (is_numeric($info['audio_sample_rate'] ?? null) && $info['audio_sample_rate'] > 0) $candidate['sample_rate_hz'] = (int)$info['audio_sample_rate'];
             if (is_numeric($info['audio_channels'] ?? null) && $info['audio_channels'] > 0) $candidate['audio_channels'] = (int)$info['audio_channels'];
