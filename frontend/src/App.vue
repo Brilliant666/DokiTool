@@ -46,7 +46,7 @@ const isDark = ref(initialState.isDark)
 
 const isDownloading = computed(() =>
   videoStore.downloads.some((task) =>
-    ['preparing', 'downloading'].includes(task.status)
+    ['queued', 'preparing', 'downloading'].includes(task.status)
   )
 )
 const showBackup = ref(false)
@@ -91,6 +91,7 @@ const resolveVideoUrl = async (video, signal) => {
 }
 
 const {
+  restoreDownloads,
   downloadFile,
   downloadMainVideo,
   downloadVideoByIndex,
@@ -200,6 +201,7 @@ const setLocale = (lang) => {
 }
 
 onMounted(() => {
+  void restoreDownloads()
   // Static HTML and the first client render use the same language and controls.
   // Restore preferences only after hydration; the head bootstrap already applied
   // the background theme before CSS, without mutating the hydrated subtree.

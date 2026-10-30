@@ -1,5 +1,7 @@
 import { type Ref } from "vue";
+import type { DownloadSnapshot, SourceProbe } from "../downloads/types";
 import type {
+  DownloadTask,
   LivePhoto,
   MediaVideo,
   MusicResource,
@@ -72,6 +74,7 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
 
   const archiveRetries = new Map<number, () => Promise<void>>();
   const videoRetries = new Map<number, () => Promise<boolean>>();
+  const pendingTaskActions = new Set<number>();
   const sourceContexts = new Map<number, {
     routes: string[];
     resultVersion: number;
@@ -80,6 +83,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   }>();
   const taskFor = (id: number) => videoStore.downloads.find((task) => task.id === id);
   const ownsTask = (id: number, controller: AbortController) => taskFor(id)?.abortController === controller;
+  const matchesSettledAttempt = (snapshot: DownloadTask) => {
+    const current = taskFor(snapshot.id);
+    return current && !current.observation && current.deliveryId === snapshot.deliveryId
+      && current.abortController === snapshot.abortController && current.status === snapshot.status
+      && current.transport === snapshot.transport;
+  };
   const checkAbort = (signal: AbortSignal) => {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   };
@@ -166,124 +175,122 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     return { ...video, ...patch };
   }
 
+  let pageTaskSequence = 0;
+  const deliveryTasks = new Map<string, number>();
+  const comparableUrl = (url: string) => {
+    try { return new URL(url, typeof location === "undefined" ? "https://dokitool.invalid/" : location.href).href; }
+    catch { return url; }
+  };
+  const deliveryStatusText: Record<DownloadSnapshot["status"], string> = {
+    queued: "排队中...", preparing: "准备下载...", downloading: "下载中...",
+    completed: "传输完成，请在浏览器确认保存", failed: "下载失败",
+    cancelled: "已取消", "handed-off": "已交给浏览器", interrupted: "下载连接已中断",
+  };
+
+  function applyDelivery(snapshot: DownloadSnapshot, restore = false): void {
+    let id = deliveryTasks.get(snapshot.id);
+    if (id === undefined && restore) {
+      id = videoStore.addDownload({ filename: snapshot.filename, url: snapshot.url });
+      deliveryTasks.set(snapshot.id, id);
+    }
+    if (id === undefined) return;
+    const task = taskFor(id);
+    if (!task || task.deliveryId !== undefined && task.deliveryId !== snapshot.id) return;
+    // A status-only/uncertain Worker reply has no URL. Keep the frozen source
+    // in this page so a second click cannot silently create a duplicate task.
+    const url = snapshot.url || task.url || "";
+    videoStore.updateDownload(id, {
+      deliveryId: snapshot.id, transport: snapshot.transport,
+      filename: snapshot.filename, url, status: snapshot.status,
+      statusText: deliveryStatusText[snapshot.status],
+      loaded: snapshot.loaded, total: snapshot.total, speed: snapshot.speed,
+      elapsed: snapshot.elapsed, averageSpeed: snapshot.averageSpeed,
+      transferElapsed: snapshot.transferElapsed, observation: snapshot.observation,
+      workerBuild: snapshot.workerBuild,
+      transferred: snapshot.loaded, error: snapshot.error || null, progressKind: "bytes",
+      percent: snapshot.status === "completed" ? 100 : snapshot.total > 0
+        ? Math.min(99, Math.round(snapshot.loaded / snapshot.total * 100)) : 0,
+      nativeAvailable: Boolean(url) && !looksLikeHlsManifest(url),
+    });
+  }
+
+  /** Called on client mount only; the homepage and SSR never register a Worker. */
+  async function restoreDownloads(): Promise<void> {
+    try {
+      // No download history means no extra chunk or registration on the first visit.
+      if (!sessionStorage.getItem("dokitool-downloads-v1")) return;
+      const { reconnectStreaming } = await import("../downloads/streaming");
+      await reconnectStreaming(snapshot => applyDelivery(snapshot, true));
+    } catch { /* Restricted storage must not prevent the parser from starting. */ }
+  }
+
   async function downloadFile(
     url: string, filename: string, downloadId: number,
     controller = new AbortController(), startedAt = Date.now(),
+    probe?: SourceProbe,
   ): Promise<void> {
     if (!url) return;
+    const matchingTasks = () => videoStore.downloads.filter(task => task.id !== downloadId
+      && [task.url, sourceContexts.get(task.id)?.selectedUrl].some(source => source && comparableUrl(source) === comparableUrl(url)));
+    const active = (status: string) => ["queued", "preparing", "downloading"].includes(status);
+    let duplicate = matchingTasks().some(task => active(task.status));
+    if (!duplicate && matchingTasks().some(task => task.status === "interrupted" && task.deliveryId)) {
+      try {
+        const { hasStreamingTask } = await import("../downloads/streaming");
+        duplicate = matchingTasks().some(task => active(task.status)
+          || task.status === "interrupted" && task.deliveryId && hasStreamingTask(task.deliveryId));
+      } catch {
+        // A failed module load is not evidence that a previously started download stopped.
+        duplicate = true;
+      }
+    }
+    if (duplicate) {
+      videoStore.removeDownload(downloadId);
+      archiveRetries.delete(downloadId); videoRetries.delete(downloadId); sourceContexts.delete(downloadId);
+      showToast("该资源已有下载任务", "info");
+      return;
+    }
+    const deliveryId = globalThis.crypto?.randomUUID?.() ?? `page-${Date.now()}-${++pageTaskSequence}`;
+    deliveryTasks.set(deliveryId, downloadId);
     videoStore.updateDownload(downloadId, {
-      abortController: controller, status: "downloading", statusText: "等待服务器响应...",
+      deliveryId, abortController: controller, status: "queued", statusText: "排队中...",
       percent: 0, loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0,
       transferred: 0, error: null, progressKind: "bytes", nativeAvailable: !looksLikeHlsManifest(url),
+      observation: undefined, transferElapsed: undefined, workerBuild: undefined,
     });
-    const monitor = monitorTransfer(downloadId, controller, startedAt);
     const context = sourceContexts.get(downloadId);
     const routes = Array.from(new Set([url, ...(context?.routes ?? [])])).slice(0, 3);
-    let lastError: unknown;
     try {
-      for (let attempt = 0; attempt < routes.length; attempt++) {
-        checkAbort(controller.signal);
-        if (!ownsTask(downloadId, controller)) return;
-        // A saved download can finish after parsing another work, but must not
-        // start extra network attempts or change that work's selection.
-        if (attempt > 0 && context && videoStore.resultVersion !== context.resultVersion) break;
-        const candidate = routes[attempt];
-        if (looksLikeHlsManifest(candidate)) {
-          lastError = new Error("该地址是 HLS 清单，需分片合并下载");
-          continue;
+      const { downloadManager } = await import("../downloads/manager");
+      checkAbort(controller.signal);
+      const result = await downloadManager.run({ id: deliveryId, url, filename, routes, startedAt, probe }, controller.signal, snapshot => {
+        if (taskFor(downloadId)?.deliveryId === deliveryId && taskFor(downloadId)?.status !== "handed-off") applyDelivery(snapshot);
+      });
+      if (!ownsTask(downloadId, controller)) return;
+      // Finishing an older work must never alter a newly parsed work's player.
+      if (result.status === "completed" && comparableUrl(result.url) !== comparableUrl(url) && context
+        && videoStore.resultVersion === context.resultVersion && effectiveSelectedUrl() === context.selectedUrl) {
+        if (context.video && isMultiVideo(videoStore.resultData)) {
+          const source = getMediaSources(context.video).find(item => comparableUrl(item.url) === comparableUrl(result.url));
+          if (source) videoStore.patchVideo(context.video, selectMediaSource(context.video, source));
         }
-        const attemptController = new AbortController();
-        const abortAttempt = () => attemptController.abort();
-        controller.signal.addEventListener("abort", abortAttempt, { once: true });
-        let lastActivity = Date.now();
-        let timedOut = false;
-        const timeout = setInterval(() => {
-          if (Date.now() - lastActivity >= 30000) { timedOut = true; attemptController.abort(); }
-        }, 1000);
-        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-        let finished = false;
-        try {
-          videoStore.updateDownload(downloadId, {
-            url: candidate,
-            statusText: attempt ? `正在尝试同画质线路 ${attempt + 1}/${routes.length}...` : "等待服务器响应...",
-            percent: 0, loaded: 0, total: 0, speed: 0,
-          });
-          const response = await fetch(candidate, { method: "GET", mode: "cors", signal: attemptController.signal });
-          lastActivity = Date.now();
-          if (!response.ok) { void response.body?.cancel(); throw new Error(`HTTP ${response.status}`); }
-          const contentType = response.headers.get("content-type")?.split(";")[0] || "";
-          if (/text\/html|application\/json|mpegurl/i.test(contentType)) {
-            void response.body?.cancel(); throw new Error("资源地址返回了错误页面或分片清单");
-          }
-          const extension = ({ "image/webp": "webp", "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/avif": "avif", "audio/mp4": "m4a", "audio/mpeg": "mp3" } as Record<string, string>)[contentType];
-          const finalName = extension ? filename.replace(/\.[^.]+$/, `.${extension}`) : filename;
-          if (!response.body) throw new Error("下载响应不支持流式读取");
-          const total = Number(response.headers.get("content-length")) || 0;
-          reader = response.body.getReader();
-          const chunks: BlobPart[] = [];
-          let loaded = 0;
-          let lastUiUpdate = 0;
-          while (true) {
-            checkAbort(controller.signal);
-            const { done, value } = await reader.read();
-            if (done) { finished = true; break; }
-            lastActivity = Date.now();
-            chunks.push(value.slice().buffer as ArrayBuffer);
-            loaded += value.length;
-            monitor.receive(value.length);
-            if (lastActivity - lastUiUpdate >= 250) {
-              videoStore.updateDownload(downloadId, {
-                loaded, total, percent: total > 0 ? Math.min(99, Math.round(loaded / total * 100)) : 0,
-                statusText: "下载中...",
-              });
-              lastUiUpdate = lastActivity;
-            }
-          }
-          if (total > 0 && loaded !== total) throw new Error(`下载不完整：期望 ${total} 字节，实际 ${loaded} 字节`);
-          checkAbort(controller.signal);
-          if (!ownsTask(downloadId, controller)) return;
-          if (!loaded) throw new Error("资源为空");
-          const blobUrl = URL.createObjectURL(new Blob(chunks, { type: contentType }));
-          triggerBrowserDownload(blobUrl, finalName);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
-          monitor.finish();
-          videoStore.updateDownload(downloadId, {
-            status: "completed", statusText: "已完成", percent: 100,
-            loaded, total: total || loaded, filename: finalName, url: candidate, abortController: null,
-          });
-          if (candidate !== url && context && videoStore.resultVersion === context.resultVersion && effectiveSelectedUrl() === context.selectedUrl) {
-            if (context.video && isMultiVideo(videoStore.resultData)) {
-              const source = getMediaSources(context.video).find((item) => item.url === candidate);
-              if (source) videoStore.patchVideo(context.video, selectMediaSource(context.video, source));
-            }
-            currentVideoUrl.value = candidate;
-            showToast("下载已切换到同画质可用线路，播放器与复制链接已同步", "info");
-          }
-          return;
-        } catch (error) {
-          checkAbort(controller.signal);
-          lastError = timedOut ? new Error("该线路超过 30 秒没有返回数据") : error;
-        } finally {
-          clearInterval(timeout);
-          controller.signal.removeEventListener("abort", abortAttempt);
-          if (!finished) { attemptController.abort(); void reader?.cancel().catch(() => {}); }
-          reader?.releaseLock();
-        }
+        currentVideoUrl.value = result.url;
+        showToast("下载已切换到同画质可用线路，播放器与复制链接已同步", "info");
       }
-      throw lastError instanceof Error ? lastError : new Error("下载失败，未继续尝试其他线路");
     } catch (error) {
       if (!ownsTask(downloadId, controller)) return;
-      monitor.finish();
-      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
-        videoStore.updateDownload(downloadId, { status: "cancelled", statusText: "已取消", abortController: null });
+      if (error instanceof Error && error.name === "StreamingStateUnknownError") {
+        videoStore.updateDownload(downloadId, { observation: "unknown", speed: 0, statusText: "下载状态待确认", error: error.message });
         return;
       }
+      const cancelled = controller.signal.aborted || error instanceof Error && error.name === "AbortError";
       videoStore.updateDownload(downloadId, {
-        status: "failed", statusText: "页面下载失败", abortController: null,
-        error: error instanceof Error ? error.message : "下载失败",
+        status: cancelled ? "cancelled" : "failed", statusText: cancelled ? "已取消" : "下载失败", speed: 0,
+        error: cancelled ? null : error instanceof Error ? error.message : "下载失败",
       });
-      showToast("页面无法读取该资源，可在下载任务中选择“交给浏览器下载”", "warning");
-    } finally { monitor.finish(); }
+    } finally {
+      if (ownsTask(downloadId, controller)) videoStore.updateDownload(downloadId, { abortController: null });
+    }
   }
 
   /** 分片下载（写入 store 进度） */
@@ -391,11 +398,15 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   /** 为某集构造可读文件名并入队（自动处理分片合并与 B 站懒解析） */
   async function enqueueVideo(video: MediaVideo, fallbackTitle?: string, retryId?: number): Promise<boolean> {
     if (!video) return false;
+    const sourceKey = JSON.stringify([video._sourceUrl || videoStore.resultData?._sourceUrl, video.url, video._bvid, video._cid, video.index]);
+    if (retryId === undefined && videoStore.downloads.some(task => task.sourceKey === sourceKey && ["queued", "preparing", "downloading"].includes(task.status))) {
+      showToast("该资源已有下载任务", "info"); return false;
+    }
     const startedAt = Date.now();
     const resultVersion = videoStore.resultVersion;
     const controller = new AbortController();
     let filename = buildMediaFilename({ title: video.title || fallbackTitle, index: video.index, fallback: video.url });
-    const id = retryId ?? videoStore.addDownload({ filename, url: video.url });
+    const id = retryId ?? videoStore.addDownload({ filename, url: video.url, sourceKey });
     videoRetries.set(id, () => enqueueVideo(video, fallbackTitle, id));
     videoStore.updateDownload(id, { filename, url: video.url, status: "preparing", statusText: "准备下载...", abortController: controller, nativeAvailable: false, elapsed: 0, speed: 0, averageSpeed: 0, transferred: 0, progressKind: undefined, loaded: 0, total: 0, percent: 0, error: null });
     const monitor = monitorTransfer(id, controller, startedAt, false);
@@ -414,9 +425,10 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
       controller.signal.addEventListener("abort", abortProbe, { once: true });
       const probeTimeout = setTimeout(abortProbe, 10000);
       let segments: (HlsSegment | string)[] | null;
+      let probe: SourceProbe | undefined;
       try {
         segments = resolved.segments && resolved.segments.length > 1
-          ? resolved.segments : await prepareSegments(segmentCandidates([url]), probeController.signal);
+          ? resolved.segments : await prepareSegments(segmentCandidates([url]), probeController.signal, value => { probe = value; });
       } finally { clearTimeout(probeTimeout); controller.signal.removeEventListener("abort", abortProbe); }
       checkAbort(controller.signal);
       if (!ownsTask(id, controller)) return false;
@@ -430,7 +442,7 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
         void downloadSegments(segments, finalName, id, controller, startedAt);
       } else {
         videoStore.updateDownload(id, { filename, url });
-        void downloadFile(url, filename, id, controller, startedAt);
+        void downloadFile(url, filename, id, controller, startedAt, probe);
       }
       return true;
     } catch (error) {
@@ -693,33 +705,82 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     showToast(`成功添加 ${images.length} 个下载任务`);
   }
 
-  function handleCancelDownload(id: number): void {
-    videoStore.cancelDownload(id);
+  async function handleCancelDownload(id: number): Promise<void> {
+    const task = taskFor(id);
+    if (!task) return;
+    const { deliveryId, abortController } = task;
+    // Imports and Worker acknowledgements can race completion, native handoff,
+    // or a retry reusing this card. Cancellation belongs only to this attempt.
+    const currentAttempt = () => {
+      const current = taskFor(id);
+      return current && current.deliveryId === deliveryId && current.abortController === abortController
+        && (["queued", "preparing", "downloading"].includes(current.status) || current.observation === "unknown") ? current : undefined;
+    };
+    if (!currentAttempt()) return;
+    if (task.transport === "browser_streaming" && deliveryId) {
+      videoStore.updateDownload(id, { statusText: "正在确认取消..." });
+      try {
+        const { cancelStreaming, hasStreamingTask } = await import("../downloads/streaming");
+        const current = currentAttempt();
+        if (!current) return;
+        if (current.transport !== "browser_streaming" || current.abortController && !hasStreamingTask(deliveryId)) {
+          videoStore.cancelDownload(id);
+          return;
+        }
+        await cancelStreaming(deliveryId);
+      } catch (error) {
+        if (currentAttempt()) videoStore.updateDownload(id, { observation: "unknown", speed: 0, statusText: "无法确认取消结果", error: error instanceof Error ? error.message : "请检查浏览器下载列表" });
+        return;
+      }
+    }
+    if (currentAttempt()) videoStore.cancelDownload(id);
   }
 
-  function handleRetryDownload(id: number): void {
-    const task = videoStore.downloads.find((download) => download.id === id);
-    if (!task || ["preparing", "downloading"].includes(task.status)) return;
-    const retryArchive = archiveRetries.get(id);
-    if (retryArchive) { void retryArchive(); return; }
-    const retryVideo = videoRetries.get(id);
-    if (retryVideo) { void retryVideo(); return; }
-    // 分片任务重试：重走合并下载，避免退化成只下首片
-    const rawSegments = task.segments;
-    if (Array.isArray(rawSegments) && rawSegments.length > 1) {
-      const segments = rawSegments.map((s) =>
-        typeof s === "string" ? s : (s as HlsSegment),
-      );
-      void downloadSegments(segments, task.filename, id);
-      return;
+  async function handleRetryDownload(id: number): Promise<void> {
+    const current = taskFor(id);
+    if (!current || current.observation || pendingTaskActions.has(id) || ["queued", "preparing", "downloading"].includes(current.status)) return;
+    // Retry and clear share the old attempt's acknowledgement; only one may act.
+    const task = { ...current };
+    pendingTaskActions.add(id);
+    try {
+      if (task.deliveryId && task.transport === "browser_streaming") {
+        try {
+          const { forgetStreaming } = await import("../downloads/streaming");
+          if (!matchesSettledAttempt(task)) return;
+          await forgetStreaming(task.deliveryId);
+        } catch (error) {
+          if (matchesSettledAttempt(task)) showToast(error instanceof Error ? error.message : "原任务状态未知，请先检查浏览器下载列表", "warning");
+          return;
+        }
+      }
+      if (!matchesSettledAttempt(task)) return;
+      if (task.deliveryId) deliveryTasks.delete(task.deliveryId);
+      const retryArchive = archiveRetries.get(id);
+      if (retryArchive) { await retryArchive(); return; }
+      const retryVideo = videoRetries.get(id);
+      if (retryVideo) { await retryVideo(); return; }
+      // 分片任务重试：重走合并下载，避免退化成只下首片
+      const rawSegments = task.segments;
+      if (Array.isArray(rawSegments) && rawSegments.length > 1) {
+        const segments = rawSegments.map((s) =>
+          typeof s === "string" ? s : (s as HlsSegment),
+        );
+        await downloadSegments(segments, task.filename, id);
+        return;
+      }
+      if (task.url) await downloadFile(task.url, task.filename, id);
+    } finally {
+      pendingTaskActions.delete(id);
     }
-    if (task.url) void downloadFile(task.url, task.filename, id);
   }
 
   /** Called synchronously by a real user click. Browser-owned progress is unknowable here. */
   function handleBrowserDownload(id: number): void {
+    if (pendingTaskActions.has(id)) return;
     const task = taskFor(id);
     if (!task?.nativeAvailable || !task.url || !/^(?:https?:\/\/|\/(?!\/))/i.test(task.url) || looksLikeHlsManifest(task.url)) return;
+    // Opening a source is a recovery action. A stale click must not cancel a live transfer.
+    if (task.observation || !["failed", "cancelled", "interrupted"].includes(task.status)) return;
     task.abortController?.abort();
     videoStore.updateDownload(id, {
       status: "handed-off", statusText: "已交给浏览器", abortController: null,
@@ -729,21 +790,38 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
     showToast("请在打开的页面或浏览器下载列表查看进度；本站无法确认下载是否完成", "info", 6000);
   }
 
-  function handleClearCompleted(id: number | "all"): void {
-    if (id === "all") {
-      for (const task of videoStore.downloads) if (["completed", "cancelled", "failed", "handed-off"].includes(task.status)) {
+  async function handleClearCompleted(id: number | "all"): Promise<void> {
+    const settled = ["completed", "cancelled", "failed", "handed-off", "interrupted"];
+    const tasks = videoStore.downloads.filter(task => !task.observation && !pendingTaskActions.has(task.id)
+      && settled.includes(task.status) && (id === "all" || task.id === id))
+      .map(task => ({ ...task }));
+    // Reserve the whole batch before waiting: legacy ZIP/segment retries have no delivery ID.
+    tasks.forEach(task => pendingTaskActions.add(task.id));
+    try {
+      for (const task of tasks) {
+        if (!matchesSettledAttempt(task)) continue;
+        if (task.deliveryId && task.transport === "browser_streaming") {
+          try {
+            const { forgetStreaming } = await import("../downloads/streaming");
+            if (!matchesSettledAttempt(task)) continue;
+            await forgetStreaming(task.deliveryId);
+          } catch (error) {
+            if (matchesSettledAttempt(task)) showToast(error instanceof Error ? error.message : "原任务状态未知，暂不能清除", "warning");
+            continue;
+          }
+        }
+        if (!matchesSettledAttempt(task)) continue;
+        if (task.deliveryId) deliveryTasks.delete(task.deliveryId);
         archiveRetries.delete(task.id); videoRetries.delete(task.id); sourceContexts.delete(task.id);
+        videoStore.removeDownload(task.id);
       }
-      videoStore.clearCompletedDownloads();
-    } else {
-      archiveRetries.delete(id);
-      videoRetries.delete(id);
-      sourceContexts.delete(id);
-      videoStore.removeDownload(id);
+    } finally {
+      tasks.forEach(task => pendingTaskActions.delete(task.id));
     }
   }
 
   return {
+    restoreDownloads,
     downloadFile,
     downloadMainVideo,
     downloadVideoByIndex,

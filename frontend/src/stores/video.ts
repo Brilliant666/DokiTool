@@ -103,12 +103,12 @@ export const useVideoStore = defineStore("video", () => {
     const download = downloads.value.find((item) => item.id === id);
     if (download) {
       download.abortController?.abort();
-      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, abortController: null });
+      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, observation: undefined, abortController: null });
     }
   };
   const clearCompletedDownloads = () => {
     downloads.value = downloads.value.filter(
-      (item) => !["completed", "cancelled", "failed", "handed-off"].includes(item.status),
+      (item) => !["completed", "cancelled", "failed", "handed-off", "interrupted"].includes(item.status),
     );
   };
   /** 懒解析后回填某集字段；videos 与 collections[].episodes 同步更新（shallowRef 需整体重赋值） */
