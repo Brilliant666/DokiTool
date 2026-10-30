@@ -122,7 +122,9 @@
 !/frontend/src/types/
 !/frontend/src/utils/
 /frontend/tests/*
+!/frontend/tests/download-bridge.test.mjs
 !/frontend/tests/download-manager.test.mjs
+!/frontend/tests/download-panel.test.mjs
 !/frontend/tests/download-streaming.test.mjs
 !/frontend/tests/download-transports.test.mjs
 !/frontend/tests/download-worker.test.mjs
@@ -153,6 +155,7 @@
 /frontend/brand-originals/platforms/*
 !/frontend/brand-originals/platforms/zuiyou.png
 /frontend/public/downloads/*
+!/frontend/public/downloads/bridge.html
 !/frontend/public/downloads/worker.js
 /frontend/public/licenses/*
 !/frontend/public/licenses/fontawesome-free-6.7.2.txt
@@ -190,9 +193,11 @@
 !/frontend/src/composables/useVideoSelection.ts
 /frontend/src/downloads/*
 !/frontend/src/downloads/blob.ts
+!/frontend/src/downloads/bridge.ts
 !/frontend/src/downloads/file.ts
 !/frontend/src/downloads/manager.ts
 !/frontend/src/downloads/native.ts
+!/frontend/src/downloads/session.ts
 !/frontend/src/downloads/streaming.ts
 !/frontend/src/downloads/types.ts
 /frontend/src/router/*

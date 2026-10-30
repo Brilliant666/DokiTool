@@ -30,6 +30,10 @@ export interface DownloadSnapshot {
   averageSpeed: number;
   transferElapsed?: number;
   workerBuild?: string;
+  /** Worker snapshots are ordered independently of message arrival. Legacy workers omit this. */
+  revision?: number;
+  /** Admission precedes the browser's attachment request. */
+  delivery?: "waiting" | "ready" | "claimed";
   /** Observation trouble is not proof that the underlying transfer stopped. */
   observation?: "unknown" | "stalled";
   error?: string;

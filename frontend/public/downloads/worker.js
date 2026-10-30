@@ -1,18 +1,20 @@
 /* Download-only service worker. It never caches or intercepts the application/API. */
 const PROTOCOL = 1;
-const BUILD = "downloads-20261030.3";
+const BUILD = "downloads-20261030.4";
 const MAX_ACTIVE = 2;
 const IDLE_MS = 45_000;
-// Bound queueing plus source preparation below browser extended-event limits.
-// This deadline ends when attachment headers are ready, never during delivery.
+// Bound attachment-response preparation below browser extended-event limits.
+// Legacy clients also queue inside that response; admission-aware clients do not.
 const RESPONSE_MS = 120_000;
 const STALLED_MS = 15_000;
 const SPEED_WINDOW_MS = 2000;
 const CLAIM_MS = 60_000;
 const RETAIN_MS = 10 * 60_000;
 const tasks = new Map();
+const history = new Map();
 const queue = [];
 let active = 0;
+let historyTimer;
 const terminal = status => ["completed", "failed", "cancelled"].includes(status);
 const abortError = () => new DOMException("下载已取消", "AbortError");
 const validKey = value => typeof value === "string" && /^[a-zA-Z0-9_-]{16,100}$/.test(value);
@@ -27,6 +29,7 @@ const sourceUrl = value => {
 };
 
 function snapshot(task) {
+  if (task.result) return task.result;
   const now = Date.now(), end = task.finishedAt ?? now;
   const elapsed = Math.max(0, (end - task.startedAt) / 1000);
   const transferElapsed = task.transferStartedAt === undefined ? 0 : Math.max(0, (end - task.transferStartedAt) / 1000);
@@ -34,9 +37,11 @@ function snapshot(task) {
   // cancelling the transfer, starting another route, or releasing its slot.
   const observation = task.state.status === "downloading" && !task.pendingUpstream &&
     now - Math.max(task.lastPullAt ?? task.transferStartedAt, task.lastReceivedAt ?? 0) >= STALLED_MS ? "stalled" : undefined;
-  return { ...task.state, workerBuild: BUILD, observation, elapsed, transferElapsed,
+  const result = { ...task.state, workerBuild: BUILD, revision: ++task.revision, observation, elapsed, transferElapsed,
     speed: now - (task.lastReceivedAt || 0) > 3000 ? 0 : task.state.speed,
     averageSpeed: task.state.loaded / Math.max(0.001, transferElapsed) };
+  if (terminal(task.state.status)) task.result = result;
+  return result;
 }
 
 function publish(task, force = false) {
@@ -51,8 +56,15 @@ function publish(task, force = false) {
   task.publishedAt = now;
   const message = { channel: "dokitool-download", protocol: PROTOCOL, snapshot: snapshot(task) };
   for (const clientId of task.subscribers) {
-    void self.clients.get(clientId).then(client => client?.postMessage(message));
+    void self.clients.get(clientId).then(client => {
+      if (client) client.postMessage(message);
+      else task.subscribers.delete(clientId);
+    }).catch(() => { /* A lookup failure does not prove a live page disappeared. */ });
   }
+}
+
+function awaitClaim(task) {
+  task.claimTimer = setTimeout(() => settle(task, "failed", "浏览器未接收下载，请重试或手动打开源链接"), CLAIM_MS);
 }
 
 function drain() {
@@ -61,7 +73,11 @@ function drain() {
     if (terminal(task.state.status)) { task.rejectSlot?.(abortError()); continue; }
     active++;
     task.hasSlot = true;
-    task.resolveSlot();
+    if (task.admission) {
+      task.state.delivery = "ready";
+      awaitClaim(task);
+      publish(task, true);
+    } else task.resolveSlot();
   }
 }
 
@@ -89,11 +105,20 @@ function settle(task, status, error) {
   task.rejectSlot?.(abortError());
   if (task.hasSlot) { task.hasSlot = false; active--; }
   publish(task, true);
+  tasks.delete(task.state.id);
+  history.set(task.state.id, { token: task.token, finishedAt: task.finishedAt, result: task.result });
+  prune();
   drain();
 }
 
 function prune() {
-  for (const [id, task] of tasks) if (task.finishedAt && Date.now() - task.finishedAt > RETAIN_MS) tasks.delete(id);
+  clearTimeout(historyTimer);
+  historyTimer = undefined;
+  const now = Date.now();
+  for (const [id, entry] of history) if (now - entry.finishedAt >= RETAIN_MS) history.delete(id);
+  while (history.size > 100) history.delete(history.keys().next().value);
+  const oldest = history.values().next().value;
+  if (oldest) historyTimer = setTimeout(prune, Math.max(1, oldest.finishedAt + RETAIN_MS - now));
 }
 
 async function timed(task, operation) {
@@ -171,10 +196,12 @@ async function prepare(task) {
 
 async function attachment(task) {
   if (task.controller.signal.aborted) throw abortError();
-  await new Promise((resolve, reject) => {
-    task.resolveSlot = resolve; task.rejectSlot = reject;
-    queue.push(task); drain();
-  });
+  if (!task.hasSlot) {
+    await new Promise((resolve, reject) => {
+      task.resolveSlot = resolve; task.rejectSlot = reject;
+      queue.push(task); drain();
+    });
+  }
   if (task.controller.signal.aborted) throw abortError();
   task.state.status = "preparing";
   publish(task, true);
@@ -237,12 +264,15 @@ self.addEventListener("message", event => {
     prune();
     const message = event.data;
     try {
-      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL, workerBuild: BUILD }); return; }
+      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL, workerBuild: BUILD, capabilities: { admission: true } }); return; }
       if (message.action === "start") {
         const request = message.request;
         if (!validKey(request?.id) || !validKey(message.token)) throw new Error("无效下载任务");
         let task = tasks.get(request.id);
-        if (task && task.token !== message.token) throw new Error("下载任务无访问权限");
+        const previous = history.get(request.id);
+        if ((task || previous) && (task || previous).token !== message.token) throw new Error("下载任务无访问权限");
+        if (previous) { port.postMessage({ snapshot: previous.result }); return; }
+        let created = false;
         if (!task) {
           if (tasks.size >= 100) throw new Error("下载任务过多，请清理后重试");
           const routes = [...new Set([request.url, ...(request.routes || [])].slice(0, 10).map(sourceUrl))].slice(0, 3);
@@ -251,14 +281,20 @@ self.addEventListener("message", event => {
           const startedAt = Number.isFinite(request.startedAt) && request.startedAt > 0 && request.startedAt <= now ? request.startedAt : now;
           task = {
             token: message.token, routes, controller: new AbortController(), subscribers: new Set(),
-            startedAt, publishedAt: now,
-            state: { id: request.id, transport: "browser_streaming", status: "queued", filename: cleanFilename(request.filename), url: routes[0], loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0 },
+            startedAt, publishedAt: now, revision: 0, admission: message.admission === true,
+            state: { id: request.id, transport: "browser_streaming", status: "queued", filename: cleanFilename(request.filename), url: routes[0], loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0,
+              ...(message.admission === true ? { delivery: "waiting" } : {}) },
           };
-          task.claimTimer = setTimeout(() => settle(task, "failed", "浏览器未接收下载，请重试或手动打开源链接"), CLAIM_MS);
           tasks.set(request.id, task);
+          created = true;
         }
         task.subscribers.add(client.id);
-        port.postMessage({ snapshot: snapshot(task), downloadUrl: `/downloads/file/${request.id}/${task.token}` });
+        if (created) {
+          if (task.admission) { queue.push(task); drain(); }
+          else awaitClaim(task);
+        }
+        port.postMessage({ snapshot: snapshot(task),
+          ...(task.admission ? {} : { downloadUrl: `/downloads/file/${request.id}/${task.token}` }) });
         // Acknowledge setup only. Keeping this event open for the whole download
         // triggers Chromium's extended-event deadline even while bytes flow.
         return;
@@ -268,16 +304,25 @@ self.addEventListener("message", event => {
         for (const key of (message.tasks || []).slice(0, 100)) {
           const task = tasks.get(key.id);
           if (task && task.token === key.token) { task.subscribers.add(client.id); result.push(snapshot(task)); }
+          else {
+            const previous = history.get(key.id);
+            if (previous?.token === key.token) result.push(previous.result);
+          }
         }
         port.postMessage({ snapshots: result, workerBuild: BUILD }); return;
       }
+      if (!validKey(message.id) || !validKey(message.token)) throw new Error("无效下载任务");
       const task = tasks.get(message.id);
-      if (!task && message.action === "forget") { port.postMessage({ forgotten: true }); return; }
-      if (!task || task.token !== message.token) throw new Error("下载任务不存在或已失效");
-      if (message.action === "cancel") settle(task, "cancelled");
-      else if (message.action === "forget" && terminal(task.state.status)) tasks.delete(message.id);
-      else throw new Error("无法执行下载操作");
-      port.postMessage({ snapshot: snapshot(task) });
+      const previous = history.get(message.id);
+      if ((task || previous) && (task || previous).token !== message.token) throw new Error("下载任务无访问权限");
+      if (message.action === "forget") {
+        if (task) throw new Error("请先停止下载，再清除任务");
+        history.delete(message.id); prune();
+        port.postMessage({ forgotten: true }); return;
+      }
+      if (message.action !== "cancel" || (!task && !previous)) throw new Error("下载任务不存在或已失效");
+      if (task) settle(task, "cancelled");
+      port.postMessage({ snapshot: task ? snapshot(task) : previous.result });
     } catch (error) { port.postMessage({ error: error.message }); }
   })());
 });
@@ -290,11 +335,15 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET" || !task || task.token !== token || task.claimed || terminal(task.state.status)) {
     event.respondWith(new Response("Download expired", { status: 404, headers: { "Cache-Control": "no-store" } })); return;
   }
+  if (task.admission && !task.hasSlot) {
+    event.respondWith(new Response("Download not admitted", { status: 409, headers: { "Cache-Control": "no-store" } })); return;
+  }
   task.claimed = true;
+  if (task.admission) task.state.delivery = "claimed";
   clearTimeout(task.claimTimer);
   task.responseTimer = setTimeout(() => settle(task, "failed", task.state.status === "queued"
     ? "等待下载空位超过 2 分钟，请在其他下载结束后重试"
-    : "下载准备超过 2 分钟（含排队），请稍后重试"), RESPONSE_MS);
+    : task.admission ? "下载准备超过 2 分钟，请稍后重试" : "下载准备超过 2 分钟（含排队），请稍后重试"), RESPONSE_MS);
   const signal = event.request.signal;
   const abort = () => settle(task, "cancelled");
   task.detachRequestAbort = () => signal.removeEventListener("abort", abort);

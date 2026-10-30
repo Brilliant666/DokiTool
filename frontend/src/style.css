@@ -16,6 +16,14 @@
   --radius-card: 1rem;
   --motion-fast: 150ms;
   --motion-normal: 300ms;
+  --theme-duration: var(--motion-normal);
+  --theme-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --theme-color-transition: background-color var(--theme-duration) var(--theme-ease),
+    color var(--theme-duration) var(--theme-ease),
+    border-color var(--theme-duration) var(--theme-ease),
+    box-shadow var(--theme-duration) var(--theme-ease),
+    fill var(--theme-duration) var(--theme-ease),
+    stroke var(--theme-duration) var(--theme-ease);
 }
 
 .dark {
@@ -24,6 +32,16 @@
   --color-text: #f8fafc;
   --color-text-muted: #94a3b8;
   --color-border: #334155;
+}
+
+/* Match the page beneath translucent surfaces; interaction motion stays local. */
+body,
+.theme-colors {
+  transition: var(--theme-color-transition);
+}
+
+.theme-colors::placeholder {
+  transition: color var(--theme-duration) var(--theme-ease);
 }
 
 .btn-primary-gradient {

@@ -1,9 +1,18 @@
 # Browser download delivery
 
 The existing download button resolves the selected work, episode and source before
-handing a complete file to `frontend/src/downloads/manager.ts`. Layout and parser
-APIs are unchanged. Ordinary CDN files travel directly to the user's browser.
+handing a complete file to `frontend/src/downloads/manager.ts`. Parser APIs and the
+main page layout are unchanged; task-panel behavior is described below. Ordinary
+CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
+
+The policy, ownership and deployment sections describe the current implementation
+(`downloads-20261030.4`). Dated acceptance entries preserve the investigation
+history; earlier blockers and fallback behavior are not the current release
+contract. The latest SW file-integrity results are under
+[State and admission consolidation](#state-and-admission-consolidation-2026-10-30),
+followed by the task-panel acceptance. Publishing the source or passing a local
+build does not itself establish the production version.
 
 ## Policy and modules
 
@@ -17,19 +26,23 @@ Weibo's signed `/api/media/weibo` route remains a server relay when required.
    popup. The server chooses the actual filename. Status is **handed off**, never
    verified completion; the iframe remains until the document is destroyed because
    native completion cannot be observed safely.
-2. `streaming.ts` and `public/downloads/worker.js`: other readable complete files
+2. `streaming.ts`, `session.ts`, `bridge.ts` and `public/downloads/worker.js`: other readable complete files
    use a download-only Service Worker. It supplies an attachment filename and
    forwards bytes with backpressure; it never buffers the entire file. Only the
    `/downloads/` scope is controlled, not the application or API. Sources still
    require CORS; no new proxy is introduced.
+   A separate hidden `public/downloads/bridge.html` is a real controlled document,
+   retained while tasks are preparing, active or uncertain. It carries no media
+   bytes and uses no heartbeat or whole-transfer `waitUntil`.
 3. `blob.ts`: a compatibility path only when streaming capability is definitely
    unavailable before START. There is no fixed file-size cutoff; unknown or encoded
    lengths can download without fabricated percentages. Known decoded lengths are
    still checked. One Blob transfer runs per page, and object URLs retain the
    existing four-second release delay. Chunks are released after success/failure;
    allocation or delivery errors do not retry the whole file on other routes.
-   CORS errors, source failures and ambiguous START acknowledgements never silently
-   fall back to Blob. Blob still buffers the complete file in the browser.
+   A missing browser capability permits fallback; registration, bridge-loading or
+   protocol failures do not. CORS errors, source failures and ambiguous START
+   acknowledgements never silently fall back. Blob still buffers the complete file.
 
 `file.ts` owns common URL, media type, filename and network-wait rules. The manager
 limits preparation/transfers to two concurrent tasks per page, the Worker also
@@ -37,25 +50,44 @@ limits transfers across tabs to two, and Blob has its stricter memory queue.
 Native transfers leave application control and cannot count toward an observable
 browser-wide concurrency budget.
 
-Worker `downloads-20261030.3` limits attachment response preparation to 120 seconds
-in total, including the cross-tab slot queue and all source attempts. Expiry fails
-that task explicitly, aborts its request and releases its slot; it never starts a
-second transport. A third cross-tab task may therefore require manual retry after
-the current transfers finish. The page manager's queue before START is unaffected.
-This deadline is cleared when attachment headers are ready and does not limit the
-duration of a streaming body. START messages finish after acknowledgement; neither
-message nor fetch events wait for the whole file through `waitUntil`.
+Worker `downloads-20261030.4` advertises admission support in its protocol-1 ping.
+New clients queue START before opening an attachment request. Waiting has no total
+deadline and sends no media GET. A ready task reserves a slot and has 60 seconds
+for the browser to claim the attachment; only then do the 120-second preparation
+deadline and source attempts begin. Returning attachment headers clears that
+deadline; it never limits the streaming body. A maximum of 100 unfinished tasks is
+independent of the last 100 terminal summaries, which expire after ten minutes.
+
+Compatibility is negotiated with each task's actual owner. A new client with an
+old Worker uses the original attachment URL. An old client with `.4` retains its
+original URL and 120-second combined queue/preparation deadline. Both generations
+share the same two transfer slots. START messages finish after acknowledgement;
+neither message nor fetch events wait for the whole file through `waitUntil`.
 
 ## Ownership, recovery and failure
 
 - Every attempt receives a distinct task ID. The Worker requires a random ownership
-  token and a same-origin client. Tokens and small task summaries live in
-  sessionStorage for at most 24 hours; saved summaries omit signed CDN URLs.
+  token and a same-origin client. Small summaries in sessionStorage omit signed
+  CDN URLs. All unfinished IDs/tokens survive history trimming; at most 100 terminal
+  summaries remain for 24 hours after confirmation. Worker terminal history does
+  not consume the active-task quota, and authenticated cleanup rejects live tasks.
 - Refresh queries the existing Worker, re-subscribes and permits cancellation. It
-  never starts another GET to simulate recovery. Missing tasks are interrupted;
+  never resends START or replaces an already claimed transfer. A task still waiting
+  for admission can later become ready; an unclaimed ready task can be claimed once
+  after refresh. Missing tasks are interrupted;
   temporary communication failure preserves the latest progress and active state,
   shows unknown observation, and can recover on a later reply. Saved progress omits
   signed URLs and is throttled to at most one sessionStorage write per five seconds.
+- `streaming.ts` owns one record per task, with a single reducer for push/query/ACK
+  snapshots. Revision ordering and absorbing terminal outcomes prevent late progress
+  from undoing completion. Legacy Workers use monotonic bytes/stages instead.
+  Cancellation intent is persisted immediately and prevents unclaimed delivery;
+  only a Worker outcome confirms cancellation. A refresh retries that idempotent
+  cancel on the same owner, never starts another download.
+- `session.ts` coalesces discovery and the capability handshake. It distinguishes
+  explicit refusals from lost replies; a lost START acknowledgement keeps an
+  uncertain task rather than permitting Blob or another START. Dead page subscribers
+  are removed from the Worker during progress delivery.
 - A source can change to one of up to three frozen, equivalent alternatives only
   before the attachment response starts. After delivery starts, a stream error
   fails that attempt. There is no automatic cross-source Range resume or byte
@@ -64,7 +96,7 @@ message nor fetch events wait for the whole file through `waitUntil`.
 - The application-defined Worker network timeout applies to an outstanding
   upstream read or header wait (45 seconds), not downstream backpressure. Blob
   uses 30-second network waits. Neither defines a total-duration limit; browser
-  event-lifetime limits are separate (see the acceptance blocker below).
+  event-lifetime limits are separate (see the historical investigation below).
 - The attachment Request abort signal and response-stream cancellation both stop
   the task and release its queue slot. Fifteen seconds without downstream demand
   reports stalled observation without cancelling a normal browser pause. If the
@@ -85,17 +117,47 @@ message nor fetch events wait for the whole file through `waitUntil`.
   their existing pipelines. ZIP and segmented downloads are not claimed to be
   streaming or refresh-resumable by this change.
 
+## Download panel
+
+The summary bar expands a bounded, internally scrolling task list. Active and
+uncertain tasks come first; ended records keep compact status rows with optional
+details. Completion means stream delivery, not verified disk persistence.
+Clearing ended records is available while other tasks run and excludes uncertain
+observations. It does not delete saved files.
+
+Folding only changes presentation. A new active task opens the panel unless the
+user has manually folded it; that preference is stored locally when available.
+After all tasks end, the panel folds after five seconds without pointer hover or
+keyboard focus. Automatic folding does not overwrite the manual preference.
+
 ## Deployment
 
-Publish `frontend/dist/downloads/worker.js` along with the build. Apply the
-`/downloads/*` static-file block in `ops/examples/snap.caddy`: use revalidation
+Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build.
+Verify the existing `/downloads/*` static-file rules against
+`ops/examples/snap.caddy`, adding the block only if missing: use revalidation
 (`Cache-Control: no-cache`), correct JavaScript MIME, and **404 for missing files**.
 Do not route a missing Worker or `/downloads/file/*` to the SPA. The latter URL is
 answered by an active Worker only. HTTPS (or localhost) is required.
 
-The client checks `registration.update()` once per page without blocking an active
-Worker. There is no forced `skipWaiting`; installing a new version must not replace
-a Worker with in-flight downloads. Worker build `downloads-20261030.3` is returned
+The client waits for activation even when registration already exposes an active
+Worker object whose state is still `activating`. It checks `registration.update()`
+once per page, only after the bridge is loaded and its controller is verified.
+There is no forced `skipWaiting`. Merely
+omitting `skipWaiting` is insufficient: Chromium can retire an old Worker without
+controlled clients after a waiting version has existed for five minutes, even
+while it streams an attachment. An attachment iframe does not commit a controlled
+HTML document. The separate bridge preserves that control relationship instead.
+
+Each task pins its owner Worker for progress queries and cancellation. Installing
+an update must not redirect those operations to the new active Worker. Multiple
+tasks share a bridge; uncertainty keeps it alive, and the last confirmed terminal
+task releases it after the existing four-second handoff grace period. A new task
+cancels pending release. Refresh rebuilds the bridge before querying unfinished
+IDs/tokens, without START or a replacement GET for a claimed transfer. Completed history alone
+does not hold a bridge. Closing all pages or suspending the browser remains outside
+this guarantee; the bridge is not a native background download service.
+
+Worker build `downloads-20261030.4` is returned
 by ping/query/progress and exposed as `data-worker-build` on download cards; an old
 Worker without a build marker is labelled `legacy` in this diagnostic attribute.
 Bump BUILD when changing Worker behavior. Legacy statistics keep their original
@@ -111,10 +173,12 @@ ownership, missing tasks, uncertain acknowledgements, late completion and refres
 queries. Existing UI tests retain selection, Bilibili, Weibo and ZIP regressions.
 These tests are not a substitute for browser-managed file saving.
 
-Before release, check actual saved bytes/name/playability in Chrome, Edge and iOS
-Safari/WeChat; first registration, refresh during transfer, cancellation after
-refresh, slow sources, disconnects, old/new Worker versions and both fallback paths.
-Closing a browser or OS suspension is not guaranteed to preserve a transfer.
+The browser acceptance matrix includes saved bytes/name/playability in Chrome,
+Edge and iOS Safari/WeChat; first registration, refresh during transfer,
+cancellation after refresh, slow sources, disconnects, old/new Worker versions
+and both fallback paths. Record untested cells explicitly: one browser's passing
+result does not validate another. Closing a browser or OS suspension is not
+guaranteed to preserve a transfer.
 
 ### Initial PR acceptance, before revision, 2026-10-30
 
@@ -222,7 +286,7 @@ Additional acceptance observations:
 - Earlier Chrome acceptance runs remain separate historical evidence; they do
   not turn these current in-app/browser saving outcomes into passes.
 
-#### Release blocker: approximately five-minute SW interruption
+#### Historical blocker: approximately five-minute SW interruption
 
 A 32 MiB fixture sends 24 KiB every 250 ms, continuously, with the same source
 URL and no-store policy. It takes about 356 seconds to finish. The following
@@ -328,3 +392,114 @@ four prerender checks and initial-load budgets. These race tests use the same
 object-replacement update behavior as the Pinia store. The streaming Worker is
 unchanged from the long-response validation above; file-saving and browser
 lifecycle limits remain as documented.
+
+### Controlled-document upgrade fix, 2026-10-30
+
+Post-release Edge acceptance isolated a second lifetime defect in `.3`: installing
+a waiting Worker interrupted a paced download after 300.007 seconds of waiting.
+The same source completed without an update. The attachment iframe remained an
+empty document, so it did not keep the old Worker controlled. This is separate
+from the whole-transfer event deadline corrected above.
+
+At this checkpoint, the client retained the controlled bridge, pinned each task's original Worker,
+and restores that relationship before querying after refresh. A completed task
+can be cleared even if its old Worker has already retired. There are no Worker
+algorithm, parser, native/Blob selection or layout changes; that checkpoint used
+Worker `downloads-20261030.3`. The new HTML asset must accompany deployment.
+
+- All 193 frontend tests, type checking, the production build, four prerender
+  checks, initial-load budgets and the public-file inventory pass. An independent
+  implementation review found no blocking issue. Coverage includes activating
+  Workers, shared bridge ownership, refresh, uncertain states and owner retirement.
+- Edge, fresh local origin and final production build: the normal purple button
+  selected SW on its first download. A paced 32 MiB file completed in 390.641
+  seconds while an update waited. A concurrent short task completed and the page
+  refreshed at about 48 seconds; the long task retained its ID, build and single
+  source GET. Both the update wait and the post-refresh interval exceeded five
+  minutes without interruption. Player preloading and the short eligibility
+  probe were distinguished from the actual download GET.
+- The 33,554,432-byte saved file matched the fixture SHA-256
+  `7babd0092a944517a76175f42c0fbdcdfec539b6a389063fe9f22b96c68e74ab`.
+  After the last task finished, the bridge was released and the waiting Worker
+  activated naturally. The next purple-button download used that new build.
+  Both 3,001-byte short files also matched their source SHA-256 and retained the
+  requested filenames (with the browser's duplicate-name suffix where needed).
+- The private next Worker differed only in its BUILD marker. The observer stayed
+  outside `/downloads/`, created no controlled helper document and sent no keep-
+  alive messages. This checks the application's own bridge, not a test-page pin.
+
+This is local Edge acceptance of an unchanged production bundle with controlled
+cross-origin media. It is not a production deployment or a throughput benchmark.
+Closing all pages, lock screens, browser suspension and Safari/WeChat remain
+unverified. The already demonstrated native-download naming limitations remain;
+this fix does not change native eligibility or claim browser-manager progress.
+
+### State and admission consolidation, 2026-10-30
+
+The `.4` revision separates session discovery, task state and Worker scheduling.
+One client task record replaces the parallel owner/progress/watched/uncertain
+collections. Pushes, queries and acknowledgements share revision ordering and
+terminal-state protection. Cancellation intent prevents an unclaimed attachment
+from starting even when ready arrives before the cancel reply; it survives refresh.
+Connection failures are operational errors, not evidence of missing capability.
+
+The Worker queues admission before opening an attachment fetch, removes vanished
+page subscribers, and keeps terminal summaries outside unfinished-task capacity.
+Client persistence keeps every unfinished task plus bounded completed history.
+Ten simultaneously restored tasks share one handshake and one grouped query.
+These changes leave the byte pump, source-read timeout, two-transfer budget,
+cache/Range policy, native eligibility, Blob size policy, parser API and layout
+unchanged. No throughput increase is claimed from this lifecycle work.
+
+- All 227 frontend regressions pass, along with type checking, production build,
+  four prerender checks, initial-load budgets and the 160-file public inventory.
+  Independent review found and verified corrections for history trimming and
+  cancellation arriving before admission; no blocking issue remained.
+- Edge on a fresh local origin, final production bundle: two separate 32 MiB
+  fixtures started through the normal purple buttons. Refresh retained both IDs
+  and their original source requests. They completed in 391.125 and 390.965 seconds
+  according to the independent source logs. Both saved files contained 33,554,432
+  bytes and matched SHA-256
+  `7babd0092a944517a76175f42c0fbdcdfec539b6a389063fe9f22b96c68e74ab`.
+- A third task submitted after refresh remained queued across an explicitly
+  observed 328.761-second interval, with no attachment iframe or source GET during
+  that interval. It automatically delivered when the first slot became free; the
+  same task completed after 363.460 seconds total. Its saved 3,001-byte file matched
+  `9feddfc912e985422c47e5f0e43816c0b6426973f7d01d51f841d712ac8fac00`.
+- An update waited throughout those transfers and activated naturally only after
+  their completion and bridge release. A subsequent purple-button download used
+  the new build and saved another matching short file. Refreshing the four terminal
+  records and clearing them removed storage entries and cards without creating a
+  bridge. The next Worker differed only in BUILD; this does not test a future
+  protocol-breaking update.
+- A separate origin served the unchanged `.3` Worker to the new client. Its normal
+  purple-button download used the legacy delivery path and saved the correctly
+  named, hash-matching 3,001-byte file. Automated tests also cover an old client
+  talking to `.4`; that direction was not repeated in a real browser here.
+
+Five actual Edge files were independently hashed. The controlled, paced fixtures
+exercise lifetime, queueing, refresh and integrity; they are not a CDN speed test.
+The inspection page stayed outside the Worker scope and issued no keep-alive or
+forced-activation messages. This is local acceptance, not production deployment;
+Safari/WeChat, lock screens, suspension and closing all pages remain unverified.
+
+### Task panel and theme acceptance, 2026-10-30
+
+The final panel revision passes 244 frontend regressions, including 16 panel
+interaction cases; type checking, production build and four prerender checks pass.
+Edge and the in-app browser verified collapsed histories of 13 cancelled or
+completed tasks, bounded internal scrolling, keyboard details, progress while
+folded, and cleanup that preserves active tasks. A 390px viewport checked the
+compact layout; it is not an iPhone device test. A removed last row resets hover
+and focus state so that a later completed batch can still fold automatically.
+
+The page, header, hero and download panel share theme-color timing. Platform
+cards use a fixed alpha mask instead of switching white/dark edge overlays;
+theme changes preserve the mask, the 50-second scrolling animation and card
+dimensions. Browser inspection and a fresh production build verified this
+CSS-only follow-up. Particle animation and the established page layout remain.
+
+These presentation changes do not modify the SW implementation validated above,
+its data path, or the backend API. "Transfer complete" continues to mean bytes
+handed to the browser; the browser's download list and actual file determine
+whether saving succeeded.

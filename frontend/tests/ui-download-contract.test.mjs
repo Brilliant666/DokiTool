@@ -418,14 +418,32 @@ test('eligible native attachment hands off once without Blob progress or a false
   assert.match(html, /本站无法追踪/); assert.doesNotMatch(html, /全部完成|100%/);
 });
 
+test('bulk history clearing removes only confirmed ended tasks while active and uncertain tasks remain', async () => {
+  const { instance, store } = harness(base);
+  const ids = {
+    completed: store.addDownload({ status: 'completed', filename: 'done.mp4' }),
+    cancelled: store.addDownload({ status: 'cancelled', filename: 'cancelled.mp4' }),
+    failed: store.addDownload({ status: 'failed', filename: 'failed.mp4' }),
+    active: store.addDownload({ status: 'downloading', filename: 'live.mp4', abortController: new AbortController() }),
+    queued: store.addDownload({ status: 'queued', filename: 'queued.mp4' }),
+    uncertain: store.addDownload({ status: 'cancelled', observation: 'unknown', filename: 'unconfirmed.mp4' }),
+  };
+  const activeSignal = store.downloads.find(task => task.id === ids.active).abortController.signal;
+  await instance.handleClearCompleted('all');
+  assert.deepEqual(store.downloads.map(task => task.id), [ids.active, ids.queued, ids.uncertain]);
+  assert.equal(activeSignal.aborted, false);
+  assert.equal(store.downloads.find(task => task.id === ids.uncertain).observation, 'unknown');
+  assert.equal(fetched.length, 0);
+});
+
 test('queued cards remain cancellable and interrupted cards never claim completion or invent a retry URL', async () => {
   const render = downloads => renderToString(createSSRApp({ render: () => h(DownloadCard, { downloads }) }));
   const queued = await render([{ id: 1, status: 'queued', statusText: '排队中...', filename: 'queue.mp4', transport: 'browser_streaming' }]);
   assert.match(queued, /排队中|1 个进行中/); assert.match(queued, /title="取消"/);
-  assert.doesNotMatch(queued, /清除全部|全部完成|title="重试"/);
+  assert.doesNotMatch(queued, /清除已结束|全部完成|title="重试"/);
   const interrupted = { id: 2, deliveryId: 'lost-worker', transport: 'browser_streaming', status: 'interrupted', statusText: '下载连接已中断', filename: 'lost.mp4', url: '', error: '原任务失效，请重新解析' };
   const missing = await render([interrupted]);
-  assert.match(missing, /连接中断 1|原任务失效，请重新解析/); assert.match(missing, /清除全部/);
+  assert.match(missing, /连接中断 1|原任务失效，请重新解析/); assert.match(missing, /清除已结束/);
   assert.doesNotMatch(missing, /全部完成|title="重试"|title="取消"/);
   assert.match(await render([{ ...interrupted, url: base.url }]), /title="重试"/);
 });
@@ -445,7 +463,7 @@ test('uncertain and stalled downloads preserve progress, allow cancellation, and
   for (const observation of [undefined, 'unknown', 'stalled']) {
     const html = await render({ ...item, observation });
     assert.match(html, /10 MB/); assert.match(html, /100 MB/); assert.match(html, /title="取消"/);
-    assert.doesNotMatch(html, /打开源链接|title="重试"|清除全部|下载连接已中断/);
+    assert.doesNotMatch(html, /打开源链接|title="重试"|清除已结束|下载连接已中断/);
     assert.match(html, /总用时 7.0 秒/); assert.match(html, /传输均速 2 MB\/s/);
     assert.match(html, /data-worker-build="test-build"/);
     if (observation === 'unknown') assert.match(html, /暂时无法获取进度/);

@@ -65,16 +65,13 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
 <template>
   <section id="Supported_Platforms" class="mb-20 overflow-hidden platform-section scroll-mt-16 sm:scroll-mt-18">
     <div class="flex items-center justify-center py-4 platform-header">
-      <h3 class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium">
+      <h3 class="theme-colors inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium">
         <AppIcon class="fas fa-table-cells-large text-xs"></AppIcon>
         {{ getContent(locale).badge }}
       </h3>
     </div>
 
     <div class="relative">
-      <div class="marquee-fade-left"></div>
-      <div class="marquee-fade-right"></div>
-
       <div 
         class="marquee-container"
         @touchstart="handleTouchStart"
@@ -113,7 +110,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
       </div>
     </div>
 
-    <div class="flex justify-center mt-8 gap-6 text-xs text-slate-400 dark:text-slate-500">
+    <div class="theme-colors flex justify-center mt-8 gap-6 text-xs text-slate-400 dark:text-slate-500">
       <span class="flex items-center gap-1">
         <AppIcon class="fas fa-mouse-pointer text-indigo-400"></AppIcon>
         {{ locale === 'zh-CN' ? '悬停暂停' : 'Hover to pause' }}
@@ -150,34 +147,10 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
   overflow: hidden;
   padding: 1rem 0;
   position: relative;
-}
-
-.marquee-fade-left,
-.marquee-fade-right {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 120px;
-  z-index: 10;
-  pointer-events: none;
-}
-
-.marquee-fade-left {
-  left: 0;
-  background: linear-gradient(to right, rgba(255, 255, 255, 0.95), transparent);
-}
-
-.dark .marquee-fade-left {
-  background: linear-gradient(to right, rgba(15, 23, 42, 0.95), transparent);
-}
-
-.marquee-fade-right {
-  right: 0;
-  background: linear-gradient(to left, rgba(255, 255, 255, 0.95), transparent);
-}
-
-.dark .marquee-fade-right {
-  background: linear-gradient(to left, rgba(15, 23, 42, 0.95), transparent);
+  /* Fade the cards themselves so the actual page background always shows through. */
+  --edge-mask: linear-gradient(to right, rgba(0, 0, 0, 0.05), #000 120px, #000 calc(100% - 120px), rgba(0, 0, 0, 0.05));
+  -webkit-mask-image: var(--edge-mask);
+  mask-image: var(--edge-mask);
 }
 
 .marquee-content {
@@ -225,7 +198,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
   border: 1px solid #e2e8f0;
   text-decoration: none;
   text-align: center;
-  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: var(--theme-color-transition), transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
 
@@ -313,7 +286,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
   font-size: 0.9375rem;
   color: #1e293b;
   margin-bottom: 0.25rem;
-  transition: color 0.3s ease;
+  transition: color var(--theme-duration) var(--theme-ease);
 }
 
 .dark .platform-name {
@@ -328,7 +301,7 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
   font-size: 0.75rem;
   color: #64748b;
   line-height: 1.4;
-  transition: color 0.3s ease;
+  transition: color var(--theme-duration) var(--theme-ease);
 }
 
 .dark .platform-desc {
