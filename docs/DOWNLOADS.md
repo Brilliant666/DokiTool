@@ -1,9 +1,18 @@
 # Browser download delivery
 
 The existing download button resolves the selected work, episode and source before
-handing a complete file to `frontend/src/downloads/manager.ts`. Layout and parser
-APIs are unchanged. Ordinary CDN files travel directly to the user's browser.
+handing a complete file to `frontend/src/downloads/manager.ts`. Parser APIs and the
+main page layout are unchanged; task-panel behavior is described below. Ordinary
+CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
+
+The policy, ownership and deployment sections describe the current implementation
+(`downloads-20261030.4`). Dated acceptance entries preserve the investigation
+history; earlier blockers and fallback behavior are not the current release
+contract. The latest SW file-integrity results are under
+[State and admission consolidation](#state-and-admission-consolidation-2026-10-30),
+followed by the task-panel acceptance. Publishing the source or passing a local
+build does not itself establish the production version.
 
 ## Policy and modules
 
@@ -87,7 +96,7 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
 - The application-defined Worker network timeout applies to an outstanding
   upstream read or header wait (45 seconds), not downstream backpressure. Blob
   uses 30-second network waits. Neither defines a total-duration limit; browser
-  event-lifetime limits are separate (see the acceptance blocker below).
+  event-lifetime limits are separate (see the historical investigation below).
 - The attachment Request abort signal and response-stream cancellation both stop
   the task and release its queue slot. Fifteen seconds without downstream demand
   reports stalled observation without cancelling a normal browser pause. If the
@@ -123,8 +132,9 @@ keyboard focus. Automatic folding does not overwrite the manual preference.
 
 ## Deployment
 
-Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build. Apply the
-`/downloads/*` static-file block in `ops/examples/snap.caddy`: use revalidation
+Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build.
+Verify the existing `/downloads/*` static-file rules against
+`ops/examples/snap.caddy`, adding the block only if missing: use revalidation
 (`Cache-Control: no-cache`), correct JavaScript MIME, and **404 for missing files**.
 Do not route a missing Worker or `/downloads/file/*` to the SPA. The latter URL is
 answered by an active Worker only. HTTPS (or localhost) is required.
@@ -163,10 +173,12 @@ ownership, missing tasks, uncertain acknowledgements, late completion and refres
 queries. Existing UI tests retain selection, Bilibili, Weibo and ZIP regressions.
 These tests are not a substitute for browser-managed file saving.
 
-Before release, check actual saved bytes/name/playability in Chrome, Edge and iOS
-Safari/WeChat; first registration, refresh during transfer, cancellation after
-refresh, slow sources, disconnects, old/new Worker versions and both fallback paths.
-Closing a browser or OS suspension is not guaranteed to preserve a transfer.
+The browser acceptance matrix includes saved bytes/name/playability in Chrome,
+Edge and iOS Safari/WeChat; first registration, refresh during transfer,
+cancellation after refresh, slow sources, disconnects, old/new Worker versions
+and both fallback paths. Record untested cells explicitly: one browser's passing
+result does not validate another. Closing a browser or OS suspension is not
+guaranteed to preserve a transfer.
 
 ### Initial PR acceptance, before revision, 2026-10-30
 
@@ -274,7 +286,7 @@ Additional acceptance observations:
 - Earlier Chrome acceptance runs remain separate historical evidence; they do
   not turn these current in-app/browser saving outcomes into passes.
 
-#### Release blocker: approximately five-minute SW interruption
+#### Historical blocker: approximately five-minute SW interruption
 
 A 32 MiB fixture sends 24 KiB every 250 ms, continuously, with the same source
 URL and no-store policy. It takes about 356 seconds to finish. The following
@@ -470,3 +482,24 @@ exercise lifetime, queueing, refresh and integrity; they are not a CDN speed tes
 The inspection page stayed outside the Worker scope and issued no keep-alive or
 forced-activation messages. This is local acceptance, not production deployment;
 Safari/WeChat, lock screens, suspension and closing all pages remain unverified.
+
+### Task panel and theme acceptance, 2026-10-30
+
+The final panel revision passes 244 frontend regressions, including 16 panel
+interaction cases; type checking, production build and four prerender checks pass.
+Edge and the in-app browser verified collapsed histories of 13 cancelled or
+completed tasks, bounded internal scrolling, keyboard details, progress while
+folded, and cleanup that preserves active tasks. A 390px viewport checked the
+compact layout; it is not an iPhone device test. A removed last row resets hover
+and focus state so that a later completed batch can still fold automatically.
+
+The page, header, hero and download panel share theme-color timing. Platform
+cards use a fixed alpha mask instead of switching white/dark edge overlays;
+theme changes preserve the mask, the 50-second scrolling animation and card
+dimensions. Browser inspection and a fresh production build verified this
+CSS-only follow-up. Particle animation and the established page layout remain.
+
+These presentation changes do not modify the SW implementation validated above,
+its data path, or the backend API. "Transfer complete" continues to mean bytes
+handed to the browser; the browser's download list and actual file determine
+whether saving succeeded.
