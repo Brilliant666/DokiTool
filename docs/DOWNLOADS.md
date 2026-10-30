@@ -17,11 +17,14 @@ Weibo's signed `/api/media/weibo` route remains a server relay when required.
    popup. The server chooses the actual filename. Status is **handed off**, never
    verified completion; the iframe remains until the document is destroyed because
    native completion cannot be observed safely.
-2. `streaming.ts` and `public/downloads/worker.js`: other readable complete files
+2. `streaming.ts`, `bridge.ts` and `public/downloads/worker.js`: other readable complete files
    use a download-only Service Worker. It supplies an attachment filename and
    forwards bytes with backpressure; it never buffers the entire file. Only the
    `/downloads/` scope is controlled, not the application or API. Sources still
    require CORS; no new proxy is introduced.
+   A separate hidden `public/downloads/bridge.html` is a real controlled document,
+   retained while tasks are preparing, active or uncertain. It carries no media
+   bytes and uses no heartbeat or whole-transfer `waitUntil`.
 3. `blob.ts`: a compatibility path only when streaming capability is definitely
    unavailable before START. There is no fixed file-size cutoff; unknown or encoded
    lengths can download without fabricated percentages. Known decoded lengths are
@@ -87,15 +90,31 @@ message nor fetch events wait for the whole file through `waitUntil`.
 
 ## Deployment
 
-Publish `frontend/dist/downloads/worker.js` along with the build. Apply the
+Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build. Apply the
 `/downloads/*` static-file block in `ops/examples/snap.caddy`: use revalidation
 (`Cache-Control: no-cache`), correct JavaScript MIME, and **404 for missing files**.
 Do not route a missing Worker or `/downloads/file/*` to the SPA. The latter URL is
 answered by an active Worker only. HTTPS (or localhost) is required.
 
-The client checks `registration.update()` once per page without blocking an active
-Worker. There is no forced `skipWaiting`; installing a new version must not replace
-a Worker with in-flight downloads. Worker build `downloads-20261030.3` is returned
+The client waits for activation even when registration already exposes an active
+Worker object whose state is still `activating`. It checks `registration.update()`
+once per page, only after the bridge is loaded and its controller is verified.
+There is no forced `skipWaiting`. Merely
+omitting `skipWaiting` is insufficient: Chromium can retire an old Worker without
+controlled clients after a waiting version has existed for five minutes, even
+while it streams an attachment. An attachment iframe does not commit a controlled
+HTML document. The separate bridge preserves that control relationship instead.
+
+Each task pins its owner Worker for progress queries and cancellation. Installing
+an update must not redirect those operations to the new active Worker. Multiple
+tasks share a bridge; uncertainty keeps it alive, and the last confirmed terminal
+task releases it after the existing four-second handoff grace period. A new task
+cancels pending release. Refresh rebuilds the bridge before querying unfinished
+IDs/tokens, without START or a replacement media GET. Completed history alone
+does not hold a bridge. Closing all pages or suspending the browser remains outside
+this guarantee; the bridge is not a native background download service.
+
+Worker build `downloads-20261030.3` is returned
 by ping/query/progress and exposed as `data-worker-build` on download cards; an old
 Worker without a build marker is labelled `legacy` in this diagnostic attribute.
 Bump BUILD when changing Worker behavior. Legacy statistics keep their original
@@ -328,3 +347,44 @@ four prerender checks and initial-load budgets. These race tests use the same
 object-replacement update behavior as the Pinia store. The streaming Worker is
 unchanged from the long-response validation above; file-saving and browser
 lifecycle limits remain as documented.
+
+### Controlled-document upgrade fix, 2026-10-30
+
+Post-release Edge acceptance isolated a second lifetime defect in `.3`: installing
+a waiting Worker interrupted a paced download after 300.007 seconds of waiting.
+The same source completed without an update. The attachment iframe remained an
+empty document, so it did not keep the old Worker controlled. This is separate
+from the whole-transfer event deadline corrected above.
+
+The client now retains the controlled bridge, pins each task's original Worker,
+and restores that relationship before querying after refresh. A completed task
+can be cleared even if its old Worker has already retired. There are no Worker
+algorithm, parser, native/Blob selection or layout changes; the production Worker
+remains `downloads-20261030.3`. The new HTML asset must accompany deployment.
+
+- All 193 frontend tests, type checking, the production build, four prerender
+  checks, initial-load budgets and the public-file inventory pass. An independent
+  implementation review found no blocking issue. Coverage includes activating
+  Workers, shared bridge ownership, refresh, uncertain states and owner retirement.
+- Edge, fresh local origin and final production build: the normal purple button
+  selected SW on its first download. A paced 32 MiB file completed in 390.641
+  seconds while an update waited. A concurrent short task completed and the page
+  refreshed at about 48 seconds; the long task retained its ID, build and single
+  source GET. Both the update wait and the post-refresh interval exceeded five
+  minutes without interruption. Player preloading and the short eligibility
+  probe were distinguished from the actual download GET.
+- The 33,554,432-byte saved file matched the fixture SHA-256
+  `7babd0092a944517a76175f42c0fbdcdfec539b6a389063fe9f22b96c68e74ab`.
+  After the last task finished, the bridge was released and the waiting Worker
+  activated naturally. The next purple-button download used that new build.
+  Both 3,001-byte short files also matched their source SHA-256 and retained the
+  requested filenames (with the browser's duplicate-name suffix where needed).
+- The private next Worker differed only in its BUILD marker. The observer stayed
+  outside `/downloads/`, created no controlled helper document and sent no keep-
+  alive messages. This checks the application's own bridge, not a test-page pin.
+
+This is local Edge acceptance of an unchanged production bundle with controlled
+cross-origin media. It is not a production deployment or a throughput benchmark.
+Closing all pages, lock screens, browser suspension and Safari/WeChat remain
+unverified. The already demonstrated native-download naming limitations remain;
+this fix does not change native eligibility or claim browser-manager progress.

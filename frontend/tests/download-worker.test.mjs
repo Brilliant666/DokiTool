@@ -363,8 +363,10 @@ test('short delivery bursts are smoothed without delaying reads and idle speed b
 async function clientHarness(t, respond) {
   const types = await transformWithEsbuild(await readFile(new URL('../src/downloads/types.ts', import.meta.url), 'utf8'), 'types.ts', { loader: 'ts', format: 'esm' });
   const typesUrl = 'data:text/javascript;base64,' + Buffer.from(types.code).toString('base64');
+  const bridge = await transformWithEsbuild(await readFile(new URL('../src/downloads/bridge.ts', import.meta.url), 'utf8'), 'bridge.ts', { loader: 'ts', format: 'esm' });
+  const bridgeUrl = 'data:text/javascript;base64,' + Buffer.from(bridge.code + `\n// ${Math.random()}`).toString('base64');
   const client = await transformWithEsbuild(await readFile(new URL('../src/downloads/streaming.ts', import.meta.url), 'utf8'), 'streaming.ts', { loader: 'ts', format: 'esm' });
-  const code = client.code.replace('"./types"', JSON.stringify(typesUrl));
+  const code = client.code.replace('"./types"', JSON.stringify(typesUrl)).replace('"./bridge"', JSON.stringify(bridgeUrl));
   const api = await import('data:text/javascript;base64,' + Buffer.from(code + `\n// ${Math.random()}`).toString('base64'));
   const originals = new Map(), storage = new Map(), messages = [], frames = [], timers = new Map();
   let listener, nextTimer = 0, registered = 0;
@@ -386,18 +388,38 @@ async function clientHarness(t, respond) {
   setGlobal('MessageChannel', class {
     constructor() { this.port1 = { onmessage: null, close() {} }; this.port2 = { postMessage: data => queueMicrotask(() => this.port1.onmessage?.({ data })) }; }
   });
-  setGlobal('document', { createElement: () => ({ remove() { this.removed = true; } }), body: { appendChild: frame => frames.push(frame) } });
+  setGlobal('document', {
+    createElement() {
+      const handlers = new Map();
+      return {
+        isConnected: false,
+        addEventListener: (type, handler) => handlers.set(type, handler),
+        removeEventListener: (type, handler) => { if (handlers.get(type) === handler) handlers.delete(type); },
+        dispatch(type) { handlers.get(type)?.(); },
+        remove() { this.removed = true; this.isConnected = false; },
+      };
+    },
+    body: { appendChild(frame) {
+      frame.isConnected = true; frames.push(frame);
+      if (frame.src !== '/downloads/bridge.html') return;
+      frame.contentWindow = { location: new URL(frame.src, origin), navigator: { serviceWorker: { controller: worker } } };
+      frame.contentDocument = { getElementById: name => name === 'dokitool-download-bridge' ? {} : null };
+      queueMicrotask(() => frame.dispatch('load'));
+    } },
+  });
   setGlobal('setTimeout', (callback, delay) => { const handle = ++nextTimer; timers.set(handle, { callback, delay }); return handle; });
   setGlobal('clearTimeout', handle => timers.delete(handle));
   setGlobal('setInterval', (callback, delay) => { const handle = ++nextTimer; timers.set(handle, { callback, delay }); return handle; });
   setGlobal('clearInterval', handle => timers.delete(handle));
   return { api, worker, registration, serviceWorker, messages, frames, timers, storage, get registered() { return registered; },
+    get attachments() { return frames.filter(frame => frame.src?.startsWith('/downloads/file/')); },
+    get bridges() { return frames.filter(frame => frame.src === '/downloads/bridge.html'); },
     update: snapshot => listener({ source: worker, data: { channel: 'dokitool-download', protocol: 1, snapshot } }),
   };
 }
 const request = { id: id(1), url: 'https://cdn.test/primary.mp4', routes: [], filename: '作品_P1.mp4' };
 const state = (status = 'queued') => ({ id: id(1), transport: 'browser_streaming', status, filename: request.filename, url: request.url, loaded: 0, total: 8, speed: 0, elapsed: 0, averageSpeed: 0 });
-const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
 test('client permits Blob fallback only when capability fails before START', async t => {
   const h = await clientHarness(t);
@@ -414,7 +436,8 @@ test('START acknowledgement timeout is ambiguous and must never permit Blob fall
   const timeout = [...h.timers.values()].find(timer => timer.delay === 8000);
   assert.ok(timeout); timeout.callback();
   await assert.rejects(task, error => !error.safeToFallback && /状态未知/.test(error.message));
-  assert.equal(h.frames.length, 0);
+  assert.equal(h.attachments.length, 0);
+  assert.equal(h.bridges[0].removed, undefined, 'an ambiguous START must keep its bridge');
   const saved = h.storage.get('dokitool-downloads-v1');
   assert.ok(saved.includes(request.id)); assert.ok(!saved.includes('cdn.test'));
 });
@@ -426,7 +449,7 @@ test('client starts one attachment and persists completion without the signed so
   const observed = [];
   const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot.status));
   await flush();
-  assert.equal(h.frames.length, 1);
+  assert.equal(h.attachments.length, 1);
   h.update({ ...state('completed'), loaded: 8 });
   assert.equal((await task).status, 'completed');
   assert.deepEqual(observed, ['queued', 'completed']);
@@ -442,7 +465,7 @@ test('refresh queries an existing task, does not start a download, and can cance
   const observed = [];
   const restored = await h.api.reconnectStreaming(snapshot => observed.push(snapshot.status));
   assert.equal(restored[0].status, 'downloading');
-  assert.equal(h.frames.length, 0); assert.equal(h.registered, 0);
+  assert.equal(h.attachments.length, 0); assert.equal(h.registered, 0);
   assert.ok(!h.messages.some(message => message.action === 'start'));
   await h.api.cancelStreaming(id(1));
   assert.deepEqual(observed, ['downloading', 'cancelled']);
@@ -454,7 +477,7 @@ test('missing worker task restores interruption, rather than restarting or claim
   const observed = [];
   const restored = await h.api.reconnectStreaming(snapshot => observed.push(snapshot));
   assert.equal(restored[0].status, 'interrupted'); assert.equal(observed.length, 1);
-  assert.equal(h.frames.length, 0);
+  assert.equal(h.attachments.length, 0);
   assert.ok(!h.messages.some(message => message.action === 'start'));
 });
 
@@ -499,7 +522,8 @@ test('a transient query timeout does not reject or detach a running stream', asy
   [...h.timers.values()].find(timer => timer.delay === 8000).callback();
   await flush();
   assert.equal(settled, false); assert.equal(observed.at(-1), 'queued');
-  assert.equal(h.frames[0].removed, undefined);
+  assert.equal(h.attachments[0].removed, undefined);
+  assert.equal(h.bridges[0].removed, undefined);
   queryFails = false;
   h.update({ ...state('completed'), loaded: 8 });
   assert.equal((await task).status, 'completed');

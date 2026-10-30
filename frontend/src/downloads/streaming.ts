@@ -1,4 +1,5 @@
 import { StreamingUnavailableError, type DownloadObserver, type DownloadRequest, type DownloadSnapshot } from "./types";
+import { connectBridge, releaseBridge, retainBridge } from "./bridge";
 
 const PROTOCOL = 1;
 const SCOPE = "/downloads/";
@@ -11,6 +12,7 @@ const frames = new Map<string, HTMLIFrameElement>();
 const keys = new Map<string, TaskKey>();
 const latest = new Map<string, DownloadSnapshot>();
 const workerBuilds = new WeakMap<ServiceWorker, string>();
+const owners = new Map<string, ServiceWorker>();
 const checkedUpdates = new Set<string>();
 let savedProgressAt = 0;
 let listening = false;
@@ -51,6 +53,7 @@ function notify(snapshot: DownloadSnapshot, confirmed = true): void {
   if (terminal(snapshot)) {
     started.delete(snapshot.id);
     watched.delete(snapshot.id);
+    releaseBridge(snapshot.id);
     const key = keys.get(snapshot.id);
     if (key) { const { url: _url, ...result } = snapshot; key.result = result; key.filename = snapshot.filename; saveKeys(); }
     if (!watched.size) { clearInterval(pollTimer); pollTimer = undefined; }
@@ -82,6 +85,45 @@ function fromWorker(snapshot: DownloadSnapshot, worker: ServiceWorker): Download
   return { ...snapshot, workerBuild: snapshot.workerBuild || workerBuilds.get(worker) || "legacy" };
 }
 
+/** Bind once: an installed update must never become the owner of an existing task. */
+async function ownerFor(key: TaskKey): Promise<ServiceWorker | null> {
+  const owner = owners.get(key.id);
+  if (owner) return owner;
+  retainBridge(key.id);
+  const worker = await workerFor(false);
+  if (worker) owners.set(key.id, worker);
+  return worker;
+}
+
+interface Observation { snapshot: DownloadSnapshot; confirmed: boolean }
+
+async function observeTasks(current: TaskKey[]): Promise<Map<string, Observation>> {
+  const result = new Map<string, Observation>();
+  const groups = new Map<ServiceWorker, TaskKey[]>();
+  // Resolve ownership independently: one unresponsive worker must not hide another task's outcome.
+  await Promise.all(current.map(async key => {
+    try {
+      const worker = await ownerFor(key);
+      if (!worker || worker.state === "redundant") {
+        result.set(key.id, { snapshot: interrupted(key), confirmed: true }); return;
+      }
+      const group = groups.get(worker) || [];
+      group.push(key); groups.set(worker, group);
+    } catch { result.set(key.id, { snapshot: unknown(key), confirmed: false }); }
+  }));
+  await Promise.all([...groups].map(async ([worker, group]) => {
+    try {
+      const reply = await rpc(worker, { action: "query", tasks: group.map(({ id, token }) => ({ id, token })) });
+      const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, fromWorker(snapshot, worker)]));
+      for (const key of group) result.set(key.id, { snapshot: found.get(key.id) || interrupted(key), confirmed: true });
+    } catch {
+      for (const key of group) result.set(key.id, worker.state === "redundant"
+        ? { snapshot: interrupted(key), confirmed: true } : { snapshot: unknown(key), confirmed: false });
+    }
+  }));
+  return result;
+}
+
 /** A query never starts a fetch. Missing workers must not leave a frozen progress card. */
 function watch(id: string): void {
   watched.add(id);
@@ -92,13 +134,9 @@ function watch(id: string): void {
     const current = [...watched].map(key => keys.get(key)).filter((key): key is TaskKey => Boolean(key));
     void (async () => {
       try {
-        const worker = await workerFor(false);
-        const reply = worker ? await rpc(worker, { action: "query", tasks: current.map(({ id, token }) => ({ id, token })) }) : {};
-        const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, fromWorker(snapshot, worker!)]));
-        for (const key of current) if (watched.has(key.id)) notify(found.get(key.id) || interrupted(key));
-      } catch {
-        // A lost acknowledgement is not proof that the browser download stopped.
-        for (const key of current) if (watched.has(key.id)) notify(unknown(key), false);
+        for (const [id, observation] of await observeTasks(current)) {
+          if (watched.has(id)) notify(observation.snapshot, observation.confirmed);
+        }
       } finally { polling = false; }
     })();
   }, 5000);
@@ -111,6 +149,10 @@ function listen(): void {
     const data = event.data;
     const source = event.source as ServiceWorker | null;
     if (source?.scriptURL !== new URL("/downloads/worker.js", location.origin).href || data?.channel !== "dokitool-download" || data.protocol !== PROTOCOL || !keys.has(data.snapshot?.id)) return;
+    const owner = owners.get(data.snapshot.id);
+    if (owner && source !== owner) return;
+    const build = owner && workerBuilds.get(owner);
+    if (build && build !== "legacy" && data.snapshot.workerBuild && data.snapshot.workerBuild !== build) return;
     notify(fromWorker(data.snapshot, source));
   });
 }
@@ -143,15 +185,11 @@ async function workerFor(create: boolean): Promise<ServiceWorker | null> {
     if (registration && new URL(registration.scope).pathname !== SCOPE) registration = undefined;
     if (!registration && create) registration = await bounded(navigator.serviceWorker.register("/downloads/worker.js", { scope: SCOPE, type: "module", updateViaCache: "none" }));
     if (!registration) return null;
-    if (registration.active && !checkedUpdates.has(registration.scope)) {
-      checkedUpdates.add(registration.scope);
-      // Check once per page without delaying an existing transfer. No skipWaiting:
-      // the browser activates an update only when the old worker can retire safely.
-      try { void registration.update?.().catch(() => {}); } catch { /* Offline update checks must not break downloads. */ }
-    }
     let worker = registration.active;
-    if (!worker && create) {
-      const pending = registration.installing || registration.waiting;
+    if (worker?.state !== "activated" && (worker || create)) {
+      // register() can expose an active object before its activation has finished.
+      // A bridge must not navigate until that worker can actually control it.
+      const pending = worker || registration.installing || registration.waiting;
       if (!pending) throw new Error("下载服务未激活");
       worker = await new Promise<ServiceWorker>((resolve, reject) => {
         const timer = setTimeout(() => { pending.removeEventListener("statechange", changed); reject(new Error("下载服务激活超时")); }, 8000);
@@ -165,20 +203,27 @@ async function workerFor(create: boolean): Promise<ServiceWorker | null> {
     if (!worker) return null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        const controller = await connectBridge();
+        // Keep RPC associated with the parent page, not the bridge's execution
+        // context. The controlled document protects this active worker's lifetime.
+        worker = registration.active;
+        if (!worker) throw new Error("下载服务正在更新，请稍后重试");
         const reply = await rpc(worker, { action: "ping" });
-        // An update can activate between selecting the worker and its ping reply.
-        // Verify the currently active object before START, without replacing live tasks.
-        if (worker.state === "redundant" || registration.active && registration.active !== worker) {
+        if (worker.state === "redundant" || controller.state === "redundant" || registration.active !== worker) {
           throw new Error("下载服务正在更新，请稍后重试");
         }
         if (reply.protocol !== PROTOCOL) throw new Error("下载服务版本不兼容");
         workerBuilds.set(worker, reply.workerBuild || "legacy");
         listen();
+        if (!checkedUpdates.has(registration.scope)) {
+          checkedUpdates.add(registration.scope);
+          // Only check after a real controlled document protects the old worker.
+          // Not calling skipWaiting alone does not protect long-running responses.
+          try { void registration.update?.().catch(() => {}); } catch { /* Offline checks must not break downloads. */ }
+        }
         return worker;
       } catch (error) {
-        const replacement = registration.active;
-        if (attempt || !replacement || replacement === worker || replacement.state === "redundant") throw error;
-        worker = replacement;
+        if (attempt || worker?.state !== "redundant" || !registration.active || registration.active.state === "redundant") throw error;
       }
     }
     return null;
@@ -196,9 +241,15 @@ function subscribe(id: string, observer: DownloadObserver): () => void {
 
 export async function downloadStreaming(request: DownloadRequest, signal: AbortSignal, onUpdate: DownloadObserver): Promise<DownloadSnapshot> {
   if (signal.aborted) throw abortError();
-  const worker = await workerFor(true);
-  if (signal.aborted) throw abortError();
-  if (!worker) throw new StreamingUnavailableError("流式下载服务不可用");
+  retainBridge(request.id);
+  let worker: ServiceWorker;
+  try {
+    const selected = await workerFor(true);
+    if (signal.aborted) throw abortError();
+    if (!selected) throw new StreamingUnavailableError("流式下载服务不可用");
+    worker = selected;
+  } catch (error) { releaseBridge(request.id); throw error; }
+  owners.set(request.id, worker);
   const key = { id: request.id, token: crypto.randomUUID().replaceAll("-", ""), filename: request.filename, savedAt: Date.now() };
   keys.set(key.id, key); saveKeys();
   latest.set(key.id, {
@@ -258,22 +309,17 @@ export async function reconnectStreaming(onUpdate: DownloadObserver): Promise<Do
   const saved = readKeys();
   if (!saved.length) return [];
   for (const key of saved) { keys.set(key.id, key); subscribe(key.id, onUpdate); }
-  let snapshots: DownloadSnapshot[];
-  let confirmed = true;
-  try {
-    const worker = await workerFor(false);
-    const reply = worker ? await rpc(worker, { action: "query", tasks: saved.map(({ id, token }) => ({ id, token })) }) : {};
-    const found = new Map((reply.snapshots || []).map(snapshot => [snapshot.id, fromWorker(snapshot, worker!)]));
-    snapshots = saved.map(key => found.get(key.id) || (key.result ? { ...key.result, url: "" } : interrupted(key)));
-  } catch {
-    confirmed = false;
-    snapshots = saved.map(key => key.result ? { ...key.result, url: "" } : unknown(key));
-  }
-  for (const snapshot of snapshots) {
-    notify(snapshot, confirmed || snapshot.observation !== "unknown");
+  const pending = saved.filter(key => !key.result);
+  for (const key of pending) retainBridge(key.id);
+  const observed = await observeTasks(pending);
+  const snapshots = saved.map(key => key.result
+    ? { snapshot: { ...key.result, url: "" }, confirmed: true }
+    : observed.get(key.id)!);
+  for (const { snapshot, confirmed } of snapshots) {
+    notify(snapshot, confirmed);
     if (!terminal(snapshot)) { started.add(snapshot.id); watch(snapshot.id); }
   }
-  return snapshots;
+  return snapshots.map(({ snapshot }) => snapshot);
 }
 
 /** True only after START may have reached the worker, never during preparation/registration. */
@@ -283,8 +329,8 @@ export async function cancelStreaming(id: string): Promise<void> {
   const key = keys.get(id) || readKeys().find(item => item.id === id);
   if (!key) throw new Error("原下载任务已失效");
   try {
-    const worker = await workerFor(false);
-    if (!worker) { notify(interrupted(key)); throw new Error("原下载任务已失效"); }
+    const worker = await ownerFor(key);
+    if (!worker || worker.state === "redundant") { notify(interrupted(key)); throw new Error("原下载任务已失效"); }
     const reply = await rpc(worker, { action: "cancel", id, token: key.token });
     if (reply.snapshot) notify(fromWorker(reply.snapshot, worker));
   } catch (error) {
@@ -295,9 +341,15 @@ export async function cancelStreaming(id: string): Promise<void> {
 
 export async function forgetStreaming(id: string): Promise<void> {
   const key = keys.get(id) || readKeys().find(item => item.id === id);
-  const worker = await workerFor(false);
-  if (key && worker) await rpc(worker, { action: "forget", id, token: key.token });
+  if (started.has(id) || key && !key.result) throw new Error("请先确认下载已停止，再清除任务");
+  const worker = owners.get(id);
+  if (key && worker && worker.state !== "redundant") {
+    // Confirmed terminal records may be cleared even if the old worker retires
+    // between this check and its reply. Never bind that cleanup to a new owner.
+    try { await rpc(worker, { action: "forget", id, token: key.token }); } catch { /* Worker summaries also expire. */ }
+  }
   keys.delete(id); latest.delete(id); saveKeys(); observers.delete(id); watched.delete(id); uncertain.delete(id); started.delete(id);
+  owners.delete(id); releaseBridge(id);
   if (!watched.size) { clearInterval(pollTimer); pollTimer = undefined; }
   const frame = frames.get(id); frames.delete(id); frame?.remove();
 }
