@@ -223,7 +223,7 @@ function toutiaoResponseFromPage(string $html, string $id): array
         'cover' => snapMediaUrl($video['coverUrl'] ?? $video['poster'] ?? null),
         'video_backup' => array_slice($candidates, 1)] + $candidates[0];
     if (is_string($user['description'] ?? null)) {
-        $data['description'] = $user['description'];
+        $data['author_description'] = $user['description'];
     }
     if (is_array($video['itemCell']['videoAbility']['music'] ?? null)) {
         $data['music'] = $video['itemCell']['videoAbility']['music'];

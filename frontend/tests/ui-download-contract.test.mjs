@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { webcrypto } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import { createServer as createHttpServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createServer, transformWithEsbuild } from 'vite';
 import { parse, compileScript } from '@vue/compiler-sfc';
 import { ref, computed, h, createSSRApp, createRenderer, nextTick, markRaw } from 'vue';
@@ -1292,3 +1296,211 @@ test('a deferred ZIP item keeps its resolved variant and source across retry', a
   assert.deepEqual(fetched, [base.url, base.url], 'retry must not switch to a new server default');
   assert.equal(JSON.stringify(store.resultData), domainBefore, 'a ZIP task never writes its resolved state into the result store');
 });
+
+for (const [action, role, extension] of [
+  ['downloadLiveVideo', 'motion', 'mp4'],
+  ['downloadLiveCover', 'image', 'jpg'],
+]) test(`PR8 review: ${role} download refreshes the parent live-photo item`, async () => {
+  const data = fixture({ ...base, url: null, live_photo: [{ image: 'https://media.test/old-cover.jpg', video: 'https://media.test/old-motion.mp4' }] });
+  const parent = data.items[0];
+  parent.resolve_url = '/api/resolve?item_id=live-1';
+  for (const resource of parent.variants[0].delivery.resources) resource.delivery.sources[0].expires_at = '2020-01-01T00:00:00Z';
+  const fresh = structuredClone(parent);
+  for (const resource of fresh.variants[0].delivery.resources) {
+    delete resource.delivery.sources[0].expires_at;
+    resource.delivery.sources[0].url = `https://media.test/renewed-${resource.role}.${resource.role === 'image' ? 'jpg' : 'mp4'}`;
+  }
+  const resolves = [];
+  const { instance, store, selection } = harness(data, async item => {
+    resolves.push({ id: item.id, resolve_url: item.resolve_url });
+    // Mirrors useVideoParser.resolveItem: a ready synthetic leaf without a
+    // resolve_url is returned unchanged, while the real parent can refresh.
+    return item.resolve_url === parent.resolve_url ? fresh : item;
+  });
+  selection.choose({ variant_id: 'pair' });
+  const before = JSON.stringify(store.resultData);
+  globalThis.fetch = async url => { fetched.push(url); return new Response(new Uint8Array([1, 2, 3, 4]), { headers: { 'content-type': role === 'image' ? 'image/jpeg' : 'video/mp4', 'content-length': '4' } }); };
+  instance[action](store.resultData.items[0]);
+  await settled(store.downloads[0]);
+  assert.equal(store.downloads[0].status, 'completed', JSON.stringify({ resolves, error: store.downloads[0].error, fetched }));
+  assert.deepEqual(resolves, [{ id: parent.id, resolve_url: parent.resolve_url }]);
+  assert.ok(fetched.length > 0 && fetched.every(url => url === `https://media.test/renewed-${role}.${extension}`));
+  assert.equal(JSON.stringify(store.resultData), before, 'the leaf task refresh stays private to the download');
+});
+
+test('PR8 review: live leaf renewal retains the selected parent version, resource and source line', async () => {
+  const data = fixture({ ...base, url: null, live_photo: [{ image: 'https://media.test/old-cover.jpg', video: 'https://media.test/old-motion.mp4' }] });
+  const parent = data.items[0]; parent.resolve_url = '/api/resolve?item_id=live-1';
+  const motion = parent.variants[0].delivery.resources.find(resource => resource.role === 'motion');
+  motion.delivery.sources = ['chosen', 'alternate'].map(id => ({ id, url: `https://media.test/old-${id}.mp4`, expires_at: '2020-01-01T00:00:00Z' }));
+  const fresh = structuredClone(parent);
+  const freshMotion = fresh.variants[0].delivery.resources.find(resource => resource.role === 'motion');
+  freshMotion.delivery.sources = ['alternate', 'chosen'].map(id => ({ id, url: `https://media.test/new-${id}.mp4` }));
+  const unrelated = structuredClone(fresh.variants[0]); unrelated.id = 'another-version';
+  unrelated.delivery.resources.find(resource => resource.role === 'motion').delivery.sources = [{ id: 'chosen', url: 'https://media.test/wrong-version.mp4' }];
+  fresh.variants.unshift(unrelated);
+  const { instance, store, selection } = harness(data, async () => fresh);
+  selection.choose({ variant_id: 'pair' });
+  instance.downloadLiveVideo(store.resultData.items[0]); await settled(store.downloads[0]);
+  assert.equal(store.downloads[0].status, 'completed');
+  assert.ok(fetched.length > 0 && fetched.every(url => url === 'https://media.test/new-chosen.mp4'));
+  assert.deepEqual(selection.currentSelection.value, { variant_id: 'pair' });
+});
+
+test('PR8 review: missing selected live source fails instead of borrowing another line', async () => {
+  const data = fixture({ ...base, url: null, live_photo: [{ image: 'https://media.test/cover.jpg', video: 'https://media.test/motion.mp4' }] });
+  const parent = data.items[0]; parent.resolve_url = '/api/resolve?item_id=live-1';
+  const source = parent.variants[0].delivery.resources[1].delivery.sources[0];
+  Object.assign(source, { id: 'chosen', expires_at: '2020-01-01T00:00:00Z' });
+  const fresh = structuredClone(parent);
+  fresh.variants[0].delivery.resources[1].delivery.sources = [{ id: 'different-source', url: 'https://media.test/wrong-source.mp4' }];
+  const { instance, store } = harness(data, async () => fresh);
+  instance.downloadLiveVideo(store.resultData.items[0]); await settled(store.downloads[0]);
+  assert.equal(store.downloads[0].status, 'failed');
+  assert.match(store.downloads[0].error, /已选来源不存在/);
+  assert.equal(fetched.length, 0); assert.equal(clicked.length, 0);
+});
+
+test('PR8 review: cancelling parent live renewal prevents a late leaf transfer', async () => {
+  const data = fixture({ ...base, url: null, live_photo: [{ image: 'https://media.test/cover.jpg', video: 'https://media.test/motion.mp4' }] });
+  const parent = data.items[0]; parent.resolve_url = '/api/resolve?item_id=live-1';
+  parent.variants[0].delivery.resources[1].delivery.sources[0].expires_at = '2020-01-01T00:00:00Z';
+  const fresh = structuredClone(parent); delete fresh.variants[0].delivery.resources[1].delivery.sources[0].expires_at;
+  let finish, capturedSignal;
+  const { instance, store } = harness(data, async (item, signal) => {
+    assert.equal(item.id, parent.id); capturedSignal = signal;
+    return new Promise(resolve => { finish = resolve; });
+  });
+  instance.downloadLiveVideo(store.resultData.items[0]);
+  await waitUntil(() => capturedSignal);
+  await instance.handleCancelDownload(store.downloads[0].id);
+  assert.ok(capturedSignal.aborted); assert.equal(store.downloads[0].status, 'cancelled');
+  finish(fresh); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(store.downloads[0].status, 'cancelled'); assert.equal(fetched.length, 0); assert.equal(clicked.length, 0);
+});
+
+test('PR8 review: ZIP compares decoded bytes to source size without treating gzip wire length as file size', async () => {
+  const decoded = new Uint8Array(4096).fill(65), wire = gzipSync(decoded);
+  assert.notEqual(wire.byteLength, decoded.byteLength);
+  const server = createHttpServer((_, response) => {
+    response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Encoding': 'gzip', 'Content-Length': wire.byteLength });
+    response.end(wire);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const source = `http://127.0.0.1:${server.address().port}/compressed-attachment`;
+    const data = fixture({ ...base, url: null, images: [source] });
+    data.items[0].variants[0].delivery.sources[0].size_bytes = decoded.byteLength;
+    const { instance, store } = harness(data);
+    const observed = {};
+    globalThis.fetch = async (url, options) => {
+      fetched.push(url);
+      const response = await originals.fetch(url, options);
+      observed.wireHeader = Number(response.headers.get('content-length'));
+      observed.decodedBody = (await response.clone().arrayBuffer()).byteLength;
+      return response;
+    };
+    await instance.downloadAllMedia('images');
+    assert.deepEqual(observed, { wireHeader: wire.byteLength, decodedBody: decoded.byteLength });
+    assert.equal(store.downloads[0].status, 'completed', JSON.stringify({ ...observed, error: store.downloads[0].error }));
+    const zip = await JSZip.loadAsync(await blobs.at(-1).arrayBuffer());
+    const contents = await Object.values(zip.files)[0].async('uint8array');
+    assert.deepEqual(contents, decoded);
+    const invalid = fixture({ ...base, url: null, images: [source] });
+    invalid.items[0].variants[0].delivery.sources[0].size_bytes = decoded.byteLength + 1;
+    const other = harness(invalid);
+    await other.instance.downloadAllMedia('images');
+    assert.equal(other.store.downloads[0].status, 'failed', 'declared media file size still protects decoded-body integrity');
+    assert.match(other.store.downloads[0].error, /不完整/);
+    assert.equal(blobs.length, 1, 'an incorrect decoded file size cannot create a second archive');
+  } finally {
+    await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+  }
+});
+
+test('PR8 review: unexposed Content-Encoding on a CORS response is not proof of identity bytes', async () => {
+  const decoded = new Uint8Array(4096).fill(65), wire = gzipSync(decoded);
+  const data = fixture({ ...base, url: null, images: ['https://media.test/cors-compressed-image'] });
+  data.items[0].variants[0].delivery.sources[0].size_bytes = decoded.byteLength;
+  globalThis.fetch = async () => {
+    // Content-Length is CORS-safelisted, Content-Encoding is not. This models
+    // the browser-filtered response after the actual gzip decoding test above.
+    const response = new Response(decoded, { headers: { 'content-type': 'image/jpeg', 'content-length': String(wire.byteLength) } });
+    Object.defineProperty(response, 'type', { value: 'cors' });
+    return response;
+  };
+  const { instance, store } = harness(data);
+  await instance.downloadAllMedia('images');
+  assert.equal(store.downloads[0].status, 'completed', store.downloads[0].error);
+  const zip = await JSZip.loadAsync(await blobs.at(-1).arrayBuffer());
+  assert.deepEqual(await Object.values(zip.files)[0].async('uint8array'), decoded);
+});
+
+// Explicit cross-language suite: ordinary npm test remains frontend-only.
+if (process.env.DOKITOOL_MEDIA_INTEGRATION === '1') {
+  const readRenewalEnvelopes = async () => {
+    const exported = process.env.DOKITOOL_RENEWAL_FIXTURE
+      ? await readFile(process.env.DOKITOOL_RENEWAL_FIXTURE, 'utf8')
+      : execFileSync(process.env.DOKITOOL_PHP_BINARY || 'php', [fileURLToPath(new URL('../../backend/tests/unified-review-identity.php', import.meta.url)), '--export'], { encoding: 'utf8' });
+    return JSON.parse(exported.replace(/^\uFEFF/, ''));
+  };
+  for (const scenario of ['play-endpoint', 'cdn']) for (const explicit of [false, true]) test(`PR8 integration: actual ${scenario} adapter renewal preserves ${explicit ? 'explicit' : 'default'} download identity`, async t => {
+    const envelopes = await readRenewalEnvelopes();
+    const pair = scenario === 'cdn' ? envelopes.cases.cdn : envelopes;
+    assert.ok(pair?.before && pair?.after, `actual PHP export includes ${scenario} before/after responses`);
+    const before = mediaContract.validateMediaEnvelope(pair.before);
+    const after = mediaContract.validateMediaEnvelope(pair.after);
+    const original = before.items[0], fresh = after.items.find(item => item.id === original.id);
+    const chosen = original.variants.find(variant => variant.id === original.default.variant_id);
+    const source = explicit
+      ? chosen.delivery.sources.find(source => source.id !== original.default.source_id)
+      : chosen.delivery.sources.find(source => source.id === original.default.source_id);
+    assert.ok(source, 'fixture contains the selected primary or alternate source');
+    // Fixture routes have distinct hosts for CDN URLs and explicit line queries
+    // for play endpoints. Identify the expected renewed route independently of
+    // the opaque production IDs whose stability this regression verifies.
+    const route = value => scenario === 'cdn' ? new URL(value.url).hostname : new URL(value.url).searchParams.get('line');
+    const renewed = fresh.variants.flatMap(variant => variant.delivery?.sources || []).find(candidate => route(candidate) === route(source));
+    assert.ok(renewed, 'renewal contains the same fixture route');
+    assert.notEqual(renewed.url, source.url, 'fixture actually renews the delivery credential');
+    if (scenario === 'cdn') {
+      assert.match(new URL(original.default.url).hostname, /\.douyinvod\.com$/);
+      assert.notEqual(new URL(renewed.url).pathname, new URL(source.url).pathname, 'CDN signature path changes');
+    }
+    t.mock.method(Date, 'now', () => Date.parse(source.expires_at) + 1000);
+    assert.ok(Date.parse(renewed.expires_at) > Date.now());
+    let resolves = 0;
+    const { instance, store, selection } = harness(before, async item => { resolves++; assert.equal(item.id, original.id); return fresh; });
+    if (explicit) selection.choose({ variant_id: chosen.id, source_id: source.id });
+    const selectedBefore = JSON.parse(JSON.stringify(selection.currentSelection.value));
+    const domainBefore = JSON.stringify(store.resultData);
+    await instance.downloadMainVideo(); await settled(store.downloads[0]);
+    assert.equal(store.downloads[0].status, 'completed', JSON.stringify({ oldVariant: chosen.id, oldSource: source.id, error: store.downloads[0].error, fetched }));
+    assert.equal(resolves, 1);
+    assert.ok(fetched.length > 0 && fetched.every(url => url === renewed.url), 'renewal retains the exact source line even when server order changed');
+    assert.deepEqual(selection.currentSelection.value, selectedBefore);
+    assert.equal(JSON.stringify(store.resultData), domainBefore);
+    if (explicit) {
+      store.replaceItem(fresh);
+      assert.equal(selection.currentTarget.value.url, renewed.url, 'refreshed UI resolves the same opaque selection');
+    }
+  });
+  for (const name of ['original', 'weibo']) test(`PR8 integration: actual ${name} refresh preserves explicit UI and download identity`, async t => {
+    const exported = (await readRenewalEnvelopes()).cases[name];
+    const before = mediaContract.validateMediaEnvelope(exported.before);
+    const after = mediaContract.validateMediaEnvelope(exported.after);
+    const original = before.items[0], fresh = after.items.find(item => item.id === original.id);
+    const source = fresh.variants.find(variant => variant.id === fresh.default.variant_id).delivery.sources.find(source => source.id === fresh.default.source_id);
+    if (source.expires_at) t.mock.method(Date, 'now', () => Date.parse(source.expires_at) - 1000);
+    const { instance, store, selection } = harness(before);
+    const choice = { variant_id: original.default.variant_id, source_id: original.default.source_id };
+    selection.choose(choice);
+    store.replaceItem(fresh);
+    await instance.downloadMainVideo(); await settled(store.downloads[0]);
+    assert.equal(store.downloads[0].status, 'completed', JSON.stringify({ oldChoice: choice, nextDefault: fresh.default, error: store.downloads[0].error, fetched }));
+    assert.deepEqual(selection.currentSelection.value, choice);
+    const url = mediaContract.sourceUrl(source, { apiOrigin: configuration.apiConfig.baseUrl });
+    assert.equal(selection.currentTarget.value.url, url);
+    assert.ok(fetched.length > 0 && fetched.every(value => value === url));
+  });
+}

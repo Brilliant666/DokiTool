@@ -106,6 +106,8 @@
 !/backend/tests/toutiao-contract.php
 !/backend/tests/unified-contract.php
 !/backend/tests/unified-export.php
+!/backend/tests/unified-review-identity.php
+!/backend/tests/unified-review-platforms.php
 !/backend/tests/validate.py
 !/backend/tests/weibo-contract.php
 !/backend/tests/weibo-media-contract.php
@@ -131,6 +133,7 @@
 !/frontend/scripts/generate-platform-catalog.mjs
 !/frontend/scripts/generate-social-image.mjs
 !/frontend/scripts/prerender.mjs
+!/frontend/scripts/test-media-integration.mjs
 /frontend/src/*
 !/frontend/src/App.vue
 !/frontend/src/assets/

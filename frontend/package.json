@@ -11,6 +11,7 @@
     "assets:brand": "node scripts/generate-brand-assets.mjs",
     "check:load-budget": "node scripts/check-load-budget.mjs",
     "test:ssg": "node --test tests/prerender.test.mjs",
+    "test:media-integration": "node scripts/test-media-integration.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

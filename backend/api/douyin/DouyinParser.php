@@ -334,6 +334,10 @@ class DouyinParser
                 $originalQuality = isset($originalMetadata['width'], $originalMetadata['height'])
                     ? min($originalMetadata['width'], $originalMetadata['height']) . 'p' : 'unknown';
                 if ($originalMetadata) $originalMetadata['is_original'] = true;
+                // This is the same explicitly requested original route even when
+                // its redirect is renewed or the optional probe has no dimensions.
+                $originalMetadata['private_media_identity'] = 'douyin:original:' . $fallback;
+                $originalMetadata['private_source_identity'] = 'douyin:original-route:' . $fallback;
                 $currentPixels = ($videoInfo['metadata']['width'] ?? 0) * ($videoInfo['metadata']['height'] ?? 0);
                 $originalPixels = ($originalMetadata['width'] ?? 0) * ($originalMetadata['height'] ?? 0);
                 $better = $originalPixels > $currentPixels || ($originalPixels > 0 && $originalPixels === $currentPixels
@@ -578,6 +582,7 @@ class DouyinParser
 
                 $currentBestUrl = $v3Link ?: ($v26Link ? $this->replacePlayHost($v26Link) : $candidates[0]);
                 $itemMetadata = $this->videoMetadata($rateItem);
+                if ($identity = $this->representationIdentity($rateItem)) $itemMetadata['private_media_identity'] = $identity;
                 if (is_numeric($video['cdn_url_expired'] ?? null) && $video['cdn_url_expired'] > 0) $itemMetadata['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$video['cdn_url_expired']);
                 $extra = is_string($rateItem['video_extra'] ?? null) ? json_decode($rateItem['video_extra'], true) : [];
                 if (($rateItem['format'] ?? $extra['format'] ?? '') === 'dash' || !empty($rateItem['is_dash'])) {
@@ -624,6 +629,7 @@ class DouyinParser
             if ($playApi !== '') {
                 $url = str_replace('playwm', 'play', $playApi);
                 $metadata = $this->videoMetadata($video);
+                if ($identity = $this->representationIdentity($video)) $metadata['private_media_identity'] = $identity;
                 if (is_numeric($video['cdn_url_expired'] ?? null) && $video['cdn_url_expired'] > 0) $metadata['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$video['cdn_url_expired']);
                 $metadata['private_representation_id'] = hash('sha256', json_encode($video['play_addr']['url_list'] ?? [$playApi]));
             } elseif ($uri !== '') {
@@ -677,6 +683,19 @@ class DouyinParser
         return $metadata;
     }
 
+    /** File identifiers come from the upstream representation, not a quality label.
+     * A video URI alone can cover several encodings, so it is insufficient here.
+     */
+    private function representationIdentity(array $item): ?string
+    {
+        $address = $item['play_addr'] ?? $item['playAddr'][0] ?? [];
+        $extra = is_string($item['video_extra'] ?? null) ? json_decode($item['video_extra'], true) : [];
+        $hash = is_string($address['file_hash'] ?? null) ? $address['file_hash'] : '';
+        $fileId = is_string($extra['file_id'] ?? null) ? $extra['file_id'] : '';
+        if ($hash === '' && $fileId === '') return null;
+        return json_encode(['douyin', 'file', $address['uri'] ?? '', $hash, $fileId], JSON_UNESCAPED_SLASHES);
+    }
+
     /** DASH audio belongs to the matching upstream audio_file_id, not every video. */
     private function audioCandidates(array $entries, $expiresAt): array
     {
@@ -689,7 +708,7 @@ class DouyinParser
             if (!$sources) continue;
             if (is_numeric($expiresAt) && $expiresAt > 0) foreach ($sources as &$source) $source['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$expiresAt);
             unset($source);
-            $candidate = ['private_audio_id' => $audio['file_id'], 'sources' => $sources];
+            $candidate = ['private_audio_id' => $audio['file_id'], 'private_media_identity' => 'douyin:audio:' . $audio['file_id'], 'sources' => $sources];
             $info = is_string($audio['sub_info'] ?? null) ? json_decode($audio['sub_info'], true) : [];
             if (is_string($info['audio_profile'] ?? null)) $candidate['audio_codec'] = $info['audio_profile'];
             if (is_numeric($info['audio_sample_rate'] ?? null) && $info['audio_sample_rate'] > 0) $candidate['sample_rate_hz'] = (int)$info['audio_sample_rate'];

@@ -13,7 +13,9 @@ import {
   getDownloadTarget,
   readyItem,
   readyVariant,
+  resourceSource,
   sourceUrl,
+  type DownloadTarget,
 } from "../utils/mediaContract";
 import {
   declaredSegments,
@@ -189,7 +191,18 @@ export function useMediaDownload({
     const blob = await response.blob();
     if (signal) checkAbort(signal);
     if (!blob.size) throw new Error("资源为空");
-    const declaredSize = Number(response.headers.get("content-length"));
+    // Fetch decodes Content-Encoding before exposing the Blob. Content-Length
+    // describes wire bytes, while source.size_bytes describes the media file.
+    const encoding = response.headers
+      .get("content-encoding")
+      ?.trim()
+      .toLowerCase();
+    // A CORS-filtered response can expose Content-Length but hide encoding.
+    // Only compare a header length when it is known to describe decoded bytes.
+    const declaredSize =
+      encoding === "identity" || (!encoding && response.type !== "cors")
+        ? Number(response.headers.get("content-length"))
+        : 0;
     if (
       (declaredSize > 0 && blob.size !== declaredSize) ||
       (expectedSize && blob.size !== expectedSize)
@@ -652,6 +665,11 @@ export function useMediaDownload({
     title?: string;
     version: number;
     selectionKey: string;
+    resource?: {
+      id: string;
+      role: Resource["role"];
+      source_id?: string;
+    };
   };
   const snapshotItem = (
     item: MediaItem,
@@ -680,10 +698,74 @@ export function useMediaDownload({
       fallback: snapshot.item.id,
       extension,
     });
+  function snapshotTarget(
+    snapshot: ItemSnapshot,
+    item: MediaItem,
+  ): DownloadTarget {
+    if (!snapshot.resource || !readyItem(item))
+      return getDownloadTarget(item, snapshot.choice, apiContext);
+    const variant = item.variants.find(
+      (candidate) => candidate.id === snapshot.choice?.variant_id,
+    );
+    if (!readyVariant(variant))
+      return getDownloadTarget(item, snapshot.choice, apiContext);
+    if (variant.delivery.kind !== "pair")
+      return {
+        kind: "invalid",
+        message: "所选实况版本不再包含配对资源，请重新选择",
+      };
+    const resource = variant.delivery.resources.find(
+      (candidate) =>
+        candidate.id === snapshot.resource!.id &&
+        candidate.role === snapshot.resource!.role,
+    );
+    if (!resource)
+      return { kind: "invalid", message: "所选实况资源不存在，请重新选择" };
+    // The executor reads one declared leaf, while its task retains the parent
+    // item/variant/resource identity needed to refresh this exact resource.
+    return getDownloadTarget(
+      {
+        id: item.id,
+        type: resource.role === "image" ? "image" : "video",
+        variants: [
+          {
+            id: variant.id,
+            metadata: resource.metadata,
+            delivery: resource.delivery,
+          },
+        ],
+        default: null,
+        default_unavailable_reason: "processing_required",
+      },
+      { variant_id: variant.id, source_id: snapshot.resource.source_id },
+      apiContext,
+    );
+  }
+  function preparedSnapshot(
+    snapshot: ItemSnapshot,
+    item: MediaItem,
+    target: Extract<DownloadTarget, { variant: unknown }>,
+  ): ItemSnapshot {
+    const source =
+      target.kind === "file" && target.source.id
+        ? { source_id: target.source.id }
+        : {};
+    return freeze({
+      ...snapshot,
+      item,
+      choice: {
+        variant_id: target.variant.id,
+        ...(!snapshot.resource ? source : {}),
+      },
+      ...(snapshot.resource
+        ? { resource: { ...snapshot.resource, ...source } }
+        : {}),
+    });
+  }
   async function resolvedTarget(snapshot: ItemSnapshot, signal: AbortSignal) {
     checkAbort(signal);
     let item = snapshot.item;
-    let target = getDownloadTarget(item, snapshot.choice, apiContext);
+    let target = snapshotTarget(snapshot, item);
     if (target.kind === "needs_resolve" || target.kind === "needs_refresh") {
       const deadline = new AbortController();
       const timeout = setTimeout(
@@ -701,7 +783,7 @@ export function useMediaDownload({
         clearTimeout(timeout);
       }
       checkAbort(signal);
-      target = getDownloadTarget(item, snapshot.choice, apiContext);
+      target = snapshotTarget(snapshot, item);
     }
     // Never substitute a different variant when an explicit choice disappeared.
     if (!("variant" in target)) throw new Error(target.message);
@@ -741,16 +823,7 @@ export function useMediaDownload({
         controller.signal,
       );
       if (!ownsTask(id, controller)) return false;
-      const prepared = freeze({
-        ...snapshot,
-        item,
-        choice: {
-          variant_id: target.variant.id,
-          ...(target.kind === "file" && target.source.id
-            ? { source_id: target.source.id }
-            : {}),
-        },
-      });
+      const prepared = preparedSnapshot(snapshot, item, target);
       videoRetries.set(id, () => enqueueItem(prepared, id));
       const delivery = target.variant.delivery;
       if (target.kind === "pair") {
@@ -819,7 +892,11 @@ export function useMediaDownload({
     const delivery = resource.delivery;
     if (delivery.kind === "file") {
       const target = fileResource(resource, apiContext);
-      const data = await fetchBlob(target.url, signal, target.source.size_bytes);
+      const data = await fetchBlob(
+        target.url,
+        signal,
+        target.source.size_bytes,
+      );
       return {
         filename: `${name}.${mediaExtension(resource.metadata, delivery, data.type)}`,
         data,
@@ -850,16 +927,7 @@ export function useMediaDownload({
           const { item, target } = await resolvedTarget(snapshot, signal);
           // Resolve once into this archive's private state. Retries retain the
           // exact variant/source even if a later server default would differ.
-          taskSnapshots[index] = freeze({
-            ...snapshot,
-            item,
-            choice: {
-              variant_id: target.variant.id,
-              ...(target.kind === "file" && target.source.id
-                ? { source_id: target.source.id }
-                : {}),
-            },
-          });
+          taskSnapshots[index] = preparedSnapshot(snapshot, item, target);
           const delivery = target.variant.delivery;
           const base = `${String(index + 1).padStart(3, "0")}_${filenameFor(snapshot, "bin").replace(/\.bin$/, "")}`;
           if (target.kind === "file") {
@@ -980,11 +1048,23 @@ export function useMediaDownload({
     const resource = variant.delivery.resources.find(
       (resource) => resource.role === role,
     );
-    if (resource)
-      void enqueueResource(
-        freeze(resource),
-        item.title || videoStore.resultData?.title,
+    if (resource) {
+      const source =
+        resourceSource(resource, apiContext) ||
+        ("sources" in resource.delivery
+          ? resource.delivery.sources[0]
+          : undefined);
+      void enqueueItem(
+        freeze({
+          ...snapshotItem(item, { variant_id: variant.id }),
+          resource: {
+            id: resource.id,
+            role: resource.role,
+            ...(source?.id ? { source_id: source.id } : {}),
+          },
+        }),
       );
+    }
   }
   const downloadLiveVideo = (item: MediaItem) => pairResource(item, "motion");
   const downloadLiveCover = (item: MediaItem) => pairResource(item, "image");

@@ -38,14 +38,68 @@ function snapSource($raw): ?array
     return $source;
 }
 
+/** Identity only: retain the original URL for transport. Authentication parameters
+ * are excluded only on these known provider endpoints. In particular file_id,
+ * video_id, line, template and every unrecognized query parameter stay significant.
+ */
+function snapSourceIdentity(string $url): string
+{
+    $parts = parse_url($url); $host = strtolower($parts['host'] ?? ''); $path = $parts['path'] ?? '';
+    // Observed official CDN paths prefix the resource with a 32-hex signature
+    // and an 8-hex expiry. Preserve the route host, full resource path and every
+    // query field; neither filename similarity nor an arbitrary CDN path suffices.
+    if (($parts['scheme'] ?? '') === 'https' && !isset($parts['user']) && !isset($parts['pass'])
+        && in_array($host, ['v3-web.douyinvod.com', 'v26-web.douyinvod.com', 'v26-luna.douyinvod.com', 'v11-weba.douyinvod.com'], true)
+        && preg_match('~^/[a-f0-9]{32}/[a-f0-9]{8}(/video/tos/cn/tos-cn-[a-z0-9-]+/[A-Za-z0-9_-]+(?:/media-video-(?:hvc1|avc1))?/?)$~D', $path, $matches)) {
+        return json_encode(['douyin-cdn', $host, $parts['port'] ?? null, $matches[1], $parts['query'] ?? null, $parts['fragment'] ?? null], JSON_UNESCAPED_SLASHES);
+    }
+    $credentials = [];
+    if (in_array($host, ['www.douyin.com', 'aweme.snssdk.com', 'api.amemv.com'], true)
+        && in_array(rtrim($path, '/'), ['/aweme/v1/play', '/aweme/v1/play/dash'], true)) $credentials = ['sign', 'biz_sign'];
+    elseif ($host === 'f.video.weibocdn.com') $credentials = ['Expires', 'ssig', 'KID'];
+    elseif ($host === 'bilivideo.com' || str_ends_with($host, '.bilivideo.com')) $credentials = ['deadline', 'upsig'];
+    if (!$credentials || !isset($parts['query'])) return $url;
+    // Keep duplicate parameters, their order and exact values; sorting duplicates
+    // or using parse_str could identify different last-value-wins resources as one.
+    $query = array_values(array_filter(explode('&', $parts['query']), static fn ($pair) => !in_array(rawurldecode(explode('=', $pair, 2)[0]), $credentials, true)));
+    $base = explode('?', $url, 2)[0];
+    return $base . ($query ? '?' . implode('&', $query) : '') . (isset($parts['fragment']) ? '#' . $parts['fragment'] : '');
+}
+
 function snapSources(array $raw): array
 {
-    $sources = []; $seen = [];
+    $sources = [];
     foreach ($raw as $entry) {
-        $source = snapSource($entry); if (!$source || isset($seen[$source['url']])) continue;
-        $seen[$source['url']] = true; $source['id'] = 's-' . substr(hash('sha256', $source['url']), 0, 24); $sources[] = $source;
+        $source = snapSource($entry); if (!$source) continue;
+        $identity = is_array($entry) ? snapText($entry['private_source_identity'] ?? null) : null;
+        $identity ??= snapSourceIdentity($source['url']);
+        $source['id'] = 's-' . substr(hash('sha256', $identity), 0, 24); $sources[] = $source;
     }
-    return $sources;
+    return snapMergeSources([], $sources);
+}
+
+/** Select one actual credential for a proven source, never extend its expiry or
+ * combine the URL from one response with metadata from another response.
+ */
+function snapMergeSources(array $existing, array $additional): array
+{
+    $merged = []; $now = time();
+    $rank = static fn ($source) => [snapSourceUsable($source, $now) ? 1 : 0,
+        ($source['availability'] ?? '') === 'available' ? 1 : 0,
+        isset($source['expires_at']) ? strtotime($source['expires_at']) : 0];
+    foreach (array_merge($existing, $additional) as $source) {
+        $id = $source['id'];
+        if (!isset($merged[$id]) || $rank($source) > $rank($merged[$id])) $merged[$id] = $source;
+    }
+    return array_values($merged);
+}
+
+/** A file track's source identities, without time-dependent URLs or metadata. */
+function snapResourceIdentity(array $resource): array
+{
+    $delivery = $resource['delivery'];
+    $sources = array_column($delivery['sources'], 'id'); sort($sources, SORT_STRING);
+    return [$resource['role'], $delivery['kind'], $sources];
 }
 
 function snapCandidateMetadata(array $raw): array
@@ -76,7 +130,7 @@ function snapCandidateMetadata(array $raw): array
  */
 function snapFileVariants(array $candidates): array
 {
-    $variants = []; $keys = []; $identities = []; $trackAudio = [];
+    $variants = []; $keys = []; $stableIdentities = []; $trackAudio = [];
     foreach ($candidates as $index => $candidate) {
         $candidate = is_string($candidate) ? ['url' => $candidate] : $candidate;
         if (!is_array($candidate)) continue;
@@ -92,35 +146,43 @@ function snapFileVariants(array $candidates): array
         $extension = strtolower(pathinfo((string)parse_url($sources[0]['url'], PHP_URL_PATH), PATHINFO_EXTENSION));
         $kind = $candidate['protocol'] ?? match ($extension) { 'm3u8' => 'hls', 'mpd' => 'dash', default => 'file' };
         if (!in_array($kind, ['file', 'hls', 'dash'], true)) continue;
-        $representation = snapText($candidate['private_representation_id'] ?? null);
-        $signature = $representation === null ? null : json_encode([$kind, $representation]);
+        $mediaIdentity = snapText($candidate['private_media_identity'] ?? null);
+        $representation = $mediaIdentity ?? snapText($candidate['private_representation_id'] ?? null);
+        $track = ($candidate['private_delivery_kind'] ?? '') === 'video_track';
+        $signature = $representation === null ? null : json_encode([$kind, $track, $representation]);
         if ($signature !== null && isset($keys[$signature])) {
             $n = $keys[$signature];
-            $existing = $variants[$n]['delivery']['sources'];
-            foreach ($sources as $s) if (!in_array($s['url'], array_column($existing, 'url'), true)) $existing[] = $s;
-            $variants[$n]['delivery']['sources'] = $existing;
+            $variants[$n]['delivery']['sources'] = snapMergeSources($variants[$n]['delivery']['sources'], $sources);
+            // Each entry was already matched to its explicit audio_file_id by
+            // the platform adapter; merge those options, never global audio.
+            if ($track) $trackAudio[$n] = array_merge($trackAudio[$n], $candidate['private_audio_candidates'] ?? []);
             continue;
         }
-        $identitySources = array_column($sources, 'url'); sort($identitySources);
-        $identityMetadata = $metadata; ksort($identityMetadata);
-        $id = 'v-' . substr(hash('sha256', $signature ?? json_encode([$kind, $identitySources, $identityMetadata, $original])), 0, 24);
-        if (isset($identities[$id])) continue;
-        $identities[$id] = true;
-        $variant = ['id' => $id, 'delivery' => ['kind' => $kind, 'sources' => $sources]];
+        $variant = ['delivery' => ['kind' => $kind, 'sources' => $sources]];
         if ($kind !== 'file') $variant['delivery']['scope'] = $candidate['scope'] ?? 'single';
         if ($original) $variant['provenance'] = 'original_endpoint';
         if ($metadata) $variant['metadata'] = $metadata;
         if ($label = snapText($candidate['label'] ?? $candidate['quality'] ?? null)) $variant['label'] = $label;
         if ($signature !== null) $keys[$signature] = count($variants);
-        if (($candidate['private_delivery_kind'] ?? '') === 'video_track') $trackAudio[$id] = $candidate['private_audio_candidates'] ?? [];
+        $stableIdentities[count($variants)] = $mediaIdentity;
+        if ($track) $trackAudio[count($variants)] = $candidate['private_audio_candidates'] ?? [];
         $variants[] = $variant;
     }
+    $identified = []; $audioByVariant = [];
+    foreach ($variants as $index => $variant) {
+        $sourceIds = array_column($variant['delivery']['sources'], 'id'); sort($sourceIds, SORT_STRING);
+        $identity = [$variant['delivery']['kind'], array_key_exists($index, $trackAudio), $stableIdentities[$index] ?? $sourceIds];
+        $id = $variant['id'] = 'v-' . substr(hash('sha256', json_encode($identity)), 0, 24);
+        if (isset($identified[$id])) $identified[$id]['delivery']['sources'] = snapMergeSources($identified[$id]['delivery']['sources'], $variant['delivery']['sources']);
+        else $identified[$id] = $variant;
+        if (array_key_exists($index, $trackAudio)) $audioByVariant[$id] = array_merge($audioByVariant[$id] ?? [], $trackAudio[$index]);
+    }
     $complete = [];
-    foreach ($variants as $variant) {
-        if (!array_key_exists($variant['id'], $trackAudio)) { $complete[] = $variant; continue; }
+    foreach ($identified as $id => $variant) {
+        if (!array_key_exists($id, $audioByVariant)) { $complete[] = $variant; continue; }
         $video = ['id' => 'video', 'role' => 'video', 'delivery' => $variant['delivery']];
         if (isset($variant['metadata'])) $video['metadata'] = $variant['metadata'];
-        $audioOptions = snapFileVariants($trackAudio[$variant['id']]);
+        $audioOptions = snapFileVariants($audioByVariant[$id]);
         if (!$audioOptions) {
             $complete[] = ['id' => $variant['id'], 'state' => 'deferred', 'reason' => ['code' => 'MISSING_AUDIO_TRACK', 'message' => '未取得可确认的完整音视频组合，暂不可下载']];
             continue;
@@ -249,10 +311,15 @@ function snapAdaptDouyin(array $raw, string $url): array {
     return snapSimpleAdapter('douyin', $raw, $url);
 }
 function snapAdaptKuaishou(array $raw, string $url): array { return snapSimpleAdapter('kuaishou', $raw, $url); }
-function snapAdaptXiaohongshu(array $raw, string $url): array { return snapSimpleAdapter('xiaohongshu', $raw, $url); }
+function snapAdaptXiaohongshu(array $raw, string $url): array {
+    foreach (['like_count' => 'digg_count', 'comment_count' => 'comment_count', 'share_count' => 'share_count', 'collect_count' => 'collect_count'] as $from => $to) {
+        if (array_key_exists($from, $raw['statistics'] ?? [])) $raw['extra']['statistics'][$to] = $raw['statistics'][$from];
+    }
+    return snapSimpleAdapter('xiaohongshu', $raw, $url);
+}
 function snapAdaptToutiao(array $raw, string $url): array {
     $raw['id'] = $raw['itemId'] ?? null;
-    $raw['author'] = ['name' => $raw['author'] ?? '', 'id' => $raw['userID'] ?? '', 'avatar' => $raw['avatar'] ?? ''];
+    $raw['author'] = ['name' => $raw['author'] ?? '', 'id' => $raw['userID'] ?? '', 'avatar' => $raw['avatar'] ?? '', 'description' => $raw['author_description'] ?? ''];
     return snapSimpleAdapter('toutiao', $raw, $url);
 }
 function snapAdaptWeibo(array $raw, string $url): array {
@@ -350,7 +417,7 @@ function snapBilibiliVariants(array $raw): array
         $video = snapBilibiliTrack($track, 'video', 'video'); if (!$video) continue;
         $audioOptions = [];
         foreach ($audio as $a) if ($resource = snapBilibiliTrack($a, 'audio', 'audio')) $audioOptions[] = $resource;
-        $variantId = 'mux-' . substr(hash('sha256', json_encode($video)), 0, 24);
+        $variantId = 'mux-' . substr(hash('sha256', json_encode(snapResourceIdentity($video))), 0, 24);
         // Absence of an audio response is not proof that the work is silent.
         if (!$audioOptions) {
             $variants[] = ['id' => $variantId, 'state' => 'deferred', 'reason' => ['code' => 'MISSING_AUDIO_TRACK', 'message' => '未取得可确认的完整音视频组合，暂不可下载']];
@@ -359,7 +426,7 @@ function snapBilibiliVariants(array $raw): array
         // Audio encodings are alternatives, not simultaneous language tracks.
         // Each complete pairing is independently usable even if another expires.
         foreach ($audioOptions as $audioOption) {
-            $id = $variantId . '-' . substr(hash('sha256', json_encode($audioOption)), 0, 24);
+            $id = $variantId . '-' . substr(hash('sha256', json_encode(snapResourceIdentity($audioOption))), 0, 24);
             $variant = ['id' => $id, 'delivery' => ['kind' => 'mux', 'resources' => [$video, $audioOption], 'output' => ['container' => 'mp4', 'extension' => 'mp4', 'mime_type' => 'video/mp4']]];
             if (isset($video['metadata'])) $variant['metadata'] = $video['metadata'];
             $variants[] = $variant;

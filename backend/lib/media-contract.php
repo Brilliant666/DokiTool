@@ -118,10 +118,22 @@ function snapDeliveryRequires(array $delivery): array
     $requires = array_values(array_unique($requires)); sort($requires); return $requires;
 }
 
+/** A mux's video resource is authoritative when the variant omits its geometry. */
+function snapVariantVideoMetadata(array $variant): array
+{
+    $metadata = $variant['metadata'] ?? [];
+    if (($variant['delivery']['kind'] ?? '') === 'mux') {
+        foreach ($variant['delivery']['resources'] as $resource) {
+            if ($resource['role'] === 'video') return array_replace($resource['metadata'] ?? [], $metadata);
+        }
+    }
+    return $metadata;
+}
+
 /** Conservative spatial dominance; labels, original URLs and cross-codec bitrate are not evidence. */
 function snapQualityCompare(array $left, array $right): ?int
 {
-    $a = $left['metadata'] ?? []; $b = $right['metadata'] ?? [];
+    $a = snapVariantVideoMetadata($left); $b = snapVariantVideoMetadata($right);
     if (!isset($a['width'], $a['height'], $b['width'], $b['height'])) return null;
     $ad = [$a['width'], $a['height']]; sort($ad);
     $bd = [$b['width'], $b['height']]; sort($bd);
@@ -137,7 +149,8 @@ function snapQualityCompare(array $left, array $right): ?int
  */
 function snapVariantTieKey(array $v): array
 {
-    return [isset($v['metadata']['width'], $v['metadata']['height']) ? 0 : 1,
+    $metadata = snapVariantVideoMetadata($v);
+    return [isset($metadata['width'], $metadata['height']) ? 0 : 1,
         ($v['provenance'] ?? '') === 'original_endpoint' ? 0 : 1, $v['id']];
 }
 
