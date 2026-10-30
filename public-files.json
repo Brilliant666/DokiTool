@@ -142,6 +142,7 @@
     "frontend/tailwind.config.js",
     "frontend/tests/download-bridge.test.mjs",
     "frontend/tests/download-manager.test.mjs",
+    "frontend/tests/download-panel.test.mjs",
     "frontend/tests/download-streaming.test.mjs",
     "frontend/tests/download-transports.test.mjs",
     "frontend/tests/download-worker.test.mjs",

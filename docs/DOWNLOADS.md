@@ -108,6 +108,19 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   their existing pipelines. ZIP and segmented downloads are not claimed to be
   streaming or refresh-resumable by this change.
 
+## Download panel
+
+The summary bar expands a bounded, internally scrolling task list. Active and
+uncertain tasks come first; ended records keep compact status rows with optional
+details. Completion means stream delivery, not verified disk persistence.
+Clearing ended records is available while other tasks run and excludes uncertain
+observations. It does not delete saved files.
+
+Folding only changes presentation. A new active task opens the panel unless the
+user has manually folded it; that preference is stored locally when available.
+After all tasks end, the panel folds after five seconds without pointer hover or
+keyboard focus. Automatic folding does not overwrite the manual preference.
+
 ## Deployment
 
 Publish `frontend/dist/downloads/worker.js` and `bridge.html` along with the build. Apply the
