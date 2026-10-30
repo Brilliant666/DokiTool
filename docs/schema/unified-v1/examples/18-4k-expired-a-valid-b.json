@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "source-expiry",
+        "type": "video",
+        "default": {
+          "variant_id": "4k-file",
+          "url": "https://media.example.test/4k-b",
+          "source_id": "b",
+          "expires_at": "2026-10-30T13:00:00Z"
+        },
+        "variants": [
+          {
+            "id": "4k-file",
+            "metadata": {
+              "width": 3840,
+              "height": 2160,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "id": "a",
+                  "url": "https://media.example.test/4k-a",
+                  "expires_at": "2026-10-30T11:59:00Z"
+                },
+                {
+                  "id": "b",
+                  "url": "https://media.example.test/4k-b",
+                  "expires_at": "2026-10-30T13:00:00Z"
+                }
+              ]
+            }
+          },
+          {
+            "id": "1080-file",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/1080-file.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "generated_at": "2026-10-30T12:00:00Z"
+  }
+}

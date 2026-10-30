@@ -1,0 +1,11 @@
+[
+  {"id":"douyin","name":"抖音","site_url":"https://www.douyin.com/","icon":"douyin","capabilities":["video","image","live_photo"],"file":"douyin/douyin.php","adapter":"snapAdaptDouyin","domains":["douyin.com","iesdouyin.com"]},
+  {"id":"kuaishou","name":"快手","site_url":"https://www.kuaishou.com/","icon":"kuaishou","capabilities":["video","image"],"file":"kuaishou/ksjx.php","adapter":"snapAdaptKuaishou","domains":["kuaishou.com"]},
+  {"id":"bilibili","name":"B站","site_url":"https://www.bilibili.com/","icon":"bilibili","capabilities":["video","multipart","collection"],"file":"bilibili/bilibili.php","adapter":"snapAdaptBilibili","domains":["bilibili.com","b23.tv"]},
+  {"id":"xiaohongshu","name":"小红书","site_url":"https://www.xiaohongshu.com/","icon":"xiaohongshu","capabilities":["video","image","live_photo"],"file":"xiaohongshu/xhsjx.php","adapter":"snapAdaptXiaohongshu","domains":["xiaohongshu.com","xhslink.com","rednote.com"]},
+  {"id":"toutiao","name":"今日头条","site_url":"https://www.toutiao.com/","icon":"toutiao","capabilities":["video"],"file":"toutiao.php","adapter":"snapAdaptToutiao","domains":["toutiao.com","toutiaoimg.com"]},
+  {"id":"weibo","name":"微博","site_url":"https://weibo.com/","icon":"weibo","capabilities":["video"],"file":"weibo.php","adapter":"snapAdaptWeibo","domains":["weibo.com","weibo.cn"]},
+  {"id":"pipixia","name":"皮皮虾","site_url":"https://h5.pipix.com/","icon":"pipixia","capabilities":["video","image"],"file":"ppxia.php","adapter":"snapAdaptPipixia","domains":["pipix.com"]},
+  {"id":"pipigx","name":"皮皮搞笑","site_url":"https://h5.pipigx.com/","icon":"pipigx","capabilities":["video"],"file":"pipigx.php","adapter":"snapAdaptPipigx","domains":["pipigx.com","ippzone.com"]},
+  {"id":"zuiyou","name":"最右","site_url":"https://www.izuiyou.com/","icon":"zuiyou","capabilities":["video","image"],"file":"zuiyou.php","adapter":"snapAdaptZuiyou","domains":["izuiyou.com"]}
+]

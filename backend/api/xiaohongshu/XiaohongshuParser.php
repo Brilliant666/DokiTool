@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../lib/runtime.php';
+require_once __DIR__ . '/XiaohongshuMediaProbe.php';
 /**
 *@Author: JH-Ahua
 *@CreateTime: 2026/5/9 10:24
@@ -11,267 +12,223 @@ require_once __DIR__ . '/../../lib/runtime.php';
 
 class XiaohongshuParser
 {
-    private $headers;
-    private $cookie;
-    private $userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
+    private $pageRequest;
+    private $mediaProbe;
+    private string $cookie = '';
+    private const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-    public function __construct()
+    public function __construct(?callable $pageRequest = null, ?callable $mediaProbe = null)
     {
-        $this->headers = [
-            'User-Agent: ' . $this->userAgent,
-            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-        ];
+        $this->pageRequest = $pageRequest ?? [$this, 'request'];
+        $this->mediaProbe = $mediaProbe ?? static fn (string $url, float $deadline): array => (new XiaohongshuMediaProbe())->inspect($url, $deadline);
     }
 
-    /**
-     * 统一输出函数
-     */
-    private function output($code, $msg, $data = [])
+    private function output(int $code, string $message, array $data = []): string
     {
-        return json_encode([
-            'code' => $code,
-            'msg' => $msg,
-            'data' => $data
-        ], 480); // 保持原有的json选项 (JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_NUMERIC_CHECK)
+        return json_encode(['code' => $code, 'msg' => $message, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
-    /**
-     * 设置Cookie
-     */
-    public function setCookie($cookie)
+    public function setCookie(string $cookie): void { $this->cookie = $cookie; }
+
+    private static function pageAllowed(string $url): bool
     {
-        $this->cookie = $cookie;
+        $p = parse_url($url);
+        return $p && filter_var($url, FILTER_VALIDATE_URL) && !preg_match('/[\\\\\x00-\x20\x7f]/', $url)
+            && in_array($p['scheme'] ?? '', ['http', 'https'], true)
+            && !isset($p['user']) && !isset($p['pass'])
+            && (!isset($p['port']) || in_array($p['port'], [80, 443], true))
+            && in_array(strtolower($p['host'] ?? ''), ['xiaohongshu.com', 'www.xiaohongshu.com', 'rednote.com', 'www.rednote.com', 'xhslink.com', 'www.xhslink.com', 'xhs.com', 'www.xhs.com'], true);
     }
 
-    /**
-     * 发送HTTP请求
-     */
-    private function request($url, $customHeaders = [], $returnHeader = false)
+    /** Fetch desktop HTML; each redirect is checked, cookies are opt-in and never harvested. */
+    private function request(string $url): array
     {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate');
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-
-        $headers = array_merge($this->headers, $customHeaders);
-        if ($this->cookie) {
-            curl_setopt($ch, CURLOPT_COOKIE, $this->cookie);
-        }
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-
-        if ($returnHeader) {
-            curl_setopt($ch, CURLOPT_HEADER, true);
-            curl_setopt($ch, CURLOPT_NOBODY, true);
-        }
-
-        $response = snapCurlExec($ch);
-        $error = curl_error($ch);
-        curl_close($ch);
-
-        if ($error) {
-            return false;
-        }
-        return $response;
-    }
-
-    /**
-     * 获取重定向后的真实链接
-     */
-    private function getRealUrl($url)
-    {
-        // 方案一：优先使用 get_headers，因为它能处理某些 cURL 无法处理的 302 跳转
-        // 设置 User-Agent 模拟浏览器
-        stream_context_set_default([
-            'http' => [
-                'method' => 'GET',
-                'header' => "User-Agent: " . $this->userAgent
-            ]
-        ]);
-
-        // 抑制错误输出，防止域名无法解析时报错
-        $headers = @get_headers($url, 1);
-
-        if (isset($headers['Location'])) {
-            $location = $headers['Location'];
-            // 如果是数组（多次跳转），通常第一个就是目标链接，后续可能是跳转到登录页
-            if (is_array($location)) {
-                // 优先寻找包含 item/note/explore 等 ID 特征的链接
-                foreach ($location as $loc) {
-                    if ($this->extractId($loc)) {
-                        return $loc;
-                    }
-                }
-                // 如果没找到特征链接，返回第一个
-                return $location[0];
+        $deadline = microtime(true) + 10;
+        for ($redirects = 0; $redirects <= 5 && self::pageAllowed($url); $redirects++) {
+            $remaining = (int)(($deadline - microtime(true)) * 1000);
+            if ($remaining < 1) break;
+            $headers = [];
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_TIMEOUT_MS => $remaining, CURLOPT_ENCODING => '',
+                CURLOPT_HTTPHEADER => ['User-Agent: ' . self::UA, 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8'],
+                CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$headers): int {
+                    if (str_starts_with($line, 'HTTP/')) $headers = [];
+                    elseif (str_contains($line, ':')) { [$key, $value] = explode(':', $line, 2); $headers[strtolower(trim($key))] = trim($value); }
+                    return strlen($line);
+                },
+            ]);
+            if ($this->cookie !== '') curl_setopt($ch, CURLOPT_COOKIE, $this->cookie);
+            $body = snapCurlExec($ch);
+            $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $error = curl_errno($ch);
+            curl_close($ch);
+            if (in_array($status, [301, 302, 303, 307, 308], true) && isset($headers['location'])) {
+                $next = $headers['location'];
+                if (str_starts_with($next, '//')) $next = 'https:' . $next;
+                elseif (str_starts_with($next, '/')) $next = 'https://' . parse_url($url, PHP_URL_HOST) . $next;
+                if (!self::pageAllowed($next)) return ['status' => 502, 'body' => '', 'url' => $url];
+                $url = $next;
+                continue;
             }
-            return $location;
+            return ['status' => $status, 'body' => is_string($body) ? $body : '', 'url' => $url, 'transport_error' => $error];
         }
-
-        // 方案二：如果 get_headers 失败，尝试 cURL 作为备选
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_USERAGENT, $this->userAgent);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_HEADER, true);
-        curl_setopt($ch, CURLOPT_NOBODY, true); // 只需要头信息
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-
-        snapCurlExec($ch);
-        $realUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-        curl_close($ch);
-
-        return $realUrl ?: $url;
+        return ['status' => 502, 'body' => '', 'url' => $url];
     }
 
-    /**
-     * 提取ID
-     */
-    private function extractId($url)
+    private static function extractId(string $url): ?string
     {
-        $patterns = [
-            '/discovery\/item\/([a-zA-Z0-9]+)/',
-            '/explore\/([a-zA-Z0-9]+)/',
-            '/item\/([a-zA-Z0-9]+)/',
-            '/note\/([a-zA-Z0-9]+)/',
-        ];
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $url, $matches)) {
-                return $matches[1];
-            }
-        }
-        return null;
+        return preg_match('~/(?:discovery/item|explore|item|note)/([a-zA-Z0-9]+)(?:/|$)~', parse_url($url, PHP_URL_PATH) ?? '', $m) ? $m[1] : null;
     }
 
-    /**
-     * 主解析方法
-     */
-    public function parse($url)
+    /** Change only the authority. Signed query bytes must not be decoded/re-encoded. */
+    private static function desktopUrl(string $url, string $host): string
     {
-        if (empty($url)) {
-            return $this->output(400, '请输入小红书链接');
-        }
+        return preg_replace('~^https?://[^/?#]+~i', 'https://' . $host, $url);
+    }
 
-        // 预处理：将 xhs.com 替换为 xhslink.com
-        // 某些情况下分享链接可能是 xhs.com，直接访问可能无法正确跳转，需转换为 xhslink.com
-        $url = str_replace('xhs.com', 'xhslink.com', $url);
-
-        // 处理链接逻辑：参考 xhsjx.php
-        $domain = parse_url($url, PHP_URL_HOST);
-        if ($domain == 'www.xiaohongshu.com') {
-            $id = $this->extractId($url);
-        } else {
-            // 如果不是主域名，则认为是短链接或需要重定向的链接
-            $url = $this->getRealUrl($url);
-            $id = $this->extractId($url);
-        }
-
+    public function parse($url): string
+    {
+        if (!is_string($url) || !self::pageAllowed($url)) return $this->output(400, '请输入有效的小红书或 rednote 分享链接');
+        $host = strtolower((string)parse_url($url, PHP_URL_HOST));
+        if (in_array($host, ['xhs.com', 'www.xhs.com'], true)) $url = self::desktopUrl($url, 'xhslink.com');
+        $id = self::extractId($url);
         if (!$id) {
-            // 尝试从 query 参数中再次查找 (某些情况下 URL 结构可能不同)
-            // 比如 ?business_id=xxx
-            return $this->output(400, '链接格式错误，无法提取ID。处理后的链接: ' . $url);
+            $redirected = ($this->pageRequest)($url);
+            $url = $redirected['url'] ?? '';
+            if (!self::pageAllowed($url) || !($id = self::extractId($url))) return $this->output(400, '分享链接未指向可识别的笔记');
         }
-
-        // 第一次请求，尝试获取页面内容或token
-        $response = $this->request($url);
-        if (!$response) {
-            return $this->output(500, '请求失败');
+        $urls = array_values(array_unique([self::desktopUrl($url, 'www.rednote.com'), self::desktopUrl($url, 'www.xiaohongshu.com')]));
+        $lastStatus = 0;
+        foreach ($urls as $pageUrl) {
+            $response = ($this->pageRequest)($pageUrl);
+            $lastStatus = $response['status'] ?? 0;
+            if ($lastStatus !== 200) continue;
+            $note = self::extractNote($response['body'] ?? '', $id);
+            if ($note !== null) return $this->output(200, '解析成功', $this->formatNoteData($note));
         }
-
-        // 尝试直接匹配JSON
-        $data = $this->extractJson($response, $id);
-        // 如果 data 为空，尝试使用备用 UA 重试
-        if (!$data) {
-            $backupUserAgent = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Mobile Safari/537.36 EdgA/143.0.0.0';
-
-            // 备份原有 headers
-            $originalHeaders = $this->headers;
-
-            // 构造新 headers (替换 UA)
-            $newHeaders = [];
-            $uaReplaced = false;
-            foreach ($originalHeaders as $header) {
-                if (stripos($header, 'User-Agent:') === 0) {
-                    $newHeaders[] = 'User-Agent: ' . $backupUserAgent;
-                    $uaReplaced = true;
-                } else {
-                    $newHeaders[] = $header;
-                }
-            }
-            if (!$uaReplaced) {
-                $newHeaders[] = 'User-Agent: ' . $backupUserAgent;
-            }
-
-            $this->headers = $newHeaders;
-
-            // 重新请求
-            $retryResponse = $this->request($url);
-            if ($retryResponse) {
-                $data = $this->extractJson($retryResponse, $id);
-            }
-            // 恢复 headers
-            $this->headers = $originalHeaders;
-        }
-        // 如果直接匹配失败，尝试xhslive.php中的高级策略（获取token后请求API）
-        if (!$data) {
-            $token = '';
-            if (preg_match('/token=(.*?)&/', $response, $matches)) {
-                $token = $matches[1];
-            } elseif (preg_match('/"xsec_token":\s*"([^"]+)"/', $response, $matches)) {
-                $token = $matches[1];
-            }
-
-            if ($token) {
-                $apiUrl = "https://www.xiaohongshu.com/discovery/item/{$id}?app_platform=android&ignoreEngage=true&app_version=8.69.5&share_from_user_hidden=true&xsec_source=app_share&type=video&xsec_token={$token}";
-                $apiResponse = $this->request($apiUrl);
-                if ($apiResponse) {
-                    $data = $this->extractJson($apiResponse, $id);
-                }
-            }
-        }
-        if ($data) {
-            return $this->output(200, '解析成功', $data);
-        }
-
-        return $this->output(404, '解析失败，未找到有效内容');
+        $code = $lastStatus === 0 || $lastStatus >= 500 ? 502 : (in_array($lastStatus, [403, 429], true) ? $lastStatus : 404);
+        return $this->output($code,
+            '未取得可用笔记内容，请检查分享 token 是否有效；来源可能要求验证或暂时限制访问');
     }
 
-    /**
-     * 从HTML中提取并解析JSON
-     */
-    private function extractJson($html, $id)
+    private static function extractNote(string $html, string $id): ?array
     {
-        $pattern = '/<script>\s*window.__INITIAL_STATE__\s*=\s*({[\s\S]*?})<\/script>/is';
-        if (preg_match($pattern, $html, $matches)) {
-            $jsonStr = $matches[1];
-            $jsonStr = str_replace('undefined', 'null', $jsonStr);
-            $json = json_decode($jsonStr, true);
-            if (!$json) return null;
-            // 尝试获取笔记详情
-            // 路径1: note -> noteDetailMap -> id -> note
-            $note = $json['note']['noteDetailMap'][$id]['note'] ?? null;
-
-            // 路径2: noteData -> data -> noteData
-            if (!$note) {
-                $note = $json['noteData']['data']['noteData'] ?? null;
-            }
-            if ($note) {
-                return $this->formatNoteData($note);
-            }
-        }
-        return null;
+        if (!preg_match('~window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?})\s*;?\s*</script>~i', $html, $m)) return null;
+        // Normalize only known empty JS values outside strings; never evaluate page code.
+        $json = preg_replace_callback('/"(?:\\\\.|[^"\\\\])*"|\bundefined\b|\bnew (?:Set|Map)\(\[\]\)/',
+            static fn (array $m): string => match ($m[0]) { 'undefined' => 'null', 'new Set([])' => '[]', 'new Map([])' => '{}', default => $m[0] }, $m[1]);
+        $state = json_decode($json, true);
+        $note = $state['note']['noteDetailMap'][$id]['note'] ?? $state['noteData']['data']['noteData'] ?? null;
+        if (!is_array($note) || !$note || (isset($note['noteId']) && (string)$note['noteId'] !== $id)) return null;
+        return $note;
     }
 
-    /**
-     * 处理图片链接，去除水印
-     */
+    /** Keep only metadata belonging to this representation, never source_dimension. */
+    private static function streamCandidate(array $stream, ?string $codec = null): ?array
+    {
+        $url = snapMediaUrl($stream['masterUrl'] ?? $stream['master_url'] ?? $stream['url'] ?? '');
+        if ($url === '') return null;
+        $candidate = ['url' => $url, 'metadata_source' => 'upstream', 'sources' => [['url' => $url]]];
+        foreach (['width' => ['width'], 'height' => ['height'], 'bit_rate' => ['avgBitrate', 'videoBitrate', 'video_bitrate', 'avg_bitrate', 'bitrate'], 'size' => ['size', 'sizeBytes', 'size_bytes']] as $out => $keys) {
+            foreach ($keys as $key) if (is_numeric($stream[$key] ?? null) && (float)$stream[$key] > 0) { $candidate[$out] = (int)$stream[$key]; break; }
+        }
+        if (is_numeric($stream['duration'] ?? null) && $stream['duration'] > 0) $candidate['duration'] = (float)$stream['duration'] / 1000;
+        $codec = strtolower((string)($stream['videoCodec'] ?? $stream['video_codec'] ?? $codec));
+        if (in_array($codec, ['h265', 'hevc'], true)) $candidate['codec'] = 'hevc';
+        elseif (in_array($codec, ['h264', 'avc', 'avc1'], true)) $candidate['codec'] = 'h264';
+        elseif (in_array($codec, ['av1', 'h266', 'vvc'], true)) $candidate['codec'] = $codec;
+        foreach (($stream['backupUrls'] ?? $stream['backup_urls'] ?? []) as $backup) {
+            $backup = snapMediaUrl($backup);
+            if ($backup !== '' && !in_array($backup, array_column($candidate['sources'], 'url'), true)) $candidate['sources'][] = ['url' => $backup];
+        }
+        return $candidate;
+    }
+
+    private function videoCandidates(array $video): array
+    {
+        $candidates = [];
+        foreach (($video['media']['stream'] ?? []) as $codec => $streams) {
+            if (!is_array($streams)) continue;
+            foreach ($streams as $stream) if (is_array($stream) && ($candidate = self::streamCandidate($stream, (string)$codec))) $candidates[] = $candidate;
+        }
+        $mediaV2 = $video['mediaV2'] ?? [];
+        if (is_string($mediaV2)) $mediaV2 = json_decode($mediaV2, true) ?? [];
+        $opaque = $mediaV2['opaque1'] ?? [];
+        if (is_string($opaque)) $opaque = json_decode($opaque, true) ?? [];
+        foreach (['hd_screencast_stream', 'default_screencast_stream'] as $key) {
+            $stream = $opaque[$key] ?? null;
+            if (is_string($stream)) $stream = json_decode($stream, true);
+            if (is_array($stream) && ($candidate = self::streamCandidate($stream))) $candidates[] = $candidate;
+        }
+        $key = $video['consumer']['originVideoKey'] ?? null;
+        if (is_string($key) && preg_match('~^[A-Za-z0-9_/-]+$~D', $key) && !str_contains($key, '..') && !str_starts_with($key, '/')) {
+            $original = ['is_original' => true, 'label' => '原始入口', 'sources' => []];
+            $deadline = microtime(true) + 10;
+            $measured = false;
+            foreach (['qn', 'al', 'qc', 'bd'] as $cdn) {
+                $source = ['url' => 'https://sns-video-' . $cdn . '.xhscdn.com/' . $key];
+                if (!$measured && microtime(true) < $deadline) {
+                    try { $probe = ($this->mediaProbe)($source['url'], $deadline); }
+                    catch (Throwable $e) { $probe = []; }
+                    $metadata = $probe['result']['metadata'] ?? [];
+                    if (isset($metadata['width'], $metadata['height'])) {
+                        $original = array_merge($original, $metadata);
+                        $source['availability'] = 'available';
+                        $original['url'] = $source['url'];
+                        $measured = true;
+                    } elseif (in_array($probe['http_status'] ?? null, [403, 404, 410], true)) $source['availability'] = 'unavailable';
+                }
+                $original['sources'][] = $source;
+            }
+            $original['url'] ??= $original['sources'][0]['url'];
+            // Origin category alone is not evidence of dimensions, bitrate or superiority.
+            $candidates[] = $original;
+        }
+        $unique = [];
+        foreach ($candidates as $candidate) {
+            $key = $candidate['url'];
+            if (!isset($unique[$key])) { $unique[$key] = $candidate; continue; }
+            $previous = $unique[$key];
+            $unique[$key] = ($candidate['metadata_source'] ?? '') === 'mp4' ? array_replace($previous, $candidate) : $previous + $candidate;
+            $sources = [];
+            foreach (array_merge($previous['sources'], $candidate['sources']) as $source) $sources[$source['url']] = ($sources[$source['url']] ?? []) + $source;
+            $unique[$key]['sources'] = array_values($sources);
+        }
+        return array_values($unique);
+    }
+
+    private function formatNoteData(array $note): array
+    {
+        $type = ($note['type'] ?? '') === 'video' ? 'video' : 'image';
+        $images = $note['imageList'] ?? [];
+        $first = $images[0] ?? [];
+        $cover = $first['urlPre'] ?? $first['urlDefault'] ?? $first['url'] ?? $note['cover']['url'] ?? '';
+        if ($cover === '' && !empty($note['video']['image']['thumbnailFileid'])) $cover = 'https://sns-img-hw.xhscdn.com/' . $note['video']['image']['thumbnailFileid'];
+        if ($cover === '' && !empty($note['cover']['fileId'])) $cover = 'https://sns-img-hw.xhscdn.com/' . $note['cover']['fileId'];
+        $result = ['type' => $type, 'title' => $note['title'] ?? '', 'desc' => $note['desc'] ?? '',
+            'author' => ['name' => $note['user']['nickname'] ?? $note['user']['nickName'] ?? '', 'id' => $note['user']['userId'] ?? '', 'avatar' => $note['user']['avatar'] ?? ''],
+            'cover' => $this->processImageUrl($cover), 'images' => [], 'live_photo' => [],
+            'video_candidates' => $this->videoCandidates($note['video'] ?? [])];
+        if (isset($note['noteId'])) $result['id'] = (string)$note['noteId'];
+        if (is_numeric($note['time'] ?? null)) $result['create_time'] = $note['time'];
+        foreach (['likedCount' => 'like_count', 'commentCount' => 'comment_count', 'shareCount' => 'share_count', 'collectedCount' => 'collect_count'] as $from => $to) {
+            if (is_numeric($note['interactInfo'][$from] ?? null)) $result['statistics'][$to] = (int)$note['interactInfo'][$from];
+        }
+        // imageList on a video note is its cover, not a separate image-album item.
+        if ($type !== 'video') foreach ($images as $image) {
+            $imageUrl = $this->processImageUrl($image['url'] ?? $image['urlDefault'] ?? $image['urlPre'] ?? '');
+            if ($imageUrl === '') continue;
+            $result['images'][] = $imageUrl;
+            $live = $this->videoCandidates(['media' => ['stream' => $image['stream'] ?? []]]);
+            if ($live) {
+                $result['live_photo'][] = ['image' => $imageUrl, 'video' => $live[0]['url'], 'video_candidates' => $live];
+            }
+        }
+        if ($result['live_photo']) $result['type'] = 'live';
+        return $result;
+    }
+
     private function processImageUrl($url)
     {
         if (empty($url)) {
@@ -320,158 +277,4 @@ class XiaohongshuParser
         return $url;
     }
 
-    /**
-     * 格式化笔记数据
-     */
-    private function formatNoteData($note)
-    {
-        $type = $note['type'] ?? 'unknown';
-        // 标准化类型: normal -> image
-        if ($type === 'normal') {
-            $type = 'image';
-        }
-
-        // 提取封面URL
-        $coverUrl = '';
-
-        // 对于视频类型，优先从 imageList 获取（视频的封面在 imageList 中）
-        if (!empty($note['imageList'])) {
-            $firstImage = $note['imageList'][0];
-            // 优先使用 urlPre 或 urlDefault（视频类型 url 字段通常为空）
-            $coverUrl = $firstImage['urlPre'] ?? ($firstImage['urlDefault'] ?? ($firstImage['url'] ?? ''));
-        }
-
-        // 如果仍未获取到，尝试从 video.image.thumbnailFileid 获取
-        if (empty($coverUrl) && $type == 'video' && !empty($note['video']['image']['thumbnailFileid'])) {
-            $thumbnailFileid = $note['video']['image']['thumbnailFileid'];
-            $coverUrl = 'https://sns-img-hw.xhscdn.com/' . $thumbnailFileid;
-        }
-
-        // 如果仍未获取到，尝试从 cover 字段获取
-        if (empty($coverUrl) && !empty($note['cover']['url'])) {
-            $coverUrl = $note['cover']['url'];
-        }
-
-        // 如果有 cover.fileId，手动拼接
-        if (empty($coverUrl) && !empty($note['cover']['fileId'])) {
-            $coverUrl = 'https://sns-img-hw.xhscdn.com/' . $note['cover']['fileId'] . '?imageView2/2/w/0/format/jpg';
-        }
-
-        $result = [
-            'type' => $type, // video, image, live
-            'title' => $note['title'] ?? '',
-            'desc' => $note['desc'] ?? '',
-            'author' => [
-                'name' => $note['user']['nickname'] ?? $note['user']['nickName'] ?? '',
-                'id' => $note['user']['userId'] ?? '',
-                'avatar' => $note['user']['avatar'] ?? '',
-            ],
-            'cover' => $this->processImageUrl($coverUrl),
-            'url' => null,
-            'images' => [],
-            'live_photo' => [] // 实况图
-        ];
-
-        // 处理视频
-        if ($result['type'] == 'video') {
-            $videoUrl = null;
-            $videoBackup = null;
-
-            // 提取所有可用的视频流
-            $streams = [];
-
-            // 优先收集 h265 (通常无水印且画质更好)
-            if (isset($note['video']['media']['stream']['h265']) && is_array($note['video']['media']['stream']['h265'])) {
-                foreach ($note['video']['media']['stream']['h265'] as $stream) {
-                    $stream['_codec'] = 'h265';
-                    $streams[] = $stream;
-                }
-            }
-
-            // 其次收集 h264
-            if (isset($note['video']['media']['stream']['h264']) && is_array($note['video']['media']['stream']['h264'])) {
-                foreach ($note['video']['media']['stream']['h264'] as $stream) {
-                    $stream['_codec'] = 'h264';
-                    $streams[] = $stream;
-                }
-            }
-
-            // 如果有可用流，按画质排序
-            if (!empty($streams)) {
-                // 按平均码率降序排序，但优先保留 h265
-                usort($streams, function($a, $b) {
-                    // 1. 优先 h265
-                    $codecA = $a['_codec'] ?? '';
-                    $codecB = $b['_codec'] ?? '';
-                    if ($codecA !== $codecB) {
-                        if ($codecA === 'h265') return -1;
-                        if ($codecB === 'h265') return 1;
-                    }
-
-                    // 2. 其次按码率
-                    $bitrateA = $a['avgBitrate'] ?? ($a['videoBitrate'] ?? 0);
-                    $bitrateB = $b['avgBitrate'] ?? ($b['videoBitrate'] ?? 0);
-                    return $bitrateB - $bitrateA;
-                });
-
-                // 取最高画质为主链接
-                $videoUrl = $streams[0]['masterUrl'] ?? null;
-
-                // 取第二高画质为备用链接 (如果存在)
-                if (count($streams) > 1) {
-                    $videoBackup = $streams[1]['masterUrl'] ?? null;
-                }
-            }
-
-            // 兜底逻辑：如果上面的流都没获取到
-            if (!$videoUrl && isset($note['video']['consumer']['originVideoKey'])) {
-                $videoUrl = 'http://sns-video-bd.xhscdn.com/' . $note['video']['consumer']['originVideoKey'];
-            }
-
-            $result['url'] = $videoUrl;
-            $result['video_backup'] = $videoBackup; // 新增备用链接字段
-        }
-
-        // 处理图片和实况
-        if (!empty($note['imageList'])) {
-            foreach ($note['imageList'] as $img) {
-                $imageUrl = null;
-                if (!empty($img['url'])) {
-                    $imageUrl = $img['url'];
-                } elseif (!empty($img['urlDefault'])) {
-                    $imageUrl = $img['urlDefault'];
-                } elseif (!empty($img['urlPre'])) {
-                    $imageUrl = $img['urlPre'];
-                }
-
-                if ($imageUrl) {
-                    $result['images'][] = $this->processImageUrl($imageUrl);
-                }
-
-                // 实况图 (Live Photo)
-                // 实况图通常在 imageList 的 item 中有 stream 字段 (h264等)
-                // 或者有 livePhoto: true 标志
-                $liveVideoUrl = null;
-                if (!empty($img['stream']['h264'][0]['masterUrl'])) {
-                    $liveVideoUrl = $img['stream']['h264'][0]['masterUrl'];
-                } elseif (!empty($img['stream']['h265'][0]['masterUrl'])) {
-                    $liveVideoUrl = $img['stream']['h265'][0]['masterUrl'];
-                }
-
-                if ($liveVideoUrl) {
-                    $result['live_photo'][] = [
-                        'image' => $this->processImageUrl($imageUrl ?? ''),
-                        'video' => $liveVideoUrl
-                    ];
-                }
-            }
-
-            // 如果提取到了实况视频，修正类型为实况
-            if (!empty($result['live_photo'])) {
-                $result['type'] = 'live';
-            }
-        }
-
-        return $result;
-    }
 }

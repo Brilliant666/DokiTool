@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "gone-one",
+        "type": "video",
+        "default": null,
+        "variants": [
+          {
+            "id": "unavailable-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/gone-file",
+                  "availability": "unavailable"
+                }
+              ]
+            }
+          }
+        ],
+        "default_unavailable_reason": "unavailable"
+      }
+    ]
+  }
+}

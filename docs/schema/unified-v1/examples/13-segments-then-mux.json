@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_segments",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_segments/synthetic-001",
+    "items": [
+      {
+        "id": "segment-one",
+        "type": "video",
+        "default": null,
+        "variants": [
+          {
+            "id": "seg4k",
+            "delivery": {
+              "kind": "mux",
+              "resources": [
+                {
+                  "id": "seg4k-video",
+                  "role": "video",
+                  "metadata": {
+                    "width": 3840,
+                    "height": 2160,
+                    "has_audio": false,
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "segments",
+                    "init": {
+                      "sources": [
+                        {
+                          "url": "https://media.example.test/init.mp4"
+                        }
+                      ],
+                      "byte_range": {
+                        "start": 0,
+                        "end_inclusive": 999
+                      }
+                    },
+                    "pieces": [
+                      {
+                        "sources": [
+                          {
+                            "url": "https://media.example.test/segment-1.m4s"
+                          }
+                        ],
+                        "index": 1,
+                        "duration_ms": 6250
+                      },
+                      {
+                        "sources": [
+                          {
+                            "url": "https://media.example.test/segment-2.m4s"
+                          }
+                        ],
+                        "index": 2,
+                        "duration_ms": 6250
+                      }
+                    ],
+                    "join": "remux",
+                    "output": {
+                      "container": "mp4",
+                      "extension": "mp4"
+                    }
+                  }
+                },
+                {
+                  "id": "seg4k-audio",
+                  "role": "audio",
+                  "metadata": {
+                    "has_audio": true,
+                    "audio_codec": "mp4a.40.2",
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/seg4k-audio"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "output": {
+                "container": "mp4",
+                "extension": "mp4",
+                "mime_type": "video/mp4"
+              }
+            }
+          }
+        ],
+        "default_unavailable_reason": "processing_required"
+      }
+    ]
+  }
+}

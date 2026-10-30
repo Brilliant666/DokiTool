@@ -1,134 +1,220 @@
 import type { DeliveryStatus, DownloadTransport } from "../downloads/types";
 
-export interface AuthorInfo {
+export interface Source {
   id?: string;
-  name?: string;
-  nickname?: string;
-  avatar?: string;
-  avatar_thumb?: string;
-  cover?: string;
-  user_name?: string;
-  [key: string]: unknown;
+  url: string;
+  access?: "direct" | "relay";
+  expires_at?: string;
+  size_bytes?: number;
+  availability?: "unknown" | "available" | "unavailable";
+  browser_fetch?: "unknown" | "allowed" | "blocked";
 }
-export interface VideoMetadata {
+export interface MediaMetadata {
   width?: number;
   height?: number;
-  bit_rate?: number;
-  /** Historical frontend alias of bit_rate. */
-  bitrate?: number;
-  codec?: string;
+  duration_ms?: number;
+  fps?: number;
+  bitrate_bps?: number;
+  video_bitrate_bps?: number;
+  audio_bitrate_bps?: number;
+  video_codec?: string;
+  audio_codec?: string;
+  has_audio?: boolean;
+  audio_language?: string;
+  audio_channels?: number;
+  sample_rate_hz?: number;
+  container?: string;
+  extension?: string;
+  mime_type?: string;
+  evidence?: "upstream" | "probe" | "mixed" | "unknown";
+  field_evidence?: Record<string, "upstream" | "probe">;
 }
-export interface VideoBackup extends VideoMetadata {
-  url: string;
-  /** Original CDN URL; url may point to the signed same-origin delivery route. */
-  original_url?: string;
-  playback_url?: string;
-  media_delivery?: "weibo-relay";
+export interface FileDelivery {
+  kind: "file";
+  sources: Source[];
+}
+export interface OutputFormat {
+  container: string;
+  extension: string;
+  mime_type?: string;
+}
+export interface ManifestDelivery {
+  kind: "hls" | "dash";
+  sources: Source[];
+  scope: "single" | "adaptive";
+  selection?: {
+    video_representation_id?: string;
+    audio_representation_id?: string;
+    audio_group_id?: string;
+  };
+  output?: OutputFormat;
+}
+export interface Chunk {
+  sources: Source[];
+  byte_range?: { start: number; end_inclusive: number };
+}
+export interface SegmentDelivery {
+  kind: "segments";
+  init?: Chunk;
+  pieces: (Chunk & { index: number; duration_ms?: number })[];
+  join: "byte_concat" | "remux";
+  join_evidence?: "validated_fragment_layout";
+  output?: OutputFormat;
+}
+export type LeafDelivery = FileDelivery | ManifestDelivery | SegmentDelivery;
+export interface Resource {
+  id: string;
+  role: "video" | "audio" | "image" | "motion" | "subtitle" | "media" | "muxed";
+  metadata?: MediaMetadata;
+  delivery: LeafDelivery;
+}
+export interface PairDelivery {
+  kind: "pair";
+  resources: Resource[];
+}
+export interface MuxDelivery {
+  kind: "mux";
+  resources: Resource[];
+  output: OutputFormat;
+}
+export type Delivery = LeafDelivery | PairDelivery | MuxDelivery;
+export type Capability =
+  | "hls"
+  | "dash"
+  | "mux"
+  | "pair"
+  | "segment_remux"
+  | "segment_byte_concat";
+export interface ReadyVariant {
+  state?: "ready";
+  id: string;
   label?: string;
-  quality?: string;
-  format?: string;
-  [key: string]: unknown;
+  provenance?: "original_endpoint" | "transcode" | "unknown";
+  metadata?: MediaMetadata;
+  delivery: Delivery;
 }
-export interface LivePhoto {
-  image?: string;
-  video?: string;
-  [key: string]: unknown;
+export interface DeferredVariant {
+  id: string;
+  state: "deferred";
+  label?: string;
+  provenance?: "original_endpoint" | "transcode" | "unknown";
+  reason: { code: string; message: string };
 }
-export interface MusicResource {
-  url?: string;
-  title?: string;
-  author?: string;
-  cover?: string;
-  [key: string]: unknown;
-}
-/** 单个视频/单集（用于 P 分集、多视频返回） */
-export interface MediaVideo extends VideoMetadata {
-  /** 1 起始（后端 `index`） */
-  index: number;
-  /** 展示名称，缺省回退 `P${index}` */
-  title?: string;
-  /** 完整直链（可用）；B 站多 P 合集中的某一 P 在解析前可能为空，需按 `index`/`_cid` 懒解析 */
+export type Variant = ReadyVariant | DeferredVariant;
+export interface DefaultTarget {
+  variant_id: string;
+  source_id?: string;
   url: string;
-  /** 时长（秒），可空 */
-  duration?: number | null;
-  /** 已格式化时长文本（如 "00:15:22"）；无则由前端按 duration 推导 */
-  durationFormat?: string;
-  /** 单集封面链接，可空 */
-  cover?: string;
-  /** 画质/规格标签（可空） */
-  quality?: string;
-  /** 该集不可用时的错误文案；有 error 则 url 为空且不可下载/不可选中 */
-  error?: string;
-  /** 分段视频（快手长视频等分片）；下载时合并为单文件 */
-  segments?: string[];
-  /** B 站分 P 的 cid，用于懒解析该 P 的真实地址 */
-  _cid?: string;
-  /** Stable source for a saved download task; must not follow a newly parsed work. */
-  _sourceUrl?: string;
-  /** B 站合集分集所属视频的 BV/av 号，用于懒解析该集真实地址 */
-  _bvid?: string;
-  /** 合集分集在其 BV 内的分 P 号（该分集视频本身是多 P 时 >1） */
-  _page?: number;
-  /** 所属合集序号（0 起始；合集/多合集解析时存在） */
-  _sectionIndex?: number;
-  /** 合集内序号（1 起始，仅用于展示） */
-  _epNo?: number;
-  /** 解析入口命中的当前集（合集解析时用于初始定位） */
-  _current?: boolean;
-  /** 该集 url 是否已解析（B 站多 P 懒解析状态） */
-  _resolved?: boolean;
-  /** 该集正在解析中（UI 状态） */
-  _resolving?: boolean;
-  [key: string]: unknown;
+  access?: "direct" | "relay";
+  expires_at?: string;
 }
-/** 单个合集（B 站合集/多合集中的一个分区） */
-export interface MediaCollection {
-  /** 0 起始合集序号 */
-  index: number;
-  /** 合集标题（如 "正片"、"番外"） */
-  title: string;
-  /** 合集封面，可空 */
-  cover?: string;
-  /** 合集内分集 */
-  episodes: MediaVideo[];
+export interface MediaError {
+  code: string;
+  message: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
 }
-export interface ParsedMedia extends VideoMetadata {
-  type?: "video" | "image" | "live" | string;
+export interface ItemBase {
+  id: string;
+  type: "video" | "image" | "live_photo" | "audio";
+  index?: number;
   title?: string;
-  desc?: string;
-  author?: string | AuthorInfo;
-  avatar?: string;
-  cover?: string;
-  url?: string | null;
-  original_url?: string | null;
-  playback_url?: string;
-  media_delivery?: "weibo-relay";
-  quality?: string;
-  duration?: number | null;
-  images: string[];
-  live_photo: LivePhoto[];
-  video_backup: VideoBackup[];
-  music: MusicResource;
-  extra: Record<string, unknown>;
-  /** 多集/多P 条目；单集时可为空；合集解析时为所有合集拍平后的全量分集（带 _sectionIndex） */
-  videos?: MediaVideo[];
-  /** 合集/多合集列表（B 站合集解析时存在） */
-  collections?: MediaCollection[];
-  /** 总集数（后端字段），缺失时取 videos.length */
-  totalVideos?: number;
-  /** 分段视频（快手长视频等）：多个直链分片，下载时合并为单文件 */
-  segments?: string[];
-  /** 是否为分段视频（仅第一个分片作为 url） */
-  segmented?: boolean;
-  /** 解析时的原始输入链接（用于 B 站多 P 按 p=N 二次解析） */
-  _sourceUrl?: string;
-  /** 目标当前选中索引，0 起始（UI 状态）
-   * @deprecated 由 useVideoSelection 持有，此字段仅透传用 */
-  currentVideoIndex?: number;
-  /** 平台 key 透传，如 "kuaishou" / "bilibili" */
-  platform?: string;
-  [key: string]: unknown;
+  source_url?: string;
+  cover?: Source;
+  duration_ms?: number;
 }
+export interface ReadyItem extends ItemBase {
+  state?: "ready";
+  variants: Variant[];
+  default: DefaultTarget | null;
+  default_unavailable_reason?:
+    | "processing_required"
+    | "needs_refresh"
+    | "needs_resolve"
+    | "unavailable";
+  resolve_url?: string;
+  higher_quality_variants?: { variant_id: string; requires: Capability[] }[];
+}
+export interface DeferredItem extends ItemBase {
+  state: "deferred";
+  default: null;
+  default_unavailable_reason: "needs_resolve";
+  resolve_url: string;
+}
+export interface UnavailableItem extends ItemBase {
+  state: "unavailable";
+  default: null;
+  default_unavailable_reason: "unavailable";
+  error: MediaError;
+}
+export type MediaItem = ReadyItem | DeferredItem | UnavailableItem;
+export interface Author {
+  id?: string;
+  name?: string;
+  description?: string;
+  url?: string;
+  avatar?: Source;
+}
+export interface MediaGroup {
+  id: string;
+  kind: "multipart" | "album" | "collection";
+  item_ids: string[];
+  title?: string;
+  total_count?: number;
+  complete?: boolean;
+}
+export interface Attachment {
+  id: string;
+  role: "background_audio" | "subtitle";
+  resource: Resource;
+  title?: string;
+  language?: string;
+  author?: Author;
+  cover?: Source;
+}
+export interface UnifiedMedia {
+  platform: string;
+  content_id?: string;
+  source_url?: string;
+  items: MediaItem[];
+  default_item_id?: string;
+  generated_at?: string;
+  refresh_url?: string;
+  title?: string;
+  description?: string;
+  author?: Author;
+  cover?: Source;
+  published_at?: string;
+  statistics?: Partial<
+    Record<
+      "plays" | "views" | "likes" | "comments" | "shares" | "saves",
+      { value: number; state?: "known" | "unverified" }
+    >
+  >;
+  tags?: string[];
+  groups?: MediaGroup[];
+  attachments?: Attachment[];
+  extra?: Record<string, unknown>;
+}
+export type MediaEnvelope =
+  | {
+      schema_version: "1.0";
+      code: "OK";
+      data: UnifiedMedia;
+      request_id?: string;
+      warnings?: { code: string; message: string; item_id?: string }[];
+    }
+  | {
+      schema_version: "1.0";
+      code: string;
+      error: MediaError;
+      request_id?: string;
+    };
+export interface MediaSelection {
+  variant_id: string;
+  source_id?: string;
+}
+
 export type ToastType = "success" | "error" | "warning" | "info";
 export interface ToastMessage {
   id: string;
@@ -152,7 +238,7 @@ export interface DownloadTask {
   averageSpeed?: number;
   /** Active transfer duration, excluding preparation and queue waits. */
   transferElapsed?: number;
-  observation?: 'unknown' | 'stalled';
+  observation?: "unknown" | "stalled";
   workerBuild?: string;
   /** Bytes actually received, including failed routes when retried. */
   transferred?: number;

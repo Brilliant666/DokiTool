@@ -1,8 +1,9 @@
 # Browser download delivery
 
 The existing download button resolves the selected work, episode and source before
-handing a complete file to `frontend/src/downloads/manager.ts`. Parser APIs and the
-main page layout are unchanged; task-panel behavior is described below. Ordinary
+handing a complete file to `frontend/src/downloads/manager.ts`. Parser APIs now use
+the [unified media v1 contract](API.md); the confirmed layout and PR #7 download
+transport/lifecycle modules are retained. Ordinary
 CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
 
@@ -13,6 +14,28 @@ contract. The latest SW file-integrity results are under
 [State and admission consolidation](#state-and-admission-consolidation-2026-10-30),
 followed by the task-panel acceptance. Publishing the source or passing a local
 build does not itself establish the production version.
+
+## Unified media input boundary
+
+The backend selects each item's complete-file `default`. The frontend validates
+its local variant/source reference and reads it without ranking alternatives.
+An explicit user selection remains separate from that default; invalid/expired
+references require an explicit refresh or selection instead of silently using a
+different quality. Multi-part resolution uses the backend's opaque item ID.
+
+New download plans freeze the selected item, version, source, filename and routes
+before entering the existing manager. Later parsing and resolution cannot rewrite
+an active plan. File delivery continues to use native attachment eligibility,
+Service Worker streaming and capability-only Blob fallback. PR #7 task snapshots,
+refresh recovery, admission, bridge retention and natural Worker upgrades remain
+unchanged; there is no migration or forced Worker activation for this schema switch.
+
+Explicit HLS, validated byte-concatenable segments and live-photo pairs use their
+corresponding media preparation paths. DASH/mux/remux are preserved and explained
+as unsupported, never downloaded as naked video tracks. A deferred variant has no
+delivery URL and cannot be passed to the manager. The historical browser records
+below prove PR #7 lifecycle behavior; they are not new end-to-end acceptance of
+the unified parser or of any real platform's current availability.
 
 ## Policy and modules
 

@@ -1,0 +1,2 @@
+# Development/CI contract validation only; not an application runtime dependency.
+jsonschema>=4.17.3,<5

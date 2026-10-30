@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "file-and-mux",
+        "type": "video",
+        "default": {
+          "variant_id": "1080-file",
+          "url": "https://media.example.test/1080-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "4k-mux",
+            "delivery": {
+              "kind": "mux",
+              "resources": [
+                {
+                  "id": "4k-mux-video",
+                  "role": "video",
+                  "metadata": {
+                    "width": 3840,
+                    "height": 2160,
+                    "has_audio": false,
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/4k-mux-video"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "4k-mux-audio",
+                  "role": "audio",
+                  "metadata": {
+                    "has_audio": true,
+                    "audio_codec": "mp4a.40.2",
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/4k-mux-audio"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "output": {
+                "container": "mp4",
+                "extension": "mp4",
+                "mime_type": "video/mp4"
+              }
+            }
+          },
+          {
+            "id": "1080-file",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/1080-file.mp4"
+                }
+              ]
+            }
+          }
+        ],
+        "higher_quality_variants": [
+          {
+            "variant_id": "4k-mux",
+            "requires": [
+              "mux"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

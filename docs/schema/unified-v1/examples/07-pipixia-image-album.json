@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "pipixia",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/pipixia/synthetic-001",
+    "items": [
+      {
+        "id": "image-1",
+        "type": "image",
+        "index": 1,
+        "default": {
+          "variant_id": "image-1-jpg",
+          "url": "https://media.example.test/image-1-jpg.mp4"
+        },
+        "variants": [
+          {
+            "id": "image-1-jpg",
+            "metadata": {
+              "width": 1200,
+              "height": 1600,
+              "container": "jpeg",
+              "extension": "jpg",
+              "mime_type": "image/jpeg",
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/image-1-jpg.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "image-2",
+        "type": "image",
+        "index": 2,
+        "default": {
+          "variant_id": "image-2-jpg",
+          "url": "https://media.example.test/image-2-jpg.mp4"
+        },
+        "variants": [
+          {
+            "id": "image-2-jpg",
+            "metadata": {
+              "width": 1200,
+              "height": 1600,
+              "container": "jpeg",
+              "extension": "jpg",
+              "mime_type": "image/jpeg",
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/image-2-jpg.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "default_item_id": "image-1",
+    "groups": [
+      {
+        "id": "album",
+        "kind": "album",
+        "item_ids": [
+          "image-1",
+          "image-2"
+        ],
+        "total_count": 2,
+        "complete": true
+      }
+    ]
+  }
+}

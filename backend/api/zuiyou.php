@@ -188,6 +188,7 @@ function zuiyouResponse(array $data): array
         'title' => $post['content'] ?? '',
         'cover' => snapMediaUrl($first['urls']['540_webp']['urls'][0] ?? ($pictures[0] ?? null)),
         'url' => $url !== '' ? $url : null,
+        'private_videos' => array_values($videos),
     ];
     if ($url === '') { $result['images'] = $pictures; }
     return outputJson(200, '解析成功', $result);

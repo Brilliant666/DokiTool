@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "toutiao",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/toutiao/synthetic-001",
+    "items": [
+      {
+        "id": "toutiao-one",
+        "type": "video",
+        "default": {
+          "variant_id": "toutiao-one-file",
+          "url": "https://media.example.test/toutiao-one-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "toutiao-one-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/toutiao-one-file.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "author": {
+      "id": "42",
+      "name": "合成作者",
+      "description": "作者简介，非作品描述"
+    },
+    "statistics": {
+      "plays": {
+        "value": 12
+      },
+      "views": {
+        "value": 34,
+        "state": "unverified"
+      }
+    }
+  }
+}

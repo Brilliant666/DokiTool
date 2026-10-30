@@ -2,9 +2,19 @@
 
 此文档与 `ops/examples/` 都是通用示例，不包含生产配置、账号或凭据。仓库提交不会触发线上更新。
 
-## PR #7：下载 Worker 发布与升级
+## 统一媒体 v1 切换
 
-本轮是前端更新，不修改后端解析 API、媒体池或数据库，也没有数据库迁移。沿用现有访问控制、密钥、出网隔离和 PHP-FPM 配置；下文的首次建站及微博服务配置要求不是本轮重新安装或重新授权的步骤。候选代码、最终合并提交、构建清单和实际部署版本需分别记录，本文不表示已经合并或上线。
+这是九平台、网关和前端的合同切换，不能只替换前端。发布包必须包含同一提交的 `frontend/dist/`、`backend/` 以及 `docs/schema/unified-v1/unified-v1.schema.json`；PHP 从源码相对位置读取 schema，缺失文件不能用跳过验证兜底。后端注册表 `backend/config/platforms.json` 与前端生成的目录快照须来自同一版本。无数据库迁移，无 Go 重写，不增加 Python/curl_cffi 产品运行依赖。
+
+本任务交付到 Draft PR，不授权或表示已合并、上线。后续发布时保留上一套完整应用产物，在受控窗口成套切换。Caddy 精确入口改为 `/api/parse`、`/api/resolve`、`/api/platforms`；旧解析路径保留可读的版本错误，不能继续返回旧 JSON，也不能落入 SPA 首页。内部 listener 使用固定 `/parse?platform=...&url=...`。微博签名媒体路径、共享密钥和独立媒体池继续沿用。
+
+新客户端请求 `schema_version=1.0`；旧页面调用旧 API 时提示更新页面。不得为此清空任务存储、注销 Worker、强制 `skipWaiting` 或 `clients.claim`。PR #7 的下载模块、Worker 和 bridge 沿用原字节与生命周期；已有任务仍使用冻结的计划和原 Worker，新的解析合同只影响新建任务。刷新后的解析与已有下载恢复分别验收。
+
+候选验证至少包含：独立 schema/语义验证、九平台实际适配器离线输出、两进程网关 HTTP 回归、前端构建与交互、选择/分 P/混合媒体，以及完整文件交给原下载链路后的实际保存。真实平台样本与受控夹具分别记录；小红书 4K 尚未完成的 PHP 页面端到端和浏览器完整保存不能写为通过。未来回退同样回退前后端和 schema 整套，保留旧 hash 静态资源与活动 Worker。
+
+## PR #7：下载 Worker 发布与升级（既有机制）
+
+PR #7 是前端更新，不修改后端解析 API、媒体池或数据库。下述内容保留其 Worker 发布机制，不表示本次统一合同也是纯前端更新。沿用现有访问控制、密钥、出网隔离和 PHP-FPM 配置；首次建站及微博服务配置要求不是每次发布都重新安装的步骤。候选代码、最终合并提交、构建清单和实际部署版本需分别记录。
 
 必须整体发布同一次 `npm run build` 生成的 `frontend/dist/`，其中包括 `downloads/worker.js`（BUILD 为 `downloads-20261030.4`）和 `downloads/bridge.html`。本次 bridge 原文件为 198 字节，包含 `id="dokitool-download-bridge"`，响应不能是 SPA 首页。不能只更新主页面或 JS chunk，也不能漏掉 bridge。保留前一版产物和既有 hash 静态文件，按实际发布清单核对字节数及 SHA-256。
 
@@ -51,11 +61,11 @@ bridge 是受 Worker 控制的同源 HTML 文档，用于在下载期间保留�
 
 ## 服务结构
 
-使用 Caddy 提供 HTTPS 与 `frontend/dist/` 静态文件。六个精确解析 API 路径交给 `backend/public/index.php`；另有固定的 `/api/media/weibo` 媒体入口，必须交给独立媒体 FPM 池。其他 `/api/*` 返回 JSON 404。不要公开整个源码目录，也不要把原始 `backend/api/` 作为静态根或任意 PHP 执行根。
+使用 Caddy 提供 HTTPS 与 `frontend/dist/` 静态文件。三个统一 JSON API 路径及旧入口的版本错误交给 `backend/public/index.php`；另有固定的 `/api/media/weibo` 媒体入口，必须交给独立媒体 FPM 池。其他 `/api/*` 返回 JSON 404。不要公开整个源码目录，也不要把原始 `backend/api/` 作为静态根或任意 PHP 执行根。
 
 聚合解析使用 HTTP 自请求到 loopback 内部 listener，再进入 `backend/internal/index.php`。采用独立服务账户和专用 PHP-FPM 实例，三个池分别服务公开解析、内部叶子解析及媒体传输。同一个池即使有多个 worker，也可能在聚合请求占满后互相等待。单进程 `php -S` 仅适合下文的两个独立测试服务，不适合生产。
 
-PHP 使用受支持的 8.x 版本，启用 cURL、OpenSSL、JSON、PCRE/filter/标准流支持，并安装有效 CA 证书。无需 Composer 或数据库。三个池的 worker 数量、内存、超时和日志限制需按机器容量验证，示例数值不代表性能验收。
+PHP 使用受支持的 8.x 版本，代码最低要求 8.1，启用 cURL、OpenSSL、JSON、PCRE/filter/标准流支持，并安装有效 CA 证书。无需 Composer 或数据库。三个池的 worker 数量、内存、超时和日志限制需按机器容量验证，示例数值不代表性能验收。
 
 ## 配置示例
 
@@ -114,7 +124,7 @@ php -S 127.0.0.1:19187 -t backend/tests backend/tests/mock-internal.php
 3. 单独检查其健康响应：
 
 ```sh
-curl -H 'Host: snap.dokitool.com' 'http://127.0.0.1:19187/parse/douyin?url=https%3A%2F%2Fv.douyin.com%2Ffixture'
+curl -H 'Host: snap.dokitool.com' 'http://127.0.0.1:19187/parse?platform=douyin&url=https%3A%2F%2Fv.douyin.com%2Ffixture'
 ```
 
 4. 第二个终端为公开网关设置测试环境，再启动：

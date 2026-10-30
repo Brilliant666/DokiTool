@@ -118,7 +118,7 @@ function processApiResponse($apiResponse)
         'title' => $json['content'] ?? '',
         'cover' =>  "https://file.ippzone.com/img/frame/id/".($videoData[0]['thumb'] ?? ''),
         'url' => $url,
-        'video' => $url
+        'private_videos' => $videoData
     ];
     return formatResponse(200, '解析成功', $arr);
 }

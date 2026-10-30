@@ -29,13 +29,15 @@ function snapWeiboMediaBase64(string $value): string
 }
 
 /** Called only by the public adapter after a successful, registered Weibo parse. */
-function snapWeiboMediaUrl(string $url, ?string $key = null, ?int $now = null): ?string
+function snapWeiboMediaUrl(string $url, ?string $key = null, ?int $now = null, ?int $expiresAt = null): ?string
 {
     $key = snapWeiboMediaKey($key);
     if ($key === null || !snapWeiboMediaAllowedUrl($url)) return null;
     $now ??= time();
+    $expiresAt = min($expiresAt ?? $now + SNAP_WEIBO_MEDIA_TTL, $now + SNAP_WEIBO_MEDIA_TTL);
+    if ($expiresAt <= $now) return null;
     $payload = snapWeiboMediaBase64(json_encode(['v' => 1, 'u' => $url, 'iat' => $now,
-        'exp' => $now + SNAP_WEIBO_MEDIA_TTL], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        'exp' => $expiresAt], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     $signature = snapWeiboMediaBase64(hash_hmac('sha256', $payload, $key, true));
     return '/api/media/weibo?ticket=' . $payload . '.' . $signature;
 }
@@ -54,7 +56,7 @@ function snapWeiboMediaVerifyTicket(string $ticket, ?string $key = null, ?int $n
         || !is_string($payload['u'] ?? null) || !snapWeiboMediaAllowedUrl($payload['u'])
         || !is_int($payload['iat'] ?? null) || !is_int($payload['exp'] ?? null)
         || $payload['iat'] > $now || $payload['exp'] <= $now
-        || $payload['exp'] - $payload['iat'] !== SNAP_WEIBO_MEDIA_TTL) return null;
+        || $payload['exp'] <= $payload['iat'] || $payload['exp'] - $payload['iat'] > SNAP_WEIBO_MEDIA_TTL) return null;
     return $payload;
 }
 

@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "code": "SERVICE_NOT_CONFIGURED",
+  "error": {
+    "code": "SERVICE_NOT_CONFIGURED",
+    "message": "合成：媒体签名服务尚未配置"
+  }
+}

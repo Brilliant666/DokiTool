@@ -1,87 +1,106 @@
 <script setup>
-import AppIcon from './AppIcon.vue'
-import { ref } from 'vue'
-import douyinArtwork from '../assets/platforms/douyin.png'
-import kuaishouArtwork from '../assets/platforms/kuaishou.ico'
-import bilibiliArtwork from '../assets/platforms/bilibili.ico'
-import xhsArtwork from '../assets/platforms/xhs.ico'
-import toutiaoArtwork from '../assets/platforms/toutiao.ico'
-import weiboArtwork from '../assets/platforms/weibo.svg'
-import pipixiaArtwork from '../assets/platforms/pipixia.png'
-import pipigxArtwork from '../assets/platforms/pipigx.ico'
-import zuiyouArtwork from '../assets/platforms/zuiyou.png'
-import { supportedPlatforms } from '../utils/platforms'
+import AppIcon from "./AppIcon.vue";
+import { ref, computed } from "vue";
+import douyinArtwork from "../assets/platforms/douyin.png";
+import kuaishouArtwork from "../assets/platforms/kuaishou.ico";
+import bilibiliArtwork from "../assets/platforms/bilibili.ico";
+import xhsArtwork from "../assets/platforms/xhs.ico";
+import toutiaoArtwork from "../assets/platforms/toutiao.ico";
+import weiboArtwork from "../assets/platforms/weibo.svg";
+import pipixiaArtwork from "../assets/platforms/pipixia.png";
+import pipigxArtwork from "../assets/platforms/pipigx.ico";
+import zuiyouArtwork from "../assets/platforms/zuiyou.png";
+import { supportedPlatforms } from "../utils/platforms";
 
 defineProps({
-  locale: String
-})
+  locale: String,
+});
 
-defineEmits(['platform-click'])
+defineEmits(["platform-click"]);
 
-const isPaused = ref(false)
-const failedArtwork = ref({})
+const isPaused = ref(false);
+const failedArtwork = ref({});
 
 const handleTouchStart = () => {
-  isPaused.value = true
-}
+  isPaused.value = true;
+};
 
 const handleTouchEnd = () => {
-  isPaused.value = false
-}
+  isPaused.value = false;
+};
 
 const content = {
-  'zh-CN': {
-    badge: '支持的平台',
-    title: ''
+  "zh-CN": {
+    badge: "支持的平台",
+    title: "",
   },
-  'en': {
-    badge: 'Supported Platforms',
-    title: ''
-  }
-}
+  en: {
+    badge: "Supported Platforms",
+    title: "",
+  },
+};
 
-const getContent = (locale) => content[locale] || content['zh-CN']
+const getContent = (locale) => content[locale] || content["zh-CN"];
 
 // The shared list controls capabilities; the showcase retains each brand's artwork.
 const platformArtwork = {
-  douyin: { img: douyinArtwork, desc: '解析抖音无水印视频', color: '#fe2c55' },
-  kuaishou: { img: kuaishouArtwork, desc: '解析快手无水印视频', color: '#ff4906' },
-  bilibili: { img: bilibiliArtwork, desc: '解析B站视频', color: '#00a1d6' },
-  xhs: { img: xhsArtwork, desc: '解析小红书视频', color: '#fe2c55' },
-  toutiao: { img: toutiaoArtwork, desc: '解析今日头条视频', color: '#e6162d' },
-  weibo: { img: weiboArtwork, desc: '解析微博短视频', color: '#e6162d' },
-  pipixia: { img: pipixiaArtwork, desc: '解析皮皮虾视频', color: '#ffc700' },
-  pipigx: { img: pipigxArtwork, desc: '解析搞笑短视频', color: '#25d68a' },
-  zuiyou: { img: zuiyouArtwork, desc: '解析最右短视频', color: '#8854d0' },
-}
-const allPlatforms = supportedPlatforms.map(platform => ({ ...platform, ...platformArtwork[platform.key] }))
-const getDesc = (locale, idx) => locale === 'en'
-  ? `Parse ${allPlatforms[idx].english} videos`
-  : allPlatforms[idx].desc
-
-const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
+  douyin: { img: douyinArtwork, desc: "解析抖音无水印视频", color: "#fe2c55" },
+  kuaishou: {
+    img: kuaishouArtwork,
+    desc: "解析快手无水印视频",
+    color: "#ff4906",
+  },
+  bilibili: { img: bilibiliArtwork, desc: "解析B站视频", color: "#00a1d6" },
+  xiaohongshu: { img: xhsArtwork, desc: "解析小红书视频", color: "#fe2c55" },
+  toutiao: { img: toutiaoArtwork, desc: "解析今日头条视频", color: "#e6162d" },
+  weibo: { img: weiboArtwork, desc: "解析微博短视频", color: "#e6162d" },
+  pipixia: { img: pipixiaArtwork, desc: "解析皮皮虾视频", color: "#ffc700" },
+  pipigx: { img: pipigxArtwork, desc: "解析搞笑短视频", color: "#25d68a" },
+  zuiyou: { img: zuiyouArtwork, desc: "解析最右短视频", color: "#8854d0" },
+};
+const allPlatforms = computed(() =>
+  supportedPlatforms.value.map((platform) => ({
+    ...platform,
+    key: platform.id,
+    url: platform.site_url,
+    english: platform.id,
+    desc: `解析${platform.name}媒体`,
+    color: "#8854d0",
+    ...platformArtwork[platform.icon],
+  })),
+);
+const getDesc = (locale, idx) =>
+  locale === "en"
+    ? `Parse ${allPlatforms.value[idx].english} media`
+    : allPlatforms.value[idx].desc;
+const duplicatedPlatforms = computed(() => [
+  ...allPlatforms.value,
+  ...allPlatforms.value,
+]);
 </script>
 
 <template>
-  <section id="Supported_Platforms" class="mb-20 overflow-hidden platform-section scroll-mt-16 sm:scroll-mt-18">
+  <section
+    id="Supported_Platforms"
+    class="mb-20 overflow-hidden platform-section scroll-mt-16 sm:scroll-mt-18"
+  >
     <div class="flex items-center justify-center py-4 platform-header">
-      <h3 class="theme-colors inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium">
+      <h3
+        class="theme-colors inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/10 to-purple-500/10 dark:from-indigo-400/10 dark:to-purple-400/10 border border-indigo-200 dark:border-indigo-800/50 text-indigo-600 dark:text-indigo-400 text-sm font-medium"
+      >
         <AppIcon class="fas fa-table-cells-large text-xs"></AppIcon>
         {{ getContent(locale).badge }}
       </h3>
     </div>
 
     <div class="relative">
-      <div 
+      <div
         class="marquee-container"
         @touchstart="handleTouchStart"
         @touchend="handleTouchEnd"
         @touchcancel="handleTouchEnd"
       >
-        <div 
-          class="marquee-content"
-          :class="{ 'marquee-paused': isPaused }"
-        >
+        <div class="marquee-content" :class="{ 'marquee-paused': isPaused }">
           <a
             v-for="(platform, idx) in duplicatedPlatforms"
             :key="`platform-${idx}`"
@@ -93,14 +112,33 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
           >
             <div class="platform-icon-container">
               <div class="platform-icon-wrapper">
-                <img v-if="!failedArtwork[platform.key]" :src="platform.img" :alt="platform.name" class="platform-icon-img" loading="lazy" decoding="async" @error="failedArtwork[platform.key] = true">
-                <span v-else class="font-bold text-xl" :style="{ color: platform.color }" aria-hidden="true">{{ platform.name.slice(0, 1) }}</span>
+                <img
+                  v-if="platform.img && !failedArtwork[platform.key]"
+                  :src="platform.img"
+                  :alt="platform.name"
+                  class="platform-icon-img"
+                  loading="lazy"
+                  decoding="async"
+                  @error="failedArtwork[platform.key] = true"
+                />
+                <span
+                  v-else
+                  class="font-bold text-xl"
+                  :style="{ color: platform.color }"
+                  aria-hidden="true"
+                  >{{ platform.name.slice(0, 1) }}</span
+                >
               </div>
-              <div class="platform-glow" :style="{ background: platform.color }"></div>
+              <div
+                class="platform-glow"
+                :style="{ background: platform.color }"
+              ></div>
             </div>
 
             <h4 class="platform-name">{{ platform.name }}</h4>
-            <p class="platform-desc">{{ getDesc(locale, idx % allPlatforms.length) }}</p>
+            <p class="platform-desc">
+              {{ getDesc(locale, idx % allPlatforms.length) }}
+            </p>
 
             <div class="platform-hover-indicator">
               <AppIcon class="fas fa-external-link-alt text-xs"></AppIcon>
@@ -110,14 +148,16 @@ const duplicatedPlatforms = [...allPlatforms, ...allPlatforms]
       </div>
     </div>
 
-    <div class="theme-colors flex justify-center mt-8 gap-6 text-xs text-slate-400 dark:text-slate-500">
+    <div
+      class="theme-colors flex justify-center mt-8 gap-6 text-xs text-slate-400 dark:text-slate-500"
+    >
       <span class="flex items-center gap-1">
         <AppIcon class="fas fa-mouse-pointer text-indigo-400"></AppIcon>
-        {{ locale === 'zh-CN' ? '悬停暂停' : 'Hover to pause' }}
+        {{ locale === "zh-CN" ? "悬停暂停" : "Hover to pause" }}
       </span>
       <span class="hidden sm:flex items-center gap-1">
         <AppIcon class="fas fa-arrows-alt-h text-purple-400"></AppIcon>
-        {{ locale === 'zh-CN' ? '自动滚动' : 'Auto scroll' }}
+        {{ locale === "zh-CN" ? "自动滚动" : "Auto scroll" }}
       </span>
     </div>
   </section>

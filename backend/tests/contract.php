@@ -13,7 +13,7 @@ function fails(callable $operation): bool
     try { $operation(); return false; } catch (RuntimeException $error) { return true; }
 }
 
-check('six public aliases only', count(snapPublicRoutes()) === 6);
+check('three generic public routes', count(snapPublicRoutes()) === 3);
 foreach (snapPlatforms() as $platform => $config) {
     check('entrypoint exists: ' . $platform, is_file(__DIR__ . '/../api/' . $config['file']));
 }
@@ -48,18 +48,12 @@ foreach (['https://evil.test:9081', 'http://127.0.0.1:9081/path', 'http://user@1
 }
 check('reject internal Host injection', fails(fn () => snapInternalSettings(['host' => "snap.dokitool.com\r\nInjected: x"])));
 
-$media = ['code' => 200, 'data' => [
-    'title' => '契约样本', 'url' => 'https://media.example/video.mp4',
-    'images' => ['https://media.example/a.jpg'],
-    'live_photo' => [['image' => 'https://media.example/live.jpg', 'video' => 'https://media.example/live.mp4']],
-    'video_backup' => [['quality' => '720p', 'url' => 'https://media.example/720.mp4']],
-    'videos' => [['index' => 1, 'title' => 'P1', 'url' => 'https://media.example/p1.mp4'], ['index' => 2, 'title' => 'P2', 'error' => ' unavailable']],
-    'extra' => ['pages' => [['page' => 1, 'cid' => 101], ['page' => 2, 'cid' => 102]], 'current_page' => 1],
-]];
-check('full media contract preserved', snapDecodeResponse(json_encode($media)) === [200, $media]);
-$business = ['code' => 404, 'msg' => '作品不可用', 'data' => []];
-check('HTTP 200 business failure preserved', snapDecodeResponse(json_encode($business)) === [200, $business]);
+$media = snapAdaptParser('douyin', ['code' => 200, 'data' => ['title' => '契约样本', 'url' => 'https://media.example/video.mp4']], 'https://v.douyin.com/example');
+check('unified media contract accepted', snapDecodeResponse(json_encode($media)) === [200, $media]);
+$business = snapContractError('CONTENT_UNAVAILABLE', '作品不可用');
+check('HTTP 200 business failure is rejected', snapDecodeResponse(json_encode($business))[0] === 502);
 check('HTTP 404 business failure preserved', snapDecodeResponse(json_encode($business), 404) === [404, $business]);
+check('legacy envelope rejected', snapDecodeResponse('{"code":200,"data":{"url":"https://media.example/video.mp4"}}')[0] === 502);
 foreach (['<html>error</html>', '', 'null', '"ok"', '[]', '{"data":{}}', '{"code":[],"data":{}}'] as $body) {
     check('reject non-envelope: ' . $body, snapDecodeResponse($body)[0] === 502);
 }
@@ -74,7 +68,7 @@ $result = snapForward('bilibili', 'https://www.bilibili.com/video/BV1234567890?p
     return ['ok' => true, 'status' => 200, 'body' => json_encode($media)];
 });
 check('aggregate success', $result === [200, $media]);
-check('aggregate ignores request Host and scheme', $seen === ['http://127.0.0.1:9081/parse/bilibili?url=https%3A%2F%2Fwww.bilibili.com%2Fvideo%2FBV1234567890%3Fp%3D2', 'snap.dokitool.com']);
+check('aggregate ignores request Host and scheme', $seen === ['http://127.0.0.1:9081/parse?platform=bilibili&url=https%3A%2F%2Fwww.bilibili.com%2Fvideo%2FBV1234567890%3Fp%3D2', 'snap.dokitool.com']);
 check('aggregate network failure', snapForward('douyin', 'https://v.douyin.com/abc', fn () => ['ok' => false])[0] === 502);
 check('aggregate platform mismatch blocks transport', snapForward('douyin', 'https://www.bilibili.com/video/BV1234567890', fn () => throw new RuntimeException('must not run'))[0] === 400);
 
@@ -82,12 +76,14 @@ foreach ([
     ['/api/svproxyurl.php', 'GET', [], 404], ['/api/douyin-home/home.php', 'GET', [], 404],
     ['/api/wyy.py', 'GET', [], 404], ['/api/douyin/douyin.php', 'GET', [], 404],
     ['/api/v1/session', 'GET', [], 404], ['/parse/douyin', 'GET', [], 404],
-    ['/api/douyin', 'POST', [], 405], ['/api/douyin', 'GET', [], 400],
-    ['/api/douyin', 'GET', ['url' => ['x']], 400], ['/api/douyin', 'GET', ['url' => 'https://b23.tv/abc'], 400],
+    ['/api/douyin', 'GET', [], 410], ['/api/short_videos', 'GET', [], 410],
+    ['/api/parse', 'POST', [], 405], ['/api/parse', 'GET', [], 409],
+    ['/api/parse', 'GET', ['schema_version' => '1.0', 'url' => ['x']], 400],
+    ['/api/parse', 'GET', ['schema_version' => '1.0', 'url' => 'https://b23.tv/abc', 'platform' => 'douyin'], 400],
 ] as [$path, $method, $query, $expected]) {
     $_SERVER = ['REQUEST_URI' => $path, 'REQUEST_METHOD' => $method]; $_GET = $query;
     http_response_code(200); ob_start(); snapHandle(); $body = ob_get_clean();
-    check('public dispatch ' . $method . ' ' . $path . ' ' . $expected, http_response_code() === $expected && json_decode($body, true)['code'] === $expected);
+    check('public dispatch ' . $method . ' ' . $path . ' ' . $expected, http_response_code() === $expected && json_decode($body, true)['code'] === 'INVALID_INPUT');
 }
 
 $body = '';
@@ -96,23 +92,34 @@ check('bounded metadata accepts response at limit', $write(null, '12345678') ===
 check('bounded metadata aborts before growing buffer', $write(null, 'overflow') === 0 && $body === '12345678abcdefgh');
 check('media protocol-relative source normalized', snapMediaUrl('//media.example/video.mp4') === 'https://media.example/video.mp4');
 check('media userinfo rejected', snapMediaUrl('https://user@media.example/video.mp4') === '' && snapMediaUrl('https://user:pass@media.example/video.mp4') === '');
-$legacy = snapNormalizeMedia(['video' => 'https://media.example/v.mp4', 'imgurl' => ['https://media.example/p.jpg'], 'music' => 'https://media.example/m.mp3', 'video_backup' => ['https://media.example/b.mp4']]);
-check('legacy video image music aliases retained for frontend', $legacy['url'] === $legacy['video'] && $legacy['images'] === $legacy['imgurl'] && $legacy['music']['url'] === 'https://media.example/m.mp3');
-check('string backups converted without losing source', $legacy['video_backup'] === [['url' => 'https://media.example/b.mp4']]);
-
+check('legacy normalizer removed from public gateway', !function_exists('snapNormalizeMedia'));
 $fixtureKey = str_repeat('fixture-key-only-', 3);
-$weibo = ['code' => 200, 'data' => ['url' => 'https://f.video.weibocdn.com/main.mp4', 'width' => 1920, 'height' => 1080,
-    'video_backup' => [['url' => 'https://f.video.weibocdn.com/backup.mp4', 'quality' => '720p'], ['url' => 'https://untrusted.example/video.mp4']]]];
+$weibo = snapAdaptParser('weibo', ['code' => 200, 'data' => ['url' => 'https://f.video.weibocdn.com/main.mp4', 'width' => 1920, 'height' => 1080,
+    'video_backup' => [['url' => 'https://f.video.weibocdn.com/main.mp4', 'width' => 1920, 'height' => 1080], ['url' => 'https://f.video.weibocdn.com/backup.mp4', 'quality' => '720p'], ['url' => 'https://untrusted.example/video.mp4']]]], 'https://weibo.com/example');
 [$status, $prepared] = snapPreparePublicMedia('weibo', $weibo, 200, $fixtureKey);
-check('signed media delivery only after valid Weibo parse', $status === 200 && $prepared['data']['media_delivery'] === 'weibo-relay' && str_starts_with($prepared['data']['playback_url'], '/api/media/weibo?ticket='));
-check('raw media and selected dimensions retained', $prepared['data']['url'] === $weibo['data']['url'] && $prepared['data']['width'] === 1920 && $prepared['data']['height'] === 1080);
-check('unknown media hosts not offered as relay backups', count($prepared['data']['video_backup']) === 1 && $prepared['data']['video_backup'][0]['quality'] === '720p' && isset($prepared['data']['video_backup'][0]['playback_url']));
+$default = $prepared['data']['items'][0]['default'];
+check('signed media delivery reflected in backend default', $status === 200 && $default['access'] === 'relay' && str_starts_with($default['url'], '/api/media/weibo?ticket='));
+check('selected dimensions retained', $prepared['data']['items'][0]['variants'][0]['metadata']['width'] === 1920);
+check('unknown media hosts are not eligible', $prepared['data']['items'][0]['variants'][2]['delivery']['sources'][0]['availability'] === 'unavailable');
 check('missing signing configuration fails clearly', snapPreparePublicMedia('weibo', $weibo, 200, '')[0] === 503);
 check('other platforms remain direct', snapPreparePublicMedia('douyin', $media, 200, $fixtureKey) === [200, $media]);
-check('business failures never mint tickets', snapPreparePublicMedia('weibo', $business, 200, $fixtureKey) === [200, $business]);
+check('business failures never mint tickets', snapPreparePublicMedia('weibo', $business, 404, $fixtureKey) === [404, $business]);
 check('HTTP failures never mint tickets', snapPreparePublicMedia('weibo', $weibo, 502, $fixtureKey) === [502, $weibo]);
-check('unsupported main source is not a false playback success', snapPreparePublicMedia('weibo', ['code' => 200, 'data' => ['url' => 'https://evil.test/a.mp4']], 200, $fixtureKey)[0] === 502);
+$foreign = snapAdaptParser('weibo', ['code' => 200, 'data' => ['url' => 'https://evil.test/a.mp4']], 'https://weibo.com/example');
+check('unsupported main source is not a false playback success', snapPreparePublicMedia('weibo', $foreign, 200, $fixtureKey)[0] === 502);
 check('signing key is never returned', !str_contains(json_encode($prepared), $fixtureKey));
+$expiry = gmdate('Y-m-d\TH:i:s\Z', time() + 60);
+$limited = snapFinalizeData(['platform' => 'weibo', 'items' => [['id' => 'video', 'type' => 'video', 'default' => null, 'variants' => [['id' => 'main', 'delivery' => ['kind' => 'file', 'sources' => [['url' => 'https://f.video.weibocdn.com/limited.mp4', 'expires_at' => $expiry]]]]]]]]);
+[, $preparedLimited] = snapPreparePublicMedia('weibo', $limited, 200, $fixtureKey);
+$limitedDefault = $preparedLimited['data']['items'][0]['default']; parse_str(parse_url($limitedDefault['url'], PHP_URL_QUERY), $ticketQuery);
+$ticketData = snapWeiboMediaVerifyTicket($ticketQuery['ticket'], $fixtureKey);
+check('relay projection and ticket never extend upstream expiry', $limitedDefault['expires_at'] === $expiry && $ticketData['exp'] === strtotime($expiry));
+$limited['data']['items'][0]['variants'][0]['delivery']['sources'][0]['expires_at'] = gmdate('c', time() - 10);
+$limited = snapFinalizeData($limited['data']);
+[$expiredStatus, $expiredPrepared] = snapPreparePublicMedia('weibo', $limited, 200, $fixtureKey);
+check('signing does not revive an expired CDN source', $expiredStatus === 200 && $expiredPrepared['data']['items'][0]['default'] === null && $expiredPrepared['data']['items'][0]['default_unavailable_reason'] === 'needs_refresh');
+check('rednote registered', snapPlatformForUrl('https://www.rednote.com/explore/example') === 'xiaohongshu');
+check('catalog contains nine public descriptors', count(snapPlatformCatalog()['data']['platforms']) === 9 && !isset(snapPlatformCatalog()['data']['platforms'][0]['file']));
 
 $passed = count(array_filter($checks, static fn ($item) => $item['passed']));
 echo json_encode(['suite' => 'backend-contract', 'passed' => $passed, 'total' => count($checks), 'checks' => $checks], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL;

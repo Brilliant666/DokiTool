@@ -19,7 +19,17 @@ DokiTool 是在同一仓库维护 Vue 3 前端与自建 PHP 解析接口的短�
 
 一次完整使用包括：粘贴有效链接、识别平台、解析并展示对应媒体、切换或勾选内容、播放与下载，以及失败后能重试。接口返回成功但图片丢失、播放错分 P、下载空文件或页面仍显示旧结果，都属于本阶段要修复的缺陷。平台解析、界面交互与真实媒体下载分别记录验收结果，不能用固定样例通过代替真实平台可用。
 
-相关缺陷按批修复，集中回归并提交一个 PR；本阶段不新增平台，也不以更换为作者公共 API 代替自建后端修复。新接口、更多画质能力和其他扩展在现有使用链路稳定后再推进。
+相关缺陷按批修复，集中回归并提交一个 PR；本阶段不新增平台，也不以更换为作者公共 API 代替自建后端修复。
+
+## 统一媒体接口
+
+九平台统一使用 `/api/parse`、`/api/resolve` 和 `/api/platforms`，请求携带 `schema_version=1.0`。返回结构为 `items → variants → delivery`：每个条目的完整文件默认项由后端计算，前端校验后直接读取；用户选中的版本独立保留。旧公共字段与平台专属前端归一化已移除，前后端须成套切换。
+
+单文件使用 `delivery.sources`，实况配对和音视频组合才展开 `resources`。完整 variants 保留，需处理的更高规格通过引用说明能力；DASH、音视频合流和需 remux 的分段目前明确提示暂不支持，视频裸轨不会被当成完整视频下载。待解析的原画 variant 可声明 `state:deferred`，不会伪造地址/规格或覆盖现有完整文件。
+
+平台注册唯一来源是 `backend/config/platforms.json`，前端构建自动生成目录快照，运行时也读取公开目录。新增现有媒体能力的平台只需后端适配与注册，图标可以使用通用样式。详细说明见 [API 合同](docs/API.md)、[schema 与验证](docs/schema/unified-v1/README.md) 和 [成套切换要求](docs/DEPLOYMENT.md#统一媒体-v1-切换)。
+
+小红书已保留 stream、原画候选及真实媒体探测能力，但当前 PHP 页面请求仍无法取得对照样本的原始作品数据。本 PR 不加入 Python/curl_cffi 运行依赖；已探测到的真实 4K 是隔离页面抓取后交给 PHP 探测的结果，不等于目标后端端到端或浏览器完整保存通过。脱敏证据与后续 Go 迁移验收条件见 [研究记录](docs/research/xhs-4k-transport-comparison-2026-10-30.md)。
 
 ## 下载与任务管理
 
@@ -73,11 +83,14 @@ python scripts/third-party-notices.py
 
 ## 本地检查
 
-PHP 8.0+，启用 cURL、OpenSSL、JSON 和标准扩展；本地已验证 PHP 8.4。用已安装的 PHP 可执行文件运行：
+PHP 8.1+，启用 cURL、OpenSSL、JSON 和标准扩展；本地已验证 PHP 8.4。用已安装的 PHP 可执行文件运行：
 
 ```sh
 php backend/tests/contract.php
 python backend/tests/validate.py --php /path/to/php --output .local/backend-validation.json
+python -m pip install -r scripts/requirements-validation.txt
+python scripts/test-unified-schema.py
+python scripts/validate-unified-schema.py --php /path/to/php --output .local/unified-validation.json
 python scripts/check-public-files.py
 ```
 
@@ -85,13 +98,15 @@ Windows 的 `--php` 可使用 PHP 可执行文件的完整路径。`validate.py`
 
 自动化检查涵盖前端行为、PHP 网关契约、解析器与媒体传输回归、CLI 场景和独立 HTTP 夹具。前端测试覆盖元数据、混合静图与实况、分 P、选源、ZIP 取消重试，以及 SW 排队、刷新、取消竞态、任务面板和历史清理。仓库发布与线上服务发布分别进行，本仓库不会自动部署或定时覆盖上游。
 
-下载改造已用本地生产构建在 Edge 验证：两条超过六分钟的受控跨域文件下载经历刷新和 Worker 更新等待后完整保存；第三项排队超过五分钟，随后以原任务 ID 完成；更新自然激活后再次下载成功。另验证了新客户端搭配旧 Worker 的小文件下载。五个实际保存文件的大小与 SHA-256 均匹配源文件，详细结果见 [下载验收记录](docs/DOWNLOADS.md#state-and-admission-consolidation-2026-10-30)。
+PR #7 的历史下载验收使用本地生产构建与 Edge：两条超过六分钟的受控跨域文件下载经历刷新和 Worker 更新等待后完整保存；第三项排队超过五分钟，随后以原任务 ID 完成；更新自然激活后再次下载成功。另验证了新客户端搭配旧 Worker 的小文件下载。五个实际保存文件的大小与 SHA-256 均匹配源文件，详细结果见 [下载验收记录](docs/DOWNLOADS.md#state-and-admission-consolidation-2026-10-30)。
+
+本轮统一合同另完成九平台适配器离线验证、八平台真实 API 样本验证及两个浏览器文件保存/哈希对照。刷新后的文件完整，但页面终态仍有缺口；小红书 4K 端到端和本轮 Worker 升级尚未通过当前验收。分层结果与剩余问题见 [统一媒体验收记录](docs/UNIFIED-MEDIA-ACCEPTANCE.md)。
 
 这些受控样例验证任务生命周期与文件完整性，不能证明真实平台当前成功率、CDN 吞吐或所有浏览器的保存行为。升级样例只改变 Worker 构建标记，不代表未来不兼容协议也可直接升级。界面“传输完成”表示已将数据交给浏览器，最终保存仍以浏览器下载列表和实际文件为准；iOS Safari／微信、关闭全部页面、锁屏与系统挂起仍需单独验收。
 
 ## 适配与边界
 
-默认 API 由本站 PHP 提供；修复了 HTTP 200 业务失败误判、B 站失败分 P 借用其他视频地址、选 P 定位与重复懒解析等问题。界面图标使用本地 SVG，平台展示图标与品牌图片随构建发布；不再加载图标字体和 Swiper。
+默认 API 由本站 PHP 提供；后端适配器保留平台内部抽取细节，对外只发布统一合同。服务端执行结构与语义验证，独立 Python 验证器再检查实际适配器导出的响应；这些离线合成输入的通过不代表平台实时成功率。界面图标使用本地 SVG，平台展示图标与品牌图片随构建发布；不再加载图标字体和 Swiper。
 
 除微博外，播放和下载直接使用解析结果的媒体地址，仍受媒体站点的 CORS、防盗链、地区限制和链接时效影响。微博通过本站限定来源的签名媒体服务播放与下载，需要配置共享密钥和独立媒体池，详见 [部署说明](docs/DEPLOYMENT.md#微博播放与下载)。当前公开入口不包含开放媒体代理、需要 Cookie 的抖音主页、网易云 Python 服务或其他可选上游脚本。
 

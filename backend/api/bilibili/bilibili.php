@@ -85,8 +85,9 @@ function buildBilibiliResponse(array $detail, string $bvid, int $requested, call
     $play = $fetchPlay($selected['cid']);
     $stream = is_array($play) ? ($play['data']['durl'][0] ?? []) : [];
     $url = snapMediaUrl($stream['url'] ?? null);
-    if (($play['code'] ?? null) !== 0 || $url === '') {
-        return bilibiliFailure(is_array($play) ? $play : [], '当前分P播放源');
+    $playError = null;
+    if (($play['code'] ?? null) !== 0 || ($url === '' && empty($play['data']['dash']['video']))) {
+        $playError = bilibiliFailure(is_array($play) ? $play : [], '当前分P播放源');
     }
     $pageUrl = 'https://www.bilibili.com/video/' . rawurlencode($bvid) . '/';
     $videos = [];
@@ -114,7 +115,10 @@ function buildBilibiliResponse(array $detail, string $bvid, int $requested, call
         'user' => ['name' => $detail['owner']['name'] ?? '', 'avatar' => $detail['owner']['face'] ?? ''],
         'video_backup' => $backups, 'duration' => $selected['duration'] ?? null, 'quality' => $quality,
         'extra' => ['pages' => $pages, 'current_page' => $requested, 'bvid' => $bvid],
+        'private_play' => is_array($play['data'] ?? null) ? $play['data'] : [],
     ];
+    if ($playError) $data['private_error'] = $playError;
+    if (is_array($detail['ugc_season'] ?? null)) $data['private_collection'] = $detail['ugc_season'];
     // View dimensions describe the uploaded original, not necessarily the
     // anonymously available playback stream. Never label a 720p URL as 4K.
     if (is_array($selected['dimension'] ?? null)) { $data['extra']['source_dimension'] = $selected['dimension']; }

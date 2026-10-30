@@ -1,7 +1,7 @@
 # Review-only site fragment. Merge into the existing Caddy configuration.
 # Never replace the fleet Caddyfile. Verify 9081 and socket paths before use.
 snap.example.com {
-    @api path /api/short_videos /api/douyin /api/ksjx /api/bilibili /api/xhsjx /api/toutiao
+    @api path /api/*
     @compress not path /api/media/weibo
     @source path *.php /backend/* /internal/* /ops/* /.git/* /.env*
     # Preserve ordering: Caddy otherwise sorts handle before route.
@@ -30,10 +30,6 @@ snap.example.com {
         php_fastcgi unix//run/php/snap-public.sock {
             resolve_root_symlink
         }
-    }
-    handle /api/* {
-        header Content-Type application/json
-        respond `{"code":404,"msg":"Unknown API route","data":[]}` 404
     }
     handle @source {
         respond 404
@@ -93,7 +89,7 @@ http://:9081 {
     bind 127.0.0.1
     @parser {
         host snap.example.com
-        path /parse/douyin /parse/kuaishou /parse/bilibili /parse/xiaohongshu /parse/toutiao /parse/weibo /parse/pipixia /parse/pipigx /parse/zuiyou
+        path /parse
     }
     handle @parser {
         root * /srv/dokitool/current/backend/internal

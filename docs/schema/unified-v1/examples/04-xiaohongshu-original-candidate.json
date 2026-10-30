@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "xiaohongshu",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/xiaohongshu/synthetic-001",
+    "items": [
+      {
+        "id": "xhs-one",
+        "type": "video",
+        "default": {
+          "variant_id": "known-1080",
+          "url": "https://media.example.test/known-1080.mp4"
+        },
+        "variants": [
+          {
+            "id": "origin",
+            "label": "原片接口候选：规格未知",
+            "provenance": "original_endpoint",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "id": "qn",
+                  "url": "https://media.example.test/origin-a"
+                },
+                {
+                  "id": "al",
+                  "url": "https://media.example.test/origin-b"
+                }
+              ]
+            }
+          },
+          {
+            "id": "known-1080",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/known-1080.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

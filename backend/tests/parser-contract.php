@@ -32,6 +32,21 @@ case 'douyin':
     $fallback = json_decode($format->invoke($parser, ['video' => ['play_addr' => ['url_list' => ['https://media.example/unknown.mp4']]]], '1'), true)['data'];
     expect('missing metadata not invented', !isset($fallback['width'], $fallback['codec'], $fallback['bit_rate']) && $fallback['quality'] === 'unknown');
     expect('missing statistics remain absent', !isset($fallback['extra']['statistics']));
+    require_once __DIR__ . '/../lib/media-adapters.php';
+    $dashDetail = ['video' => ['duration' => 500, 'bit_rate' => [
+        ['format' => 'mp4', 'bit_rate' => 2000000, 'is_h265' => 0, 'play_addr' => ['width' => 1920, 'height' => 1080, 'url_list' => ['https://media.example/full.mp4']]],
+        ['format' => 'dash', 'bit_rate' => 5000000, 'is_h265' => 1, 'video_extra' => '{"audio_file_id":"audio-id"}', 'play_addr' => ['width' => 3840, 'height' => 2160, 'url_list' => ['https://media.example/neutral-name.mp4']]],
+    ], 'bit_rate_audio' => [['audio_meta' => ['media_type' => 'audio', 'file_id' => 'audio-id', 'url_list' => ['https://media.example/audio.mp4'], 'sub_info' => '{"audio_profile":"aac_he_v2","audio_sample_rate":"44100"}']]]]];
+    $dashRaw = json_decode($format->invoke($parser, $dashDetail, '1234567890123456'), true);
+    $dashResult = snapAdaptParser('douyin', $dashRaw, 'https://www.douyin.com/video/1234567890123456');
+    snapValidateEnvelope($dashResult); $dashItem = $dashResult['data']['items'][0];
+    expect('upstream DASH format creates video plus matched audio resources regardless of URL spelling', count(array_filter($dashItem['variants'], fn ($v) => ($v['delivery']['kind'] ?? '') === 'mux')) === 1);
+    expect('DASH naked video cannot become complete default', $dashItem['default']['url'] === 'https://media.example/full.mp4?mime_type=video_mp4' && $dashItem['higher_quality_variants'][0]['requires'] === ['mux']);
+    expect('sub-second upstream duration remains milliseconds in unified output', $dashItem['duration_ms'] === 500);
+    $dashDetail['video']['bit_rate_audio'][0]['audio_meta']['file_id'] = 'unrelated-audio';
+    $missingAudio = snapAdaptParser('douyin', json_decode($format->invoke($parser, $dashDetail, '1234567890123456'), true), 'https://www.douyin.com/video/1234567890123456');
+    snapValidateEnvelope($missingAudio);
+    expect('unrelated audio is never paired with a DASH video', count(array_filter($missingAudio['data']['items'][0]['variants'], fn ($v) => ($v['state'] ?? '') === 'deferred')) === 1 && !isset($missingAudio['data']['items'][0]['higher_quality_variants']));
     break;
 case 'pipigx':
     require __DIR__ . '/../api/pipigx.php';
@@ -59,7 +74,7 @@ case 'bilibili':
     expect('source host and backup retained', $data['video_backup'][0]['url'] === 'https://mirror.example/p2.mp4');
     expect('duration not reduced by a second', $data['videos'][0]['durationFormat'] === '00:02:00');
     $failed = buildBilibiliResponse(['pages' => $pages], 'BV1234567890', 2, fn ($cid) => ['code' => -1]);
-    expect('failed target never substitutes another part', $failed['code'] === 404 && !isset($failed['data']['url']));
+    expect('failed target never substitutes another part', $failed['code'] === 200 && $failed['data']['url'] === '' && isset($failed['data']['private_error']));
     expect('invalid part never triggers play call', buildBilibiliResponse(['pages' => $pages], 'BV1234567890', 11, fn () => throw new Exception('not called'))['code'] === 404);
     expect('query p survives cleaning', cleanUrlParameters('https://www.bilibili.com/video/BV1234567890/?p=2&x=a%26b') === 'https://www.bilibili.com/video/BV1234567890/?p=2&x=a%26b');
     expect('short-link target p preserved', bilibiliRedirectTarget('https://b23.tv/example', 'https://www.bilibili.com/video/BV1234567890?p=3') === 'https://www.bilibili.com/video/BV1234567890?p=3');

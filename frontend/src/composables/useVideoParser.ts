@@ -1,881 +1,147 @@
 import { shallowRef, watch, type Ref } from "vue";
 import { useButtonControl } from "./useButtonControl";
-import { secureApiClient } from "../services/secureApiClient";
 import { apiConfig } from "../services/apiConfig";
-import type { AppLocale, PlatformKey } from "../types/api";
-import type {
-  MediaCollection,
-  MediaVideo,
-  ParsedMedia,
-  VideoBackup,
-  VideoMetadata,
-} from "../types/media";
+import { secureApiClient } from "../services/secureApiClient";
+import { validateMediaEnvelope, readyItem } from "../utils/mediaContract";
 import type { useVideoStore } from "../stores/video";
+import type { MediaItem, ToastType } from "../types/media";
 
-const MULTI_KEYS = ["videos", "video_list", "episodes", "pages", "list"] as const;
-type RawVideo = Record<string, unknown>;
-type RawVideoItem = string | RawVideo;
-
-const API = apiConfig.endpoints;
-type VideoStore = ReturnType<typeof useVideoStore>;
-class ParseError extends Error {
-  code?: unknown;
-  status?: number;
-  response?: unknown;
-  constructor(
-    message: string,
-    options: { code?: unknown; status?: number; response?: unknown } = {},
-  ) {
-    super(message);
-    this.name = "ParseError";
-    Object.assign(this, options);
-  }
-}
-const extractURL = (text: string) =>
-  text
-    .match(/\bhttps?:\/\/[^\s<>"{}|\\^`\[\]]+/i)?.[0]
-    .replace(/[),.;!?，。；！？]+$/, "") || null;
-const messageOf = (value: unknown) => {
-  if (!value || typeof value !== "object") return "";
-  const x = value as Record<string, unknown>;
-  const data =
-    x.data && typeof x.data === "object"
-      ? (x.data as Record<string, unknown>)
-      : {};
-  return (
-    ([
-      x.msg,
-      x.message,
-      x.error,
-      x.errmsg,
-      x.reason,
-      data.msg,
-      data.message,
-      data.error,
-    ].find((item) => typeof item === "string" && item.trim()) as string) || ""
+async function fetchJSON(url: string, signal?: AbortSignal): Promise<unknown> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(
+    () => controller.abort(new Error("解析请求超时，请重试")),
+    55000,
   );
-};
-const nonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && Boolean(value.trim());
-const positiveNumber = (value: unknown): number | undefined => {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : undefined;
-};
-/** Only a signed, fixed media endpoint may replace the original Weibo URL. */
-export const resolveWeiboPlaybackUrl = (
-  value: unknown,
-  apiOrigin = apiConfig.baseUrl,
-  pageOrigin = typeof window !== "undefined" ? window.location?.origin : undefined,
-): string => {
-  if (!nonEmptyString(value) || value.length > 12288
-    || !/^\/api\/media\/weibo\?ticket=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) {
-    throw new ParseError("微博播放链接无效，请重新解析");
-  }
-  const base = apiOrigin || pageOrigin;
-  // SSR/tests without an origin may keep this one validated same-origin route.
-  if (!base) return value;
   try {
-    const parsed = new URL(base);
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password
-      || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Invalid origin");
-    return new URL(value, parsed.origin).href;
-  } catch {
-    throw new ParseError("微博播放服务地址配置异常");
-  }
-};
-const videoMetadata = (raw: Record<string, unknown>): VideoMetadata => {
-  const result: VideoMetadata = {};
-  const width = positiveNumber(raw.width), height = positiveNumber(raw.height);
-  const bitrate = positiveNumber(raw.bit_rate) ?? positiveNumber(raw.bitrate);
-  if (width !== undefined) result.width = width;
-  if (height !== undefined) result.height = height;
-  if (bitrate !== undefined) result.bit_rate = result.bitrate = bitrate;
-  if (nonEmptyString(raw.codec)) result.codec = raw.codec.trim();
-  return result;
-};
-/** The PHP snapshots use both strings and objects for alternate video sources. */
-export const normalizeBackups = (raw: unknown, weiboRelay = false): VideoBackup[] =>
-  (Array.isArray(raw) ? raw : []).flatMap((item) => {
-    if (nonEmptyString(item)) {
-      if (weiboRelay) throw new ParseError("微博备用播放链接缺失，请重新解析");
-      return [{ url: item.trim() }];
-    }
-    if (!item || typeof item !== "object" || !nonEmptyString(item.url)) return [];
-    const originalUrl = item.url.trim();
-    const delivery = weiboRelay ? {
-      original_url: originalUrl,
-      media_delivery: "weibo-relay" as const,
-      url: resolveWeiboPlaybackUrl(item.playback_url),
-    } : { url: originalUrl };
-    return [{ ...item, ...videoMetadata(item), ...delivery }];
-  });
-const imageUrls = (raw: unknown): string[] =>
-  (Array.isArray(raw) ? raw : nonEmptyString(raw) ? [raw] : []).flatMap((item) => {
-    const url = typeof item === "string" ? item : item?.url;
-    return nonEmptyString(url) ? [url.trim()] : [];
-  });
-/** Normalize legacy fields before checking whether a response has usable media. */
-const resourceFields = (raw: Record<string, unknown>): Record<string, unknown> => {
-  const images = imageUrls(raw.images);
-  const music = nonEmptyString(raw.music) ? { url: raw.music.trim() }
-    : raw.music && typeof raw.music === "object" ? raw.music : {};
-  const originalUrl = nonEmptyString(raw.url) ? raw.url.trim()
-    : nonEmptyString(raw.video) ? raw.video.trim() : null;
-  const weiboRelay = raw.media_delivery === "weibo-relay";
-  return {
-    ...raw,
-    ...(weiboRelay ? { original_url: originalUrl } : {}),
-    url: weiboRelay ? resolveWeiboPlaybackUrl(raw.playback_url) : originalUrl,
-    images: images.length ? images : imageUrls(raw.imgurl),
-    music,
-    video_backup: normalizeBackups(raw.video_backup, weiboRelay),
-  };
-};
-const recordOf = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
-const normalizeTags = (value: unknown) => (Array.isArray(value) ? value : []).flatMap((item) => {
-  if (nonEmptyString(item)) return [{ name: item.trim() }];
-  const raw = recordOf(item);
-  const name = raw.name ?? raw.title ?? raw.hashtag_name;
-  return nonEmptyString(name) ? [{ ...raw, name: name.trim() }] : [];
-});
-const normalizeExtra = (data: Record<string, unknown>): Record<string, unknown> => {
-  const extra = { ...recordOf(data.extra) };
-  const createTime = positiveNumber(extra.create_time) ?? positiveNumber(data.create_time) ?? positiveNumber(data.time);
-  if (createTime !== undefined) extra.create_time = createTime;
-  const publishTime = extra.publish_time ?? data.publish_time;
-  if (nonEmptyString(publishTime)) extra.publish_time = publishTime;
-  const source = { ...recordOf(data.statistics), ...recordOf(extra.statistics) };
-  const statistics: Record<string, number> = {};
-  const aliases: Record<string, unknown[]> = {
-    play_count: [source.play_count, extra.play_count, data.play_count],
-    digg_count: [source.digg_count, source.like_count, extra.digg_count, extra.like_count, data.digg_count, data.like_count, data.like],
-    comment_count: [source.comment_count, extra.comment_count, data.comment_count],
-    collect_count: [source.collect_count, source.favorite_count, extra.collect_count, data.collect_count],
-    share_count: [source.share_count, source.reposts_count, extra.share_count, extra.reposts_count, data.share_count],
-  };
-  for (const [key, candidates] of Object.entries(aliases)) {
-    const candidate = candidates.find((value) =>
-      (typeof value === "number" || nonEmptyString(value)) && Number.isFinite(Number(value)) && Number(value) >= 0);
-    if (candidate !== undefined) statistics[key] = Number(candidate);
-  }
-  if (Object.keys(statistics).length) extra.statistics = statistics;
-  else delete extra.statistics;
-  for (const key of ["hashtags", "video_tags"] as const) {
-    const tags = normalizeTags(extra[key] ?? data[key]);
-    if (tags.length) extra[key] = tags;
-    else delete extra[key];
-  }
-  return extra;
-};
-const hasResources = (data: Record<string, unknown>) =>
-  nonEmptyString(data.url) ||
-  (Array.isArray(data.images) && data.images.some(nonEmptyString)) ||
-  (Array.isArray(data.live_photo) &&
-    data.live_photo.some(
-      (item) =>
-        item &&
-        typeof item === "object" &&
-        (nonEmptyString(item.image) || nonEmptyString(item.video)),
-    )) ||
-  (Array.isArray(data.video_backup) &&
-    data.video_backup.some(
-      (item) => item && typeof item === "object" && nonEmptyString(item.url),
-    )) ||
-  (data.music &&
-    typeof data.music === "object" &&
-    nonEmptyString((data.music as Record<string, unknown>).url)) ||
-  collectionSectionsOf(data).some((section) => section.episodes.length > 0) ||
-  collectVideos(data, typeof data.url === "string" ? data.url : null).some(
-    (video) => Boolean(video.url),
-  );
-
-type SectionMeta = {
-  title: string;
-  cover: string;
-  episodes: RawVideo[];
-};
-
-/** 读取 B 站 ugc_season.sections[].episodes[] 多合集结构 */
-const seasonSections = (season: unknown): SectionMeta[] => {
-  if (!season || typeof season !== "object") return [];
-  const sections = (season as Record<string, unknown>).sections;
-  if (!Array.isArray(sections)) return [];
-  const result: SectionMeta[] = [];
-  for (const section of sections) {
-    if (!section || typeof section !== "object") continue;
-    const raw = section as Record<string, unknown>;
-    const episodes = Array.isArray(raw.episodes) ? raw.episodes : [];
-    const title = String(raw.title ?? "").trim();
-    if (!episodes.length && !title) continue;
-    result.push({
-      title: title || `合集 ${result.length + 1}`,
-      cover: String(raw.cover ?? ""),
-      episodes: episodes as RawVideo[],
+    const response = await fetch(url, { signal: controller.signal });
+    const payload = await response.json().catch(() => {
+      throw new Error(`接口返回无效数据（HTTP ${response.status}）`);
     });
-  }
-  return result;
-};
-
-/** 读取自定义合集数组（collections / sections / seasons），兼容 {name,title}/{list,episodes,videos} */
-const customSections = (data: Record<string, unknown>): SectionMeta[] => {
-  const result: SectionMeta[] = [];
-  for (const key of ["collections", "sections", "seasons"] as const) {
-    const list = data[key];
-    if (!Array.isArray(list)) continue;
-    for (const section of list) {
-      if (!section || typeof section !== "object") continue;
-      const raw = section as Record<string, unknown>;
-      const episodesRaw =
-        (Array.isArray(raw.episodes) && raw.episodes) ||
-        (Array.isArray(raw.videos) && raw.videos) ||
-        (Array.isArray(raw.list) && raw.list) ||
-        [];
-      const title =
-        String(raw.title ?? raw.name ?? raw.season_title ?? "").trim() ||
-        `合集 ${result.length + 1}`;
-      const cover = String(raw.cover ?? raw.pic ?? "");
-      if (Array.isArray(episodesRaw))
-        result.push({ title, cover, episodes: episodesRaw as RawVideo[] });
-    }
-    if (result.length) break;
-  }
-  return result;
-};
-
-/** 提取分集所属视频的 BV/av 号（episodes[].bvid / bv_id / 对象字段 /.arc.bvid） */
-const episodeBvid = (raw: RawVideo): string => {
-  const direct = raw.bvid ?? raw.bv_id ?? raw.bv ?? raw.video_bvid;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const arc = raw.arc && typeof raw.arc === "object" ? (raw.arc as RawVideo) : null;
-  const arcBvid = arc?.bvid;
-  if (typeof arcBvid === "string" && arcBvid.trim()) return arcBvid.trim();
-  const id = typeof raw.id === "string" ? raw.id : "";
-  return /^BV[0-9A-Za-z]+$/i.test(id) ? id : "";
-};
-
-/** 把单个分集条目转成 MediaVideo（带 _bvid/_page/_sectionIndex/_epNo/_current） */
-const toEpisodeVideo = (
-  raw: RawVideoItem,
-  sectionIndex: number,
-  epNo: number,
-  currentEpisode: string,
-  fallbackTitlePrefix = "EP",
-): MediaVideo | null => {
-  if (typeof raw === "string") {
-    const url = raw.trim();
-    if (!url) return null;
-    return {
-      index: epNo,
-      title: `${fallbackTitlePrefix}${epNo}`,
-      url,
-      _sectionIndex: sectionIndex,
-      _epNo: epNo,
-      _resolved: true,
-    };
-  }
-  const bvid = episodeBvid(raw);
-  const page = Math.max(1, Math.floor(Number(raw.page ?? raw.page_no)) || 1);
-  const cid = typeof raw.cid === "string" && raw.cid ? raw.cid : "";
-  const title =
-    String(raw.title ?? raw.part ?? raw.name ?? "").trim() ||
-    `${fallbackTitlePrefix}${epNo}`;
-  const duration = Number.isFinite(Number(raw.duration))
-    ? Number(raw.duration)
-    : Number.isFinite(Number(raw.duration_ms))
-      ? Number(raw.duration_ms)
-      : null;
-  // 入口命中：current_episode 匹配 bvid / "bvid-page" / cid 任一形式
-  const isCurrent =
-    Boolean(currentEpisode) &&
-    (currentEpisode === bvid ||
-      (Boolean(bvid) && currentEpisode === `${bvid}-${page}`) ||
-      (Boolean(cid) && currentEpisode === cid));
-  return {
-    index: epNo,
-    title,
-    url: typeof raw.url === "string" && raw.url.trim() ? raw.url : "",
-    duration,
-    durationFormat: String(raw.durationFormat ?? raw.duration_format ?? ""),
-    cover: String(raw.cover ?? raw.pic ?? raw.image ?? ""),
-    quality: String(raw.quality ?? ""),
-    video_backup: normalizeBackups(raw.video_backup),
-    _cid: cid || undefined,
-    _bvid: bvid || undefined,
-    _page: page > 1 ? page : undefined,
-    _sectionIndex: sectionIndex,
-    _epNo: epNo,
-    _current: isCurrent,
-    _resolved: Boolean(raw.url),
-  };
-};
-
-/** 合集类型标识：后端把 data.type 标成以下值之一时按合集解析 */
-const COLLECTION_TYPES = new Set([
-  "collection",
-  "collections",
-  "season",
-  "ugc_season",
-]);
-const isCollectionType = (data: Record<string, unknown>) =>
-  COLLECTION_TYPES.has(String(data.type ?? ""));
-
-/** 优先 ugc_season（data 或 extra），其次自定义合集数组 */
-const collectionSectionsOf = (data: Record<string, unknown>): SectionMeta[] => {
-  const extra =
-    data.extra && typeof data.extra === "object"
-      ? (data.extra as Record<string, unknown>)
-      : {};
-  const sections = seasonSections(data.ugc_season ?? extra.ugc_season);
-  return sections.length ? sections : customSections(data);
-};
-
-/** 取第一个非空多数组的原始条目（合成单一合集时用，保留 bvid 等原始字段） */
-const firstMultiRaw = (data: Record<string, unknown>): RawVideo[] | null => {
-  for (const key of MULTI_KEYS) {
-    const list = data[key];
-    if (Array.isArray(list) && list.some((x) => x)) return list as RawVideo[];
-  }
-  return null;
-};
-
-/** 由合集结构（season / 自定义 collections）构建拍平的 videos + collections */
-function synthesizeCollections(
-  data: Record<string, unknown>,
-  primaryUrl: string | null,
-  sourceUrl?: string,
-): { videos: MediaVideo[]; collections: MediaCollection[] } | null {
-  const extra =
-    data.extra && typeof data.extra === "object"
-      ? (data.extra as Record<string, unknown>)
-      : {};
-  // 入口命中的分集：extra.current_episode（"bvid" / "bvid-page" / cid），
-  // 缺失时回退用入口链接里的 BV 号匹配
-  const currentEpisode =
-    typeof extra.current_episode === "string" && extra.current_episode.trim()
-      ? extra.current_episode.trim()
-      : (sourceUrl?.match(/\bBV[0-9A-Za-z]{8,}/i)?.[0] ?? "");
-  let sections = collectionSectionsOf(data);
-  if (sections.length === 0) {
-    // 合集标识 + 顶层多数组（无分区结构）：包装为单一合集
-    if (!isCollectionType(data)) return null;
-    const flat = firstMultiRaw(data);
-    if (!flat) return null;
-    sections = [
-      {
-        title: String(data.title ?? "").trim() || "全部",
-        cover: String(data.cover ?? ""),
-        episodes: flat,
-      },
-    ];
-  }
-
-  const videos: MediaVideo[] = [];
-  const collections: MediaCollection[] = [];
-  let epNo = 0;
-  for (const [sectionIndex, section] of sections.entries()) {
-    const episodes: MediaVideo[] = [];
-    for (const raw of section.episodes) {
-      const video = toEpisodeVideo(raw, sectionIndex, ++epNo, currentEpisode);
-      if (video) episodes.push(video);
-    }
-    if (episodes.length === 0) continue;
-    collections.push({
-      index: collections.length,
-      title: section.title,
-      cover: section.cover || episodes[0]?.cover || "",
-      episodes,
-    });
-    videos.push(...episodes);
-  }
-  if (collections.length === 0) return null;
-  // 入口命中的分集直接回填顶层直链，免去二次解析
-  if (primaryUrl) {
-    const current = videos.find((video) => video._current);
-    if (current && !current.url) {
-      current.url = primaryUrl;
-      current._resolved = true;
-    }
-  }
-  return { videos, collections };
-}
-
-/** 单个原始条目 → MediaVideo */
-export function toMediaVideo(
-  raw: RawVideoItem,
-  index: number,
-  fallbackUrl?: string,
-): MediaVideo {
-  if (typeof raw === "string")
-    return { index: index + 1, title: `P${index + 1}`, url: raw };
-  const error = nonEmptyString(raw.error) ? raw.error : undefined;
-  const url = error ? "" :
-    (typeof raw.url === "string" && raw.url.trim() ? raw.url : "") ||
-    (typeof raw.video_url === "string" && raw.video_url) ||
-    (typeof raw.url2 === "string" && raw.url2) ||
-    fallbackUrl ||
-    "";
-  const pIndex = Math.floor(Number(raw.index));
-  return {
-    ...raw,
-    ...videoMetadata(raw),
-    index: Number.isFinite(pIndex) && pIndex > 0 ? pIndex : index + 1,
-    title: String(raw.title ?? raw.part ?? raw.name ?? `P${index + 1}`),
-    url,
-    duration:
-      typeof raw.duration === "number"
-        ? raw.duration
-        : Number.isFinite(Number(raw.duration_ms))
-          ? Number(raw.duration_ms) / 1000
-          : null,
-    durationFormat: String(raw.durationFormat ?? raw.duration_format ?? ""),
-    cover: String(raw.cover ?? raw.pic ?? ""),
-    quality: String(raw.quality ?? ""),
-    error,
-    _cid: String(raw._cid ?? raw.cid ?? ""),
-    _page: positiveNumber(raw._page ?? raw.page) ?? undefined,
-    _bvid: episodeBvid(raw) || undefined,
-    _resolved: Boolean(url),
-  };
-}
-
-/** 从 data 对象收集多视频；没有多数组才返回 [] */
-export function collectVideos(
-  data: Record<string, unknown>,
-  primaryUrl: string | null,
-): MediaVideo[] {
-  for (const key of MULTI_KEYS) {
-    const list = data[key];
-    if (!Array.isArray(list) || list.length === 0) continue;
-    if (!list.some((x) => x)) continue;
-    return list
-      .filter(
-        (x): x is RawVideoItem =>
-          (typeof x === "string" && Boolean(x.trim())) ||
-          (!!x && typeof x === "object"),
-      )
-      // A missing URL can mean a failed Bilibili part. Never borrow another part's URL.
-      .map((x, i) => toMediaVideo(x, i));
-  }
-  return [];
-}
-
-/**
- * 由 B 站多 P 的 `extra.pages` 元数据合成 videos[]。
- * 每一 P 携带 `_cid` 与 `index`（= 分 P 序号），当前 P 直接回填 url，其余留空待按 P 解析。
- */
-function synthesizeBilibiliPages(
-  data: Record<string, unknown>,
-  primaryUrl: string | null,
-): MediaVideo[] {
-  const extra = (data.extra && typeof data.extra === "object"
-    ? (data.extra as Record<string, unknown>)
-    : {}) as Record<string, unknown>;
-  const pages = Array.isArray(extra.pages) ? (extra.pages as RawVideo[]) : [];
-  if (pages.length < 2) return []; // 单 P 走普通视频逻辑
-  const currentPage = Number(extra.current_page) || 1;
-  return pages.map((p, i) => {
-    const pageNo = Number((p as Record<string, unknown>).page) || i + 1;
-    const isCurrent = pageNo === currentPage;
-    const title = String(
-      (p as Record<string, unknown>).title ||
-        (p as Record<string, unknown>).part ||
-        `P${pageNo}`,
-    );
-    const dur =
-      typeof (p as Record<string, unknown>).duration === "number"
-        ? ((p as Record<string, unknown>).duration as number)
-        : null;
-    return {
-      index: pageNo,
-      title,
-      url: isCurrent && typeof primaryUrl === "string" ? primaryUrl : "",
-      duration: dur,
-      _cid: String((p as Record<string, unknown>).cid || ""),
-      _resolved: isCurrent && typeof primaryUrl === "string",
-      _current: isCurrent,
-    } as MediaVideo;
-  });
-}
-/** 接口数据 → ParsedMedia（导出仅供测试） */
-/**
- * 归一化作者信息。
- * 兼容：author（对象/字符串）、user{name,avatar}、auther（bilibili.php 的拼写变体）
- * 与顶层 avatar。
- */
-const normalizeAuthor = (
-  data: Record<string, unknown>,
-): ParsedMedia["author"] => {
-  const raw = data.author;
-  if (typeof raw === "string" && raw.trim())
-    return { name: raw.trim(), avatar: String(data.avatar ?? "") };
-  if (raw && typeof raw === "object") return raw as ParsedMedia["author"];
-  const user =
-    data.user && typeof data.user === "object"
-      ? (data.user as Record<string, unknown>)
-      : {};
-  const name =
-    (typeof data.auther === "string" && data.auther.trim()) ||
-    (typeof user.name === "string" && user.name.trim()) ||
-    "";
-  const avatar =
-    (typeof data.avatar === "string" && data.avatar) ||
-    (typeof user.avatar === "string" && user.avatar) ||
-    "";
-  return name || avatar ? { name, avatar } : {};
-};
-
-/** 接口数据 → ParsedMedia（导出仅供测试） */
-export const normalizeData = (raw: unknown, sourceUrl?: string): ParsedMedia => {
-  const candidate = Array.isArray(raw) ? raw[0] : raw;
-  if (!candidate || typeof candidate !== "object")
-    throw new ParseError("解析接口没有返回有效数据");
-  const data = resourceFields(candidate as Record<string, unknown>);
-  if (!hasResources(data))
-    throw new ParseError("解析完成，但没有找到可用的视频、图片或音乐资源");
-  const images = Array.isArray(data.images)
-    ? data.images.filter(
-        (item): item is string => nonEmptyString(item),
-      )
-    : [];
-  const type =
-    typeof data.type === "string"
-      ? data.type === "images" ? "image" : data.type
-      : Array.isArray(data.live_photo) && data.live_photo.length
-        ? "live"
-        : images.length && !data.url
-          ? "image"
-          : "video";
-  // Some image parsers also put the first still image in url. It is not a video.
-  const primaryUrl = type === "image" ? null
-    : nonEmptyString(data.url) ? data.url : null;
-  // 优先级：B 站合集 / 自定义合集 → 通用多数组 → B 站多 P pages 合成
-  let videos: MediaVideo[] = [];
-  let collections: MediaCollection[] | undefined;
-  if (isCollectionType(data) || collectionSectionsOf(data).length > 0) {
-    const synthesized = synthesizeCollections(data, primaryUrl, sourceUrl);
-    if (synthesized) {
-      videos = synthesized.videos;
-      collections = synthesized.collections;
-    }
-  }
-  if (videos.length === 0) {
-    videos = collectVideos(data, primaryUrl);
-  }
-  if (videos.length === 0) {
-    videos = synthesizeBilibiliPages(data, primaryUrl);
-  }
-  const rootExtra = recordOf(data.extra);
-  videos = videos.map((video) => {
-    const ownPage = nonEmptyString(video.pageUrl) ? video.pageUrl : undefined;
-    const bvid = video._bvid || episodeBvid(rootExtra)
-      || (ownPage || sourceUrl || "").match(/\bBV[0-9A-Za-z]{10}\b/)?.[0];
-    const page = video._page || (collections?.length ? 1 : video.index);
-    const stableSource = ownPage || (bvid
-      ? `https://www.bilibili.com/video/${bvid}/?p=${page}` : sourceUrl);
-    const currentMetadata: VideoMetadata & { quality?: string } = primaryUrl && video.url === primaryUrl
-      ? { ...videoMetadata(data), quality: String(data.quality || "") } : {};
-    return {
-      ...currentMetadata, ...video,
-      quality: video.quality || currentMetadata.quality || "",
-      _bvid: bvid || undefined, _page: page, _sourceUrl: stableSource,
-      video_backup: normalizeBackups([
-        ...(Array.isArray(video.video_backup) ? video.video_backup : []),
-        ...(primaryUrl && video.url === primaryUrl ? data.video_backup as VideoBackup[] : []),
-      ]),
-    };
-  });
-  // The legacy PHP endpoint returns all parts and its top-level URL may belong
-  // to the last part. Select the requested part explicitly instead of trusting it.
-  let selectedUrl = primaryUrl;
-  if (!collections?.length && videos.length && sourceUrl) {
-    try {
-      const source = new URL(sourceUrl);
-      if (/(^|\.)(bilibili\.com|b23\.tv)$/.test(source.hostname)) {
-        const extra = data.extra && typeof data.extra === "object"
-          ? data.extra as Record<string, unknown> : {};
-        const requested = positiveNumber(source.searchParams.get("p"));
-        const current = Math.max(1, Math.floor(requested ?? positiveNumber(extra.current_page) ?? 1));
-        videos = videos.map((video) => ({ ...video, _current: video.index === current }));
-        selectedUrl = videos.find((video) => video._current)?.url || null;
-      }
-    } catch { /* Share-text handling occurs before normalization. */ }
-  }
-  const totalVideos =
-    (typeof data.totalVideos === "number" && Number.isFinite(data.totalVideos)
-      ? Number(data.totalVideos)
-      : Array.isArray(data.videos) && data.videos.length
-        ? data.videos.length
-        : videos.length) || undefined;
-  const platform =
-    (typeof data.platform === "string" && data.platform) ||
-    (typeof data.source === "string" && data.source) ||
-    undefined;
-  return {
-    ...data,
-    ...videoMetadata(data),
-    type,
-    title: String(data.title || data.desc || data.description || ""),
-    desc: String(data.desc || data.description || data.title || ""),
-    author: normalizeAuthor(data),
-    cover: String(data.cover || images[0] || ""),
-    url: selectedUrl || (!videos.length && type === "video"
-      ? (data.video_backup as VideoBackup[])[0]?.url || null : null),
-    quality: String(data.quality || ""),
-    duration: typeof data.duration === "number" ? data.duration : null,
-    videos: videos.length ? videos : undefined,
-    collections: collections?.length ? collections : undefined,
-    totalVideos,
-    platform,
-    images,
-    live_photo: Array.isArray(data.live_photo) ? data.live_photo.filter(
-      (item) => item && typeof item === "object" &&
-        (nonEmptyString(item.image) || nonEmptyString(item.video)),
-    ) : [],
-    video_backup: data.video_backup as VideoBackup[],
-    music: data.music && typeof data.music === "object" ? data.music : {},
-    extra: normalizeExtra(data),
-    _sourceUrl: sourceUrl || undefined,
-  } as ParsedMedia;
-};
-export const normalizeResponse = (payload: unknown, sourceUrl?: string) => {
-  if (!payload || typeof payload !== "object")
-    throw new ParseError("接口返回为空，请稍后重试");
-  const root = payload as Record<string, unknown>;
-  const rawCode = root.code ?? root.status ?? root.errCode;
-  const numeric = Number(rawCode);
-  const explicit = rawCode !== undefined && rawCode !== null && rawCode !== "";
-  const success = explicit
-    ? numeric === 200 || rawCode === "success" || rawCode === true
-    : Boolean(root.data || root.result || root.url || root.video || root.images || root.imgurl || root.live_photo || root.music || root.video_backup);
-  if (!success)
-    throw new ParseError(
-      messageOf(root) ||
-        (numeric === 404
-          ? "作品不存在、已删除或暂时无法访问"
-          : numeric === 400
-            ? "链接格式不正确或缺少必要参数"
-            : "解析失败，请稍后重试"),
-      { code: rawCode, response: root },
-    );
-  return normalizeData(root.data ?? root.result ?? root, sourceUrl);
-};
-export async function fetchJSON(url: string, timeout = 55000, signal?: AbortSignal) {
-  const controller = new AbortController(),
-    timer = window.setTimeout(() => controller.abort(), timeout);
-  const cancel = () => controller.abort();
-  if (signal?.aborted) cancel();
-  else signal?.addEventListener("abort", cancel, { once: true });
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    const data = await response.json().catch(() => null);
     if (!response.ok)
-      throw new ParseError(
-        messageOf(data) || `接口请求失败（HTTP ${response.status}）`,
-        { status: response.status, response: data },
+      throw new Error(
+        payload?.error?.message || `解析失败（HTTP ${response.status}）`,
       );
-    if (data === null) throw new ParseError("接口返回格式异常，请稍后再试");
-    return data;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError")
-      throw new ParseError(signal?.aborted ? "解析已取消" : "请求超时，请稍后重试或切换平台接口", {
-        code: signal?.aborted ? "cancelled" : "timeout",
-      });
-    if (error instanceof ParseError) throw error;
-    if (error instanceof TypeError)
-      throw new ParseError("网络连接失败，请检查网络后重试");
-    throw error;
+    return payload;
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", cancel);
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
   }
 }
-
+export function resolveApiUrl(raw: string): string {
+  if (!raw.startsWith("/api/resolve?") || /[\\\s#]/.test(raw))
+    throw new Error("条目解析地址无效");
+  return (
+    apiConfig.baseUrl +
+    raw +
+    (new URLSearchParams(raw.split("?")[1]).has("schema_version")
+      ? ""
+      : "&schema_version=1.0")
+  );
+}
 export function useVideoParser(options: {
-  videoStore: VideoStore;
-  locale: Ref<AppLocale>;
-  showBackup: Ref<boolean>;
-  currentVideoUrl: Ref<string>;
-  showToast: (
-    message: string,
-    type?: "success" | "error" | "warning" | "info",
-    duration?: number,
-  ) => unknown;
+  videoStore: ReturnType<typeof useVideoStore>;
+  locale: Ref<string>;
+  showToast: (message: string, type?: ToastType, duration?: number) => unknown;
 }) {
-  const { videoStore, locale, showBackup, currentVideoUrl, showToast } =
-      options,
-    inputUrl = shallowRef(""),
+  const { videoStore, showToast } = options;
+  const inputUrl = shallowRef(""),
     parseError = shallowRef(""),
-    currentPlatform = shallowRef<PlatformKey>("all");
+    currentPlatform = shallowRef("all");
   const parseButton = useButtonControl({
     action: "parse",
     antiReplay: false,
     timeout: 0,
     retry: false,
   });
-  let requestId = 0;
-  let activeController: AbortController | null = null;
-  const clearMedia = () => {
-    videoStore.clearResult();
-    currentVideoUrl.value = "";
-    showBackup.value = false;
-  };
-  const invalidateInput = () => {
-    ++requestId;
-    activeController?.abort();
-    activeController = null;
+  let generation = 0,
+    active: AbortController | null = null;
+  const invalidate = () => {
+    generation++;
+    active?.abort();
+    active = null;
     parseButton.reset();
     parseError.value = "";
-    clearMedia();
+    videoStore.clearResult();
   };
+  watch([inputUrl, currentPlatform], invalidate, { flush: "sync" });
   async function parseVideo() {
-    // A repeated click while the same request is running must not reuse an old result.
-    if (activeController) return;
-    parseError.value = "";
-    const extracted = extractURL(inputUrl.value);
-    if (extracted) inputUrl.value = extracted;
-    const url = (extracted || inputUrl.value).trim();
-    let validUrl = false;
-    try { validUrl = /^https?:$/.test(new URL(url).protocol); } catch { /* Invalid share text. */ }
-    if (!validUrl) {
-      clearMedia();
-      const message = "请输入有效的视频分享链接";
-      parseError.value = message;
-      showToast(message, "warning", 4000);
+    if (active) return;
+    const url = (
+      inputUrl.value.match(/https?:\/\/[^\s<>]+/)?.[0] || inputUrl.value
+    ).trim();
+    try {
+      if (!["http:", "https:"].includes(new URL(url).protocol))
+        throw new Error();
+    } catch {
+      invalidate();
+      parseError.value = "请输入有效分享链接";
       return;
     }
-    const currentRequest = ++requestId;
-    const controller = new AbortController();
-    activeController = controller;
-    const platform = currentPlatform.value;
-    clearMedia();
-    parseButton.reset();
+    if (url !== inputUrl.value) inputUrl.value = url;
+    const run = ++generation,
+      controller = new AbortController();
+    active = controller;
+    videoStore.clearResult();
+    parseError.value = "";
     parseButton.setLoading(true);
     try {
-      const data = secureApiClient
-        ? await secureApiClient.parse({
-            platform,
-            url,
-            locale: locale.value,
-          }, { signal: controller.signal })
-        : await fetchJSON(
-            `${API[platform]}?url=${encodeURIComponent(url)}`,
-            55000,
-            controller.signal,
-          );
-      if (currentRequest !== requestId) return;
-      const normalized = normalizeResponse(data, url);
-      videoStore.setResult(normalized);
-      showToast("解析成功", "success", 2200);
+      const payload =
+        apiConfig.mode === "secure"
+          ? await secureApiClient!.parse(
+              {
+                url,
+                platform: currentPlatform.value,
+                locale: options.locale.value === "en" ? "en" : "zh-CN",
+                schema_version: "1.0",
+              },
+              { signal: controller.signal },
+            )
+          : await fetchJSON(
+              `${apiConfig.parseUrl}?schema_version=1.0&platform=${encodeURIComponent(currentPlatform.value)}&url=${encodeURIComponent(url)}`,
+              controller.signal,
+            );
+      const data = validateMediaEnvelope(payload);
+      if (run === generation && !controller.signal.aborted)
+        videoStore.setResult(data);
     } catch (error) {
-      if (currentRequest !== requestId) return;
-      const message =
-        error instanceof Error
-          ? error.message
-          : "解析失败，请稍后重试";
-      parseError.value = message;
-      showToast(message, "error", 6000);
+      if (run !== generation || controller.signal.aborted) return;
+      parseError.value = error instanceof Error ? error.message : "解析失败";
+      showToast(parseError.value, "error");
     } finally {
-      if (currentRequest === requestId) {
-        activeController = null;
+      if (run === generation) {
+        active = null;
         parseButton.reset();
       }
     }
   }
-  function selectPlatform(key: PlatformKey) {
-    currentPlatform.value = key;
-    parseError.value = "";
-  }
-
-  /** 在 url 上补/覆盖 p 参数（URLSearchParams 会替换同名旧值） */
-  function withPageParam(url: string, page: number): string {
-    const bare = url.split("#")[0];
-    try {
-      const parsed = new URL(bare);
-      parsed.searchParams.set("p", String(page));
-      return parsed.toString();
-    } catch {
-      const sep = bare.includes("?") ? "&" : "?";
-      return `${bare}${sep}p=${page}`;
-    }
-  }
-
-  /**
-   * 懒解析 B 站某一集/某一 P 的真实地址。
-   * - 合集分集（带 _bvid）：跨 BV 直接构造视频页；同 BV（或入口自身多 P）复用入口链接并覆盖 p 参数。
-   * - 多 P（无 _bvid）：按 `video.index`（= 分 P 序号）追加 `?p=N`。
-   * 返回该集的直链与备用画质；失败返回 null。
-   */
-  async function resolveBilibiliVideo(
-    video: Pick<MediaVideo, "index"> &
-      Partial<Pick<MediaVideo, "_bvid" | "_page" | "_cid" | "_sourceUrl">>,
+  async function resolveItem(
+    item: MediaItem,
     signal?: AbortSignal,
-  ): Promise<VideoMetadata & { url: string; video_backup: VideoBackup[]; quality: string } | null> {
-    const resolvingRequest = requestId;
-    const source = video._sourceUrl || videoStore.resultData?._sourceUrl || inputUrl.value;
-    if (!source) return null;
-    const bvid = video._bvid ?? "";
-    let pageUrl: string;
-    if (bvid) {
-      const sameEntry = source.toLowerCase().includes(bvid.toLowerCase());
-      const target = sameEntry
-        ? source
-        : `https://www.bilibili.com/video/${bvid}`;
-      pageUrl = withPageParam(target, Math.max(1, Number(video._page) || 1));
-    } else {
-      pageUrl = withPageParam(
-        source,
-        Math.max(1, Math.floor(Number(video.index)) || 1),
-      );
+  ): Promise<MediaItem> {
+    if (item.state === "unavailable") throw new Error(item.error.message);
+    if (!item.resolve_url) {
+      if (readyItem(item)) return item;
+      throw new Error("条目缺少解析入口");
     }
-    try {
-      const data = secureApiClient
-        ? await secureApiClient.parse({
-            platform: "bilibili",
-            url: pageUrl,
-            locale: locale.value,
-          })
-        : await fetchJSON(
-            `${API.bilibili}?url=${encodeURIComponent(pageUrl)}`,
-            55000,
-            signal,
-          );
-      if (signal?.aborted || requestId !== resolvingRequest) return null;
-      const normalized = normalizeResponse(data, pageUrl);
-      // bilibili.php 型后端会一次返回该 BV 所有分P（videos，各带直链），
-      // 且顶层 url 不一定对应当前页：按目标页码取对应分集的直链
-      const wantPage = bvid
-        ? Math.max(1, Number(video._page) || 1)
-        : Math.max(1, Math.floor(Number(video.index)) || 1);
-      const pageItem = (normalized.videos ?? []).find(
-        (item) => Number(item.index) === wantPage && Boolean(item.url) && !item.error,
-      );
-      if (normalized.videos?.length && !pageItem) return null;
-      const url = pageItem?.url || (typeof normalized.url === "string" ? normalized.url : "");
-      if (!url) return null;
-      return {
-        ...videoMetadata(pageItem || normalized),
-        url,
-        video_backup: normalizeBackups(pageItem?.video_backup ?? normalized.video_backup),
-        quality: pageItem?.quality || normalized.quality || "",
-      };
-    } catch {
-      return null;
-    }
+    const data = validateMediaEnvelope(
+      await fetchJSON(resolveApiUrl(item.resolve_url), signal),
+    );
+    const resolved = data.items.find((candidate) => candidate.id === item.id);
+    if (!resolved) throw new Error("解析响应缺少所请求条目");
+    return resolved;
   }
-
-  watch([inputUrl, currentPlatform], invalidateInput, { flush: "sync" });
   return {
     inputUrl,
     parseError,
     currentPlatform,
     parseButton,
     parseVideo,
-    selectPlatform,
-    resolveBilibiliPage: resolveBilibiliVideo,
+    resolveItem,
+    selectPlatform: (platform: string) => {
+      currentPlatform.value = platform;
+    },
   };
 }

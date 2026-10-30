@@ -3,14 +3,15 @@ import { ref, shallowRef } from "vue";
 import type {
   DownloadInput,
   DownloadTask,
-  ParsedMedia,
+  UnifiedMedia,
+  MediaItem,
   ToastMessage,
   ToastType,
 } from "../types/media";
 
 export const useVideoStore = defineStore("video", () => {
   const resultVersion = ref(0);
-  const resultData = shallowRef<ParsedMedia | null>(null),
+  const resultData = shallowRef<UnifiedMedia | null>(null),
     toasts = ref<ToastMessage[]>([]),
     showProgress = shallowRef(false),
     progressText = shallowRef(""),
@@ -18,13 +19,15 @@ export const useVideoStore = defineStore("video", () => {
     progressPercent = shallowRef(0),
     downloads = ref<DownloadTask[]>([]),
     activeDownloads = shallowRef(new Map<number, DownloadTask>());
-  const setResult = (data: ParsedMedia) => {
-    resultVersion.value++;
+  const setResult = (data: UnifiedMedia) => {
     resultData.value = data;
+    resolvingItems.value = new Set();
+    resultVersion.value++;
   };
   const clearResult = () => {
-    resultVersion.value++;
     resultData.value = null;
+    resolvingItems.value = new Set();
+    resultVersion.value++;
   };
   const addToast = (
     message: string,
@@ -103,41 +106,48 @@ export const useVideoStore = defineStore("video", () => {
     const download = downloads.value.find((item) => item.id === id);
     if (download) {
       download.abortController?.abort();
-      updateDownload(id, { status: "cancelled", statusText: "已取消", speed: 0, observation: undefined, abortController: null });
+      updateDownload(id, {
+        status: "cancelled",
+        statusText: "已取消",
+        speed: 0,
+        observation: undefined,
+        abortController: null,
+      });
     }
   };
   const clearCompletedDownloads = () => {
     downloads.value = downloads.value.filter(
-      (item) => !["completed", "cancelled", "failed", "handed-off", "interrupted"].includes(item.status),
+      (item) =>
+        ![
+          "completed",
+          "cancelled",
+          "failed",
+          "handed-off",
+          "interrupted",
+        ].includes(item.status),
     );
   };
-  /** 懒解析后回填某集字段；videos 与 collections[].episodes 同步更新（shallowRef 需整体重赋值） */
-  const patchVideo = (
-    target: { index: number; _cid?: string; _bvid?: string },
-    patch: Partial<import("../types/media").MediaVideo>,
-  ) => {
+  const resolvingItems = ref(new Set<string>());
+  const replaceItem = (item: MediaItem, version = resultVersion.value) => {
     const data = resultData.value;
-    if (!data) return;
-    const matches = (video: import("../types/media").MediaVideo) =>
-      video.index === target.index &&
-      (video._cid ?? null) === (target._cid ?? null) &&
-      (video._bvid ?? "") === (target._bvid ?? "");
-    const nextVideos = data.videos?.map((video) =>
-      matches(video) ? ({ ...video, ...patch } as import("../types/media").MediaVideo) : video,
-    );
-    const nextCollections = data.collections?.map((collection) => ({
-      ...collection,
-      episodes: collection.episodes.map((video) =>
-        matches(video)
-          ? ({ ...video, ...patch } as import("../types/media").MediaVideo)
-          : video,
-      ),
-    }));
+    if (
+      !data ||
+      version !== resultVersion.value ||
+      !data.items.some((existing) => existing.id === item.id)
+    )
+      return;
     resultData.value = {
       ...data,
-      ...(nextVideos ? { videos: nextVideos } : {}),
-      ...(nextCollections ? { collections: nextCollections } : {}),
+      items: data.items.map((existing) =>
+        existing.id === item.id ? item : existing,
+      ),
     };
+  };
+  const setResolving = (id: string, pending: boolean) => {
+    const next = new Set(resolvingItems.value);
+    if (pending) next.add(id);
+    else next.delete(id);
+    resolvingItems.value = next;
   };
   return {
     resultVersion,
@@ -160,6 +170,8 @@ export const useVideoStore = defineStore("video", () => {
     removeDownload,
     cancelDownload,
     clearCompletedDownloads,
-    patchVideo,
+    replaceItem,
+    resolvingItems,
+    setResolving,
   };
 });

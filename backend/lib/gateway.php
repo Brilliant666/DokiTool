@@ -2,65 +2,63 @@
 declare(strict_types=1);
 require_once __DIR__ . '/runtime.php';
 
-/** DokiTool adapter. Original parser files and their MIT notices remain in api/. */
-function snapPlatforms(): array
-{
-    return [
-        'douyin' => ['file' => 'douyin/douyin.php', 'domains' => ['douyin.com', 'iesdouyin.com']],
-        'kuaishou' => ['file' => 'kuaishou/ksjx.php', 'domains' => ['kuaishou.com']],
-        'bilibili' => ['file' => 'bilibili/bilibili.php', 'domains' => ['bilibili.com', 'b23.tv']],
-        'xiaohongshu' => ['file' => 'xiaohongshu/xhsjx.php', 'domains' => ['xiaohongshu.com', 'xhslink.com']],
-        'toutiao' => ['file' => 'toutiao.php', 'domains' => ['toutiao.com', 'toutiaoimg.com']],
-        'weibo' => ['file' => 'weibo.php', 'domains' => ['weibo.com', 'weibo.cn']],
-        'pipixia' => ['file' => 'ppxia.php', 'domains' => ['pipix.com']],
-        'pipigx' => ['file' => 'pipigx.php', 'domains' => ['pipigx.com', 'ippzone.com']],
-        'zuiyou' => ['file' => 'zuiyou.php', 'domains' => ['izuiyou.com']],
-    ];
-}
+require_once __DIR__ . '/platforms.php';
+require_once __DIR__ . '/media-adapters.php';
 
 function snapPublicRoutes(): array
 {
-    return [
-        '/api/short_videos' => 'all', '/api/douyin' => 'douyin',
-        '/api/ksjx' => 'kuaishou', '/api/bilibili' => 'bilibili',
-        '/api/xhsjx' => 'xiaohongshu', '/api/toutiao' => 'toutiao',
-    ];
+    return ['/api/parse' => 'parse', '/api/resolve' => 'resolve', '/api/platforms' => 'platforms'];
 }
 
-/** Only successful parser output can mint a short-lived, fixed-provider media ticket. */
+function snapError(int $status, string $message): array
+{
+    $code = match ($status) {
+        400, 404, 405, 409, 410 => 'INVALID_INPUT', 403 => 'UPSTREAM_BLOCKED',
+        429 => 'RATE_LIMITED', 500 => 'INTERNAL_ERROR', 503 => 'SERVICE_NOT_CONFIGURED',
+        504 => 'UPSTREAM_TIMEOUT', default => 'UPSTREAM_INVALID_RESPONSE',
+    };
+    return snapContractError($code, $message, in_array($status, [429, 502, 504], true));
+}
+
+function snapEnvelopeStatus(array $payload): int
+{
+    return match ($payload['code']) {
+        'OK' => 200, 'INVALID_INPUT', 'UNSUPPORTED_PLATFORM' => 400,
+        'NO_MEDIA', 'CONTENT_UNAVAILABLE' => 404, 'UPSTREAM_BLOCKED' => 403,
+        'RATE_LIMITED' => 429, 'UPSTREAM_TIMEOUT' => 504, 'SERVICE_NOT_CONFIGURED' => 503,
+        'INTERNAL_ERROR' => 500, default => 502,
+    };
+}
+
+/** Only a registered successful Weibo result may mint a fixed-provider relay ticket. */
 function snapPreparePublicMedia(string $platform, array $payload, int $status = 200, ?string $key = null): array
 {
-    if ($platform !== 'weibo' || $status !== 200 || (int)($payload['code'] ?? 0) !== 200 || !is_array($payload['data'] ?? null)) {
-        return [$status, $payload];
-    }
+    if ($platform !== 'weibo' || $status !== 200 || ($payload['code'] ?? '') !== 'OK') return [$status, $payload];
     require_once __DIR__ . '/weibo-media.php';
     $key ??= getenv('SNAP_MEDIA_SIGNING_KEY') ?: '';
-    if (snapWeiboMediaKey($key) === null) {
-        return [503, snapError(503, '微博播放服务尚未配置，请联系站点维护者')];
+    if (snapWeiboMediaKey($key) === null) return [503, snapError(503, '微博播放服务尚未配置，请联系站点维护者')];
+    $now = time(); $recognized = 0;
+    foreach ($payload['data']['items'] as &$item) {
+        foreach ($item['variants'] ?? [] as $i => $variant) {
+            if (($variant['state'] ?? 'ready') !== 'ready' || $variant['delivery']['kind'] !== 'file') continue;
+            foreach ($variant['delivery']['sources'] as &$source) {
+                if (!snapWeiboMediaAllowedUrl($source['url'])) { $source['availability'] = 'unavailable'; continue; }
+                $recognized++;
+                if (!snapSourceUsable($source, $now)) continue;
+                $expiry = min(isset($source['expires_at']) ? (int)strtotime($source['expires_at']) : $now + SNAP_WEIBO_MEDIA_TTL, $now + SNAP_WEIBO_MEDIA_TTL);
+                $ticket = snapWeiboMediaUrl($source['url'], $key, $now, $expiry);
+                if ($ticket === null) { $source['availability'] = 'unavailable'; continue; }
+                $source['url'] = $ticket; $source['access'] = 'relay';
+                $source['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', $expiry);
+            }
+            unset($source); $item['variants'][$i] = $variant;
+        }
     }
-    $data = $payload['data'];
-    $playback = snapWeiboMediaUrl((string)($data['url'] ?? ''), $key);
-    if ($playback === null) {
-        return [502, snapError(502, '微博暂未提供本站支持的视频源，请稍后重试')];
-    }
-    $data['playback_url'] = $playback;
-    $data['media_delivery'] = 'weibo-relay';
-    $backups = [];
-    foreach (is_array($data['video_backup'] ?? null) ? $data['video_backup'] : [] as $source) {
-        if (!is_array($source)) { continue; }
-        $ticket = snapWeiboMediaUrl((string)($source['url'] ?? ''), $key);
-        if ($ticket === null) { continue; }
-        $source['playback_url'] = $ticket;
-        $backups[] = $source;
-    }
-    $data['video_backup'] = $backups;
-    $payload['data'] = $data;
-    return [$status, $payload];
-}
-
-function snapError(int $code, string $message): array
-{
-    return ['code' => $code, 'msg' => $message, 'data' => null];
+    unset($item);
+    if (!$recognized) return [502, snapError(502, '微博暂未提供本站支持的视频源，请稍后重试')];
+    $payload = snapFinalizeData($payload['data'], $now);
+    snapValidateEnvelope($payload);
+    return [200, $payload];
 }
 
 function snapSend(array $payload, int $status = 200): void
@@ -133,51 +131,16 @@ function snapInternalRequestAllowed(array $server, ?array $settings = null): boo
         && strtolower($server['HTTP_HOST'] ?? '') === $settings['host'];
 }
 
-/** Return [HTTP status, envelope]. A JSON scalar or HTML is never a successful parser response. */
+/** The internal boundary accepts only the new contract; legacy data never leaks through. */
 function snapDecodeResponse(string $body, int $status = 200): array
 {
     $decoded = json_decode($body, true);
-    if (!is_array($decoded) || !array_key_exists('code', $decoded) || !is_numeric($decoded['code'])) {
-        return [502, snapError(502, '解析接口返回格式异常')];
-    }
-    if ($status < 200 || $status >= 300) {
-        if ($status >= 400 && $status <= 599 && (int)$decoded['code'] !== 200) {
-            return [$status, $decoded];
-        }
-        // Internal transport failures must not look like successful parsing.
-        return [502, snapError(502, '内部解析接口请求失败')];
-    }
-    if ((int)$decoded['code'] === 200 && is_array($decoded['data'] ?? null)) {
-        $decoded['data'] = snapNormalizeMedia($decoded['data']);
-    }
-    // Preserve upstream business codes, including failures delivered with HTTP 200.
-    return [200, $decoded];
-}
-
-/** Adapt known legacy field aliases without changing business failures or source selection. */
-function snapNormalizeMedia(array $data): array
-{
-    if (!snapMediaUrl($data['url'] ?? null) && snapMediaUrl($data['video'] ?? null)) {
-        $data['url'] = snapMediaUrl($data['video']);
-    }
-    if (empty($data['images']) && is_array($data['imgurl'] ?? null)) {
-        $data['images'] = array_values(array_filter(array_map('snapMediaUrl', $data['imgurl'])));
-    }
-    if (is_string($data['music'] ?? null)) {
-        $data['music'] = ['url' => snapMediaUrl($data['music'])];
-    }
-    if (is_array($data['video_backup'] ?? null)) {
-        $backups = [];
-        foreach ($data['video_backup'] as $item) {
-            $item = is_string($item) ? ['url' => $item] : $item;
-            if (is_array($item) && snapMediaUrl($item['url'] ?? null)) {
-                $item['url'] = snapMediaUrl($item['url']);
-                $backups[] = $item;
-            }
-        }
-        $data['video_backup'] = $backups;
-    }
-    return $data;
+    if (!is_array($decoded)) return [502, snapError(502, '解析接口返回格式异常')];
+    try { snapValidateEnvelope($decoded); }
+    catch (Throwable $error) { return [502, snapError(502, '解析接口合同校验失败')]; }
+    $expected = snapEnvelopeStatus($decoded);
+    if ($status !== $expected) return [502, snapError(502, '内部解析接口状态不一致')];
+    return [$expected, $decoded];
 }
 
 /** The aggregate request goes only to a configured loopback origin and a fixed Host. */
@@ -187,7 +150,7 @@ function snapForward(string $platform, string $url, ?callable $transport = null,
         return [400, snapError(400, '链接平台不匹配或不受支持')];
     }
     $config = snapInternalSettings($settings);
-    $endpoint = $config['origin'] . '/parse/' . $platform . '?url=' . rawurlencode($url);
+    $endpoint = $config['origin'] . '/parse?platform=' . rawurlencode($platform) . '&url=' . rawurlencode($url);
     if ($transport !== null) {
         $response = $transport($endpoint, $config['host']);
     } else {
@@ -232,8 +195,17 @@ function snapRunParser(string $platform, string $url): void
         'http' => ['timeout' => 20, 'max_redirects' => 5],
         'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
     ]);
-    ob_start(static function (string $body): string {
-        [$status, $payload] = snapDecodeResponse($body, http_response_code() ?: 200);
+    ob_start(static function (string $body) use ($platform, $url): string {
+        try {
+            $raw = json_decode($body, true, 128, JSON_THROW_ON_ERROR);
+            if (!is_array($raw)) throw new UnexpectedValueException('Invalid parser output');
+            $payload = snapAdaptParser($platform, $raw, $url);
+            if ((http_response_code() ?: 200) >= 400 && $payload['code'] === 'OK') throw new UnexpectedValueException('Failed parser returned success');
+            snapValidateEnvelope($payload);
+            $status = snapEnvelopeStatus($payload);
+        } catch (Throwable $error) {
+            $status = 502; $payload = snapError(502, '上游返回不完整或不符合媒体合同的数据');
+        }
         http_response_code($status);
         header_remove('Access-Control-Allow-Origin');
         header('Content-Type: application/json; charset=utf-8');
@@ -247,7 +219,7 @@ function snapRunParser(string $platform, string $url): void
     } catch (Throwable $error) {
         ob_clean();
         http_response_code(500);
-        echo json_encode(snapError(500, '解析服务暂时不可用，请稍后重试'), JSON_UNESCAPED_UNICODE);
+        echo json_encode(['code' => 500, 'msg' => '解析服务暂时不可用，请稍后重试'], JSON_UNESCAPED_UNICODE);
     }
     ob_end_flush();
 }
@@ -256,42 +228,44 @@ function snapHandle(bool $internal = false): void
 {
     $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
     if ($internal && !snapInternalRequestAllowed($_SERVER)) {
-        snapSend(snapError(403, '禁止访问内部接口'), 403);
-        return;
+        snapSend(snapError(403, '禁止访问内部接口'), 403); return;
     }
-    // Streaming must stay outside the legacy JSON output-buffer adapter.
     if (!$internal && $path === '/api/media/weibo') {
-        require_once __DIR__ . '/weibo-media.php';
-        snapHandleWeiboMedia();
-        return;
+        require_once __DIR__ . '/weibo-media.php'; snapHandleWeiboMedia(); return;
     }
-    $routes = $internal ? array_combine(
-        array_map(static fn ($key) => '/parse/' . $key, array_keys(snapPlatforms())),
-        array_keys(snapPlatforms())
-    ) : snapPublicRoutes();
-    if (!is_string($path) || !isset($routes[$path])) {
-        snapSend(snapError(404, '接口不存在'), 404);
-        return;
+    if (!$internal && in_array($path, ['/api/short_videos', '/api/douyin', '/api/ksjx', '/api/bilibili', '/api/xhsjx', '/api/toutiao'], true)) {
+        snapSend(snapError(410, '接口已更新，请等待当前下载结束后刷新页面'), 410); return;
+    }
+    if ((!$internal && !isset(snapPublicRoutes()[$path ?? ''])) || ($internal && $path !== '/parse')) {
+        snapSend(snapError(404, '接口不存在'), 404); return;
     }
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
-        header('Allow: GET');
-        snapSend(snapError(405, '仅支持 GET 请求'), 405);
-        return;
+        header('Allow: GET'); snapSend(snapError(405, '仅支持 GET 请求'), 405); return;
     }
-    $url = snapInputUrl($_GET);
-    $platform = $url === null ? null : snapPlatformForUrl($url);
-    $route = $routes[$path];
-    if ($url === null || $platform === null || ($route !== 'all' && $route !== $platform)) {
-        snapSend(snapError(400, '请输入对应平台的有效分享链接'), 400);
-        return;
+    if (!$internal && ($_GET['schema_version'] ?? null) !== SNAP_SCHEMA_VERSION) {
+        snapSend(snapError(409, '接口版本已更新，请等待当前下载结束后刷新页面'), 409); return;
     }
-    if (!extension_loaded('curl')) {
-        snapSend(snapError(503, '解析服务未配置完成'), 503);
-        return;
+    if ($path === '/api/platforms') { snapSend(snapPlatformCatalog()); return; }
+    $url = snapInputUrl($_GET); $platform = $url === null ? null : snapPlatformForUrl($url);
+    $requestedPlatform = $_GET['platform'] ?? 'all';
+    if ($url === null || $platform === null || !is_string($requestedPlatform) || ($requestedPlatform !== 'all' && $requestedPlatform !== $platform)) {
+        snapSend(snapError(400, '请输入对应平台的有效分享链接'), 400); return;
     }
-    if ($route === 'all') {
-        require __DIR__ . '/../api/sv.php';
-        return;
+    $itemId = $_GET['item_id'] ?? null;
+    if ($path === '/api/resolve' && (!is_string($itemId) || $itemId === '' || strlen($itemId) > 256)) {
+        snapSend(snapError(400, '缺少有效的媒体条目标识'), 400); return;
     }
-    snapRunParser($platform, $url);
+    if (!extension_loaded('curl')) { snapSend(snapError(503, '解析服务未配置完成'), 503); return; }
+    if ($internal) { snapRunParser($platform, $url); return; }
+    [$status, $payload] = snapForward($platform, $url);
+    [$status, $payload] = snapPreparePublicMedia($platform, $payload, $status);
+    if ($status === 200 && $path === '/api/resolve') {
+        $items = array_values(array_filter($payload['data']['items'], static fn ($i) => $i['id'] === $itemId));
+        if (!$items || ($items[0]['state'] ?? 'ready') !== 'ready') {
+            snapSend(snapContractError('CONTENT_UNAVAILABLE', '请求的媒体条目暂时不可用'), 404); return;
+        }
+        $payload['data']['default_item_id'] = $itemId;
+        snapValidateEnvelope($payload);
+    }
+    snapSend($payload, $status);
 }
