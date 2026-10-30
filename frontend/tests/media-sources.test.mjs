@@ -1,35 +1,37 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { transformWithEsbuild } from 'vite';
 import { parse, compileScript } from '@vue/compiler-sfc';
-import { computed, createRenderer, h, markRaw, nextTick, ref } from 'vue';
+import { createRenderer, h, markRaw, nextTick, reactive, ref } from 'vue';
 
 const require = createRequire(import.meta.url);
-let sources, selectSource, ResultSection;
+let labels, contract, useVideoSelection, ResultSection;
 const originals = { window: globalThis.window, document: globalThis.document };
 before(async () => {
-  async function load(relative) {
+  const modules = {};
+  async function load(relative, aliases = {}) {
     const content = await readFile(new URL(relative, import.meta.url), 'utf8');
     const compiled = await transformWithEsbuild(content, relative, { loader: 'ts', format: 'cjs' });
     const module = { exports: {} };
-    new Function('require', 'module', 'exports', compiled.code)(require, module, module.exports);
+    new Function('require', 'module', 'exports', compiled.code)(id => aliases[id] || modules[id] || require(id), module, module.exports);
     return module.exports;
   }
-  sources = await load('../src/utils/mediaSources.ts');
-  selectSource = (await load('../src/utils/mediaSource.ts')).selectMediaSource;
+  contract = modules['../utils/mediaContract'] = await load('../src/utils/mediaContract.ts');
+  labels = modules['../utils/mediaSources'] = await load('../src/utils/mediaSources.ts');
+  modules['../services/apiConfig'] = { apiConfig: { baseUrl: '' } };
+  ({ useVideoSelection } = await load('../src/composables/useVideoSelection.ts'));
   const content = await readFile(new URL('../src/components/ResultSection.vue', import.meta.url), 'utf8');
   const { descriptor } = parse(content);
   const script = compileScript(descriptor, { id: 'media-sources', inlineTemplate: true,
     templateOptions: { compilerOptions: { hoistStatic: false } } });
   const compiled = await transformWithEsbuild(script.content, 'ResultSection.js', { loader: 'js', format: 'cjs' });
   const module = { exports: {} };
-  new Function('require', 'module', 'exports', compiled.code)((id) => {
+  new Function('require', 'module', 'exports', compiled.code)(id => {
     if (id === './VideoPlaylist.vue') return { __esModule: true, default: { render: () => null } };
     if (id === './AppIcon.vue') return { __esModule: true, default: { render: () => h('i') } };
-    if (id === '../utils/mediaSources') return sources;
-    return require(id);
+    return modules[id] || require(id);
   }, module, module.exports);
   ResultSection = module.exports.default;
   globalThis.window = { addEventListener() {}, removeEventListener() {} };
@@ -37,384 +39,204 @@ before(async () => {
 });
 after(() => Object.assign(globalThis, originals));
 
-const format = { quality: '2160p', width: 2160, height: 3840, bit_rate: 5058706, codec: 'hevc' };
-const url = (route) => `https://media.test/${route}.mp4`;
-const base = {
-  ...format, url: url('a'), type: 'video', title: '测试', _sourceUrl: 'https://www.douyin.com/video/123',
-  images: [], live_photo: [], music: {}, extra: {},
-  video_backup: ['b', 'c', 'd'].map(route => ({ ...format, url: url(route) })),
+const url = route => `https://media.example.test/${route}.mp4`;
+const variant = (id, routes = [id], metadata = {}) => ({ id,
+  ...(Object.keys(metadata).length ? { metadata: { ...metadata, evidence: 'probe' } } : {}),
+  delivery: { kind: 'file', sources: routes.map(route => ({ id: route, url: url(route) })) } });
+const item = (variants = [variant('hd', ['a', 'b', 'c', 'd'])], chosen = variants[0].id, sourceId) => {
+  const selected = variants.find(v => v.id === chosen), source = selected.delivery.sources.find(s => s.id === sourceId) || selected.delivery.sources[0];
+  return { id: 'video-1', type: 'video', title: '测试作品', variants,
+    default: { variant_id: selected.id, source_id: source.id, url: source.url, ...(source.access ? { access: source.access } : {}), ...(source.expires_at ? { expires_at: source.expires_at } : {}) } };
 };
+const data = (mediaItem, extra = {}) => ({ platform: 'future_platform', items: [mediaItem], ...extra });
 
-test('identical encodings group their routes without merging codecs, raw bitrates or unknown sources', () => {
-  const data = { ...base, video_backup: [
-    { ...format, url: url('b'), codec: 'H.265' },
-    { ...format, url: url('a') },
-    { ...format, url: url('different-codec'), codec: 'h264' },
-    { ...format, url: url('different-bitrate'), bit_rate: 5058707 },
-    { quality: 'unknown', url: url('unknown-a') },
-    { quality: 'unknown', url: url('unknown-b') },
-    { quality: '2160p', url: url('unverified-a') },
-    { quality: '2160p', url: url('unverified-b') },
-  ] };
-  const groups = sources.groupMediaSources(data);
-  assert.equal(groups.length, 7);
-  assert.deepEqual(groups[0].sources.map(item => item.url), [url('a'), url('b')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('b')), [url('b'), url('a')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('unknown-a')), [url('unknown-a')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('unrecognised')), [url('unrecognised')]);
+test('all design examples are readable without platform-specific normalization', async () => {
+  const directory = new URL('../../docs/schema/unified-v1/examples/', import.meta.url);
+  for (const file of await readdir(directory)) {
+    const envelope = JSON.parse(await readFile(new URL(file, directory), 'utf8'));
+    if (envelope.code !== 'OK') continue;
+    const snapshot = JSON.stringify(envelope);
+    assert.deepEqual(contract.validateMediaEnvelope(envelope), envelope.data, file);
+    assert.equal(JSON.stringify(envelope), snapshot, file);
+  }
 });
 
-test('explicit gear IDs can group incomplete metadata but never override conflicting known encoding details', () => {
-  const data = { url: url('a'), gear_id: 'vendor-format-1', codec: 'h264', video_backup: [
-    { url: url('b'), gear_id: 'vendor-format-1', codec: 'avc1' },
-    { url: url('c'), gear_id: 'vendor-format-1', codec: 'hevc' },
-    { url: url('d'), gear_name: 'vendor-format-1', codec: 'h264' },
-  ] };
-  assert.deepEqual(sources.getSameQualityUrls(data, url('a')), [url('a'), url('b')]);
-  assert.equal(sources.groupMediaSources(data).length, 3);
+test('default follows the exact server reference regardless of array order or client quality guesses', () => {
+  const low = variant('720', ['low'], { width: 720, height: 1280 }), high = variant('4k', ['a', 'b'], { width: 2160, height: 3840 });
+  const value = item([low, high], '4k', 'b'), snapshot = structuredClone(value);
+  assert.equal(contract.getDefaultFileUrl(value), url('b'));
+  value.variants.reverse(); high.delivery.sources.reverse();
+  assert.equal(contract.getDefaultFileUrl(value), url('b'));
+  // This client is deliberately not a second policy engine. Backend semantics
+  // tests reject a low default; this reader must never silently replace it.
+  const serverLow = item([high, low], '720');
+  assert.equal(contract.getDefaultFileUrl(serverLow), url('low'));
+  assert.deepEqual(snapshot.default, value.default);
 });
 
-test('display quality groups combine measured resolutions while preserving encoding variants and strict failover', () => {
-  const data = { ...base, video_backup: [
-    { ...format, url: url('b'), codec: 'H.265' },
-    { ...format, url: url('h264'), codec: 'h264' },
-    { ...format, url: url('other-bitrate'), bit_rate: 5058707 },
-    { ...format, url: url('h264-backup'), codec: 'avc1' },
-    { ...format, url: url('a') },
-    { ...format, url: url('unknown-label'), quality: 'unknown' },
-    { ...format, url: url('1080'), width: 1080, height: 1920 },
-  ] };
-  const strictBefore = sources.groupMediaSources(data);
-  const groups = sources.groupMediaQualities(data);
-  assert.equal(groups.length, 2);
-  assert.deepEqual(groups[0].sources.map(item => item.url), [url('a'), url('b'), url('h264'), url('other-bitrate'), url('h264-backup'), url('unknown-label')]);
-  assert.deepEqual(groups[0].variants.map(group => group.sources.map(item => item.url)), [
-    [url('a'), url('b')], [url('h264'), url('h264-backup')], [url('other-bitrate')], [url('unknown-label')],
-  ]);
-  assert.deepEqual(groups[1].sources.map(item => item.url), [url('1080')]);
-  assert.deepEqual(sources.groupMediaSources(data), strictBefore);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('b')), [url('b'), url('a')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('h264-backup')), [url('h264-backup'), url('h264')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('other-bitrate')), [url('other-bitrate')]);
-  assert.deepEqual(sources.getSameQualityUrls(data, url('unknown-label')), [url('unknown-label')]);
+test('invalid default projections fail closed instead of borrowing the first file', () => {
+  for (const patch of [{ variant_id: 'missing' }, { source_id: 'missing' }, { url: url('other') }, { access: 'relay' }, { expires_at: '2099-01-01T00:00:00Z' }]) {
+    const value = item(); Object.assign(value.default, patch);
+    assert.equal(contract.getDefaultDownloadTarget(value).kind, 'invalid');
+  }
+  const missingSource = item(); delete missingSource.default.source_id;
+  assert.equal(contract.getDefaultDownloadTarget(missingSource).kind, 'invalid');
 });
 
-test('display quality groups isolate verified highest originals even from an identical compressed encoding', () => {
-  const high = { ...format, bit_rate: 52619915 };
-  const data = { ...base, video_backup: [
-    { ...high, url: url('original'), is_original: true, metadata_source: 'mp4' },
-    { ...high, url: url('compressed-same-format') },
-    { ...high, url: url('original-backup'), is_original: true, metadata_source: 'mp4' },
-    { ...format, width: 720, height: 1280, url: url('720-original'), is_original: true, metadata_source: 'mp4' },
-  ] };
-  const groups = sources.groupMediaQualities(data);
-  assert.equal(groups.length, 3);
-  assert.deepEqual(groups[0].sources.map(item => item.url), [url('original'), url('original-backup')]);
-  assert.deepEqual(groups[0].variants.map(group => group.sources.map(item => item.url)), [[url('original'), url('original-backup')]]);
-  assert.deepEqual(groups[1].sources.map(item => item.url), [url('a'), url('compressed-same-format')]);
-  assert.deepEqual(groups[2].sources.map(item => item.url), [url('720-original')]);
-  assert.ok(groups[0].sources.every(item => sources.isHighestOriginalSource(item, sources.getMediaSources(data))));
-  assert.equal(sources.isHighestOriginalSource(groups[2].sources[0], sources.getMediaSources(data)), false);
+test('expired and unavailable sources never silently choose another variant', () => {
+  const value = item(); value.variants[0].delivery.sources[0].expires_at = '2020-01-01T00:00:00Z'; value.default.expires_at = '2020-01-01T00:00:00Z';
+  assert.equal(contract.getDefaultDownloadTarget(value).kind, 'needs_refresh');
+  delete value.variants[0].delivery.sources[0].expires_at; delete value.default.expires_at;
+  value.variants[0].delivery.sources[0].availability = 'unavailable';
+  assert.equal(contract.getDefaultDownloadTarget(value).kind, 'unavailable');
+  assert.equal(contract.getDownloadTarget(value, { variant_id: 'hd', source_id: 'b' }).url, url('b'));
 });
 
-test('display quality groups never infer unmeasured resolution from labels but retain explicit strict gear groups', () => {
-  const data = { url: url('label-a'), quality: '1080p', video_backup: [
-    { url: url('label-b'), quality: '1080p' },
-    { url: url('unverified-original'), quality: 'original', is_original: true, metadata_source: 'mp4', bit_rate: 1000000 },
-    { url: url('unknown-a'), quality: 'unknown' },
-    { url: url('unknown-b'), quality: 'unknown' },
-    { url: url('gear-a'), quality: '1080p', gear_id: 'vendor-id', codec: 'h264' },
-    { url: url('gear-b'), quality: '1080p', gear_id: 'vendor-id', codec: 'avc1' },
-    { url: url('measured'), quality: 'unknown', width: 720, height: 1280 },
-  ] };
-  const groups = sources.groupMediaQualities(data);
-  assert.deepEqual(groups.map(group => group.sources.map(item => item.url)), [
-    [url('measured')], [url('label-a')], [url('label-b')], [url('unverified-original')],
-    [url('unknown-a')], [url('unknown-b')], [url('gear-a'), url('gear-b')],
-  ]);
-  assert.ok(groups.slice(1).every(group => group.variants.length === 1));
+test('source signatures survive relay expansion and unsafe origins or paths are rejected', () => {
+  const signed = '/api/media?ticket=abc%2Bdef%2Fghi%3D&x=one+two';
+  assert.equal(contract.sourceUrl({ url: signed, access: 'relay' }, { apiOrigin: 'https://api.example.test' }), 'https://api.example.test' + signed);
+  assert.equal(contract.sourceUrl({ url: url('a') + '?sig=a%2Bb+Z' }), url('a') + '?sig=a%2Bb+Z');
+  for (const path of ['/api/../private', '/api/%252e%252e/private', '//evil.test/api/a', '/api/a#secret', '/api/%5cprivate']) assert.throws(() => contract.sourceUrl({ url: path, access: 'relay' }));
+  for (const origin of ['https://user:pass@api.example.test', 'https://api.example.test/path', 'https://api.example.test?x=1', 'https://api.example.test/prefix/..', 'https://api.example.test/%2e%2e', 'https://api.example.test:99999']) assert.throws(() => contract.sourceUrl({ url: signed, access: 'relay' }, { apiOrigin: origin }));
 });
 
-test('display quality groups sort measured sizes and keep orientation, upstream preference and inputs intact', () => {
-  const data = { ...format, url: url('portrait'), width: 1080, height: 1920, video_backup: [
-    { ...format, url: url('4k-h264'), codec: 'h264' },
-    { ...format, url: url('landscape'), width: 1920, height: 1080 },
-    { url: url('unknown'), quality: '2160p' },
-    { ...format, url: url('4k-hevc'), codec: 'H.265' },
-    { ...format, url: url('4k-h264-backup'), codec: 'avc1' },
-    { ...format, url: url('portrait'), width: 4320, height: 7680 },
-    { ...format, url: url('720'), width: 720, height: 1280 },
-  ] };
-  const snapshot = structuredClone(data);
-  data.video_backup.forEach(Object.freeze); Object.freeze(data.video_backup); Object.freeze(data);
-  const groups = sources.groupMediaQualities(data);
-  assert.deepEqual(groups.map(group => group.sources[0].url), [url('4k-h264'), url('portrait'), url('landscape'), url('720'), url('unknown')]);
-  assert.deepEqual(groups[0].sources.map(item => item.url), [url('4k-h264'), url('4k-hevc'), url('4k-h264-backup')]);
-  assert.deepEqual(groups[0].variants.map(group => group.sources[0].url), [url('4k-h264'), url('4k-hevc')]);
-  assert.deepEqual(data, snapshot);
-  assert.equal(groups[0].variants[1].sources[0].codec, 'hevc');
-  assert.equal(data.video_backup[3].codec, 'H.265');
-  assert.deepEqual(sources.groupMediaQualities(null), []);
-  assert.deepEqual(sources.groupMediaQualities(undefined), []);
+test('DASH, mux and remux cannot masquerade as a complete downloadable video', () => {
+  const dash = { id: 'dash', delivery: { kind: 'dash', scope: 'adaptive', sources: [{ url: 'https://media.example.test/manifest.mpd' }] } };
+  const video = { id: 'v', role: 'video', delivery: variant('track').delivery }, audio = { id: 'a', role: 'audio', delivery: variant('audio').delivery };
+  const mux = { id: 'mux', delivery: { kind: 'mux', resources: [video, audio], output: { container: 'mp4', extension: 'mp4' } } };
+  const remux = { id: 'remux', delivery: { kind: 'segments', join: 'remux', pieces: [{ index: 1, sources: [{ url: url('segment') }] }] } };
+  for (const processing of [dash, mux, remux]) {
+    const value = { id: 'one', type: 'video', variants: [processing], default: null, default_unavailable_reason: 'processing_required' };
+    assert.equal(contract.getDefaultFileUrl(value), null);
+    const selected = contract.getDownloadTarget(value, { variant_id: processing.id });
+    assert.equal(selected.kind, 'unsupported'); assert.match(selected.message, /暂不支持/);
+    assert.deepEqual(selected.requires, contract.requiredCapabilities(processing.delivery));
+  }
 });
 
-test('source changes preserve original-file provenance on its own route and clear it on other routes', () => {
-  const original = { ...format, index: 1, url: url('original'), original_url: url('cdn'),
-    playback_url: '/api/media/weibo?ticket=a.b', media_delivery: 'weibo-relay',
-    is_original: true, metadata_source: 'mp4', size: 60342212, segments: [url('old-segment')],
-    video_backup: [{ ...format, url: url('b') }] };
-  const normalized = sources.getMediaSources(original)[0];
-  assert.equal(normalized.is_original, true);
-  assert.equal(normalized.metadata_source, 'mp4');
-  const changed = selectSource(original, original.video_backup[0]);
-  assert.equal(changed.is_original, undefined);
-  assert.equal(changed.metadata_source, undefined);
-  assert.equal(changed.original_url, undefined);
-  assert.equal(changed.segments, undefined);
-  const restored = selectSource(changed, changed.video_backup.find(item => item.url === original.url));
-  assert.equal(restored.is_original, true);
-  assert.equal(restored.metadata_source, 'mp4');
-  assert.equal(restored.size, original.size);
-  assert.equal(restored.original_url, original.original_url);
+test('explicit choice survives refreshed server defaults and never falls back if its identity disappears', () => {
+  const first = item([variant('large'), variant('small')]);
+  const store = reactive({ resultData: data(first) }), selection = useVideoSelection({ videoStore: store }); selection.syncResult();
+  selection.choose({ variant_id: 'small', source_id: 'small' });
+  assert.equal(selection.currentVideoUrl.value, url('small'));
+  store.resultData = data(item([variant('new'), variant('small')], 'new'));
+  assert.equal(selection.currentVideoUrl.value, url('small'));
+  store.resultData = data(item([variant('new')]));
+  assert.equal(selection.currentTarget.value.kind, 'invalid'); assert.equal(selection.currentVideoUrl.value, '');
+  selection.resetDefault(); assert.equal(selection.currentVideoUrl.value, url('new'));
 });
 
-async function mount(data, selection) {
-  const element = (type, text = '') => markRaw({ type, text, props: {}, children: [], parent: null, style: {}, removeAttribute() {}, getAttribute(name) { return this.props[name]; } });
-  const detach = (node) => { if (node.parent) node.parent.children = node.parent.children.filter(item => item !== node); node.parent = null; };
+test('display labels preserve server intent without promoting original endpoint provenance', () => {
+  assert.equal(labels.variantLabel({ ...variant('raw'), provenance: 'original_endpoint' }), '画质未知');
+  assert.equal(labels.variantLabel({ ...variant('raw'), provenance: 'original_endpoint', metadata: { width: 720, height: 1280 } }), '720p');
+  assert.equal(labels.variantLabel({ ...variant('raw'), label: '原画' }), '原画');
+  assert.equal(labels.formatMediaSize(60342212), '60.3 MB'); assert.equal(labels.formatMediaSize(0), '大小未知');
+});
+
+async function mount(mediaData) {
+  const element = (type, text = '') => markRaw({ type, text, props: {}, children: [], parent: null, style: {}, dataset: {}, removeAttribute() {}, getAttribute(name) { return this.props[name]; } });
+  const detach = node => { if (node.parent) node.parent.children = node.parent.children.filter(item => item !== node); node.parent = null; };
   const portal = element('portal');
   const renderer = createRenderer({
-    querySelector: () => portal,
-    createElement: element, createText: text => element('#text', text), createComment: text => element('#comment', text),
+    querySelector: () => portal, createElement: element, createText: text => element('#text', text), createComment: text => element('#comment', text),
     setText(node, text) { node.text = text; }, setElementText(node, text) { node.text = text; node.children = []; },
     parentNode: node => node.parent, nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
-    insert(node, parent, anchor) { detach(node); node.parent = parent; const index = parent.children.indexOf(anchor); parent.children.splice(index < 0 ? parent.children.length : index, 0, node); },
-    remove: detach,
-    patchProp(node, key, _, value) { node.props[key] = value; if (key === 'src') node.src = value; },
+    insert(node, parent, anchor) { detach(node); node.parent = parent; const index = parent.children.indexOf(anchor); parent.children.splice(index < 0 ? parent.children.length : index, 0, node); }, remove: detach,
+    patchProp(node, key, _, value) { node.props[key] = value; if (key === 'src') node.src = value; if (key === 'data-playback-key') node.dataset.playbackKey = value; },
   });
-  const switched = [], copied = [];
-  const state = ref({ resultData: data, resultVersion: 1, selection: selection ? markRaw(selection) : undefined, currentVideoUrl: data.url,
-    locale: 'zh-CN', formatNumber: String, formatDuration: String,
-    onSwitchVideo(source) {
-      switched.push(source.url);
-      if (selection) selection.currentVideo.value = selectSource(selection.currentVideo.value, source);
-      state.value = { ...state.value, currentVideoUrl: source.url };
-    }, onCopyUrl(value) { copied.push(value); },
+  const store = reactive({ resultData: mediaData }), selection = useVideoSelection({ videoStore: store }); selection.syncResult();
+  const switched = [], copied = [], downloaded = [];
+  const state = ref({ resultVersion: 1, locale: 'zh-CN', formatNumber: String, formatDuration: String,
+    onSwitchVideo(choice) { switched.push(choice); selection.choose(choice); }, onCopyUrl(value) { copied.push(value); },
+    onDownloadMain() { downloaded.push(selection.currentTarget.value); },
   });
-  const root = element('root');
-  const app = renderer.createApp({ render: () => h(ResultSection, state.value) });
+  const root = element('root'), app = renderer.createApp({ render: () => h(ResultSection, { ...state.value, resultData: store.resultData, selection: markRaw(selection) }) });
   app.mount(root); await nextTick();
   const findAll = (node, match) => [...(match(node) ? [node] : []), ...node.children.flatMap(child => findAll(child, match))];
   const text = node => [node.text, ...node.children.map(text)].join('');
   const buttons = () => findAll(root, node => node.type === 'button');
-  return { app, state, switched, copied,
-    player: () => findAll(root, node => node.type === 'video')[0],
-    alert: () => findAll(root, node => node.props.role === 'alert')[0],
+  const button = label => buttons().find(node => text(node).includes(label));
+  return { app, store, selection, state, switched, copied, downloaded,
+    player: () => findAll(root, node => node.type === 'video')[0], alert: () => findAll(root, node => node.props.role === 'alert')[0],
     choices: () => buttons().filter(node => String(node.props.class).split(' ').includes('rs-backup-item')),
-    elements: className => findAll(root, node => String(node.props.class).split(' ').includes(className)),
-    textOf: text,
-    copy: () => buttons().find(node => node.children.some(child => String(child.props.class).includes('fa-copy'))).props.onClick(),
-    async showQualities() { buttons().find(node => text(node).includes('画质选项')).props.onClick(); await nextTick(); },
-    async showStats() { buttons().find(node => text(node).includes('数据')).props.onClick(); await nextTick(); },
-    async showInfo() { buttons().find(node => text(node).includes('详情')).props.onClick(); await nextTick(); },
+    elements: className => findAll(root, node => String(node.props.class).split(' ').includes(className)), textOf: text,
+    async click(label) { await button(label).props.onClick(); await nextTick(); },
     async fail(player = this.player()) { player.currentSrc = player.src; player.props.onError({ currentTarget: player }); await nextTick(); },
     text: () => text(root),
   };
 }
 
-test('quality UI groups formats and does not call a lower-bitrate original endpoint original quality', async () => {
-  const view = await mount({ ...base, is_original: true, metadata_source: 'mp4', video_backup: [
-    ...base.video_backup, { ...format, url: url('original-unverified'), bit_rate: 60000000, is_original: true },
-    { quality: 'unknown', url: url('unknown') },
-  ] });
+test('quality UI retains complete variants, truthful sizes and unsupported processing choices', async () => {
+  const original = variant('original', ['raw'], { width: 2160, height: 3840, bitrate_bps: 52619915, video_bitrate_bps: 52000000, audio_bitrate_bps: 128000 }); original.label = '原画'; original.provenance = 'original_endpoint'; original.delivery.sources[0].size_bytes = 60342212;
+  const small = variant('compressed', ['small'], { width: 2160, height: 3840 }); small.delivery.sources[0].size_bytes = 2051199;
+  const dash = { id: 'dash', label: '更高画质', delivery: { kind: 'dash', scope: 'adaptive', sources: [{ url: 'https://media.example.test/manifest.mpd' }] } };
+  const value = item([original, small, dash], 'original'), snapshot = structuredClone(value), view = await mount(data(value));
   try {
-    await view.showQualities();
-    assert.equal(view.choices().length, 2);
-    assert.equal(view.text().split('原始入口').length - 1, 1);
-    assert.doesNotMatch(view.text(), /原画/);
-    assert.match(view.text(), /4 条线路/);
+    await view.click('画质选项'); assert.equal(view.choices().length, 3);
+    assert.deepEqual(view.elements('rs-backup-name').slice(0, 2).map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p']);
+    assert.match(view.text(),/总码率\s+52\.6 Mbps/);assert.match(view.text(),/视频码率\s+52\.0 Mbps/);assert.match(view.text(),/音频码率\s+128 Kbps/);
+    view.choices()[2].props.onClick(); await nextTick(); assert.equal(view.selection.currentTarget.value.kind, 'unsupported');
+    assert.equal(view.player().src, undefined); assert.match(view.text(), /暂不支持/); assert.deepEqual(value, snapshot);
   } finally { view.app.unmount(); }
 });
 
-test('quality names and decimal file sizes distinguish original 4K from compressed 4K and follow the active route', async () => {
-  const low = { ...format, bit_rate: 1800000 };
-  const view = await mount({ ...base, bit_rate: 52619915, size: 60342212,
-    is_original: true, metadata_source: 'mp4', video_backup: [
-      { ...low, url: url('lower-a'), size: 2051199 },
-      { ...low, url: url('lower-b'), size: 2200000 },
-      { ...format, url: url('missing-size'), bit_rate: 900000, size_label: '999 MB' },
-    ] });
+test('compact quality cards preserve the server source, explicit versions and access to every variant', async () => {
+  const raw = variant('raw', ['raw-source'], { width: 2160, height: 3840 });
+  raw.provenance = 'original_endpoint'; raw.delivery.sources[0].size_bytes = 60342212;
+  const compressed = variant('4k', ['compressed'], { width: 2160, height: 3840 });
+  const h264 = variant('1080-h264', ['h264-a', 'h264-b'], { width: 1080, height: 1920, video_codec: 'h264' });
+  const hevc = variant('1080-hevc', ['hevc-a', 'hevc-b'], { width: 1080, height: 1920, video_codec: 'hevc' });
+  const low = variant('720', ['low'], { width: 720, height: 1280 });
+  const dash = { id: 'dash', metadata: { width: 1080, height: 1920 }, delivery: { kind: 'dash', scope: 'adaptive', sources: [{ url: 'https://media.example.test/manifest.mpd' }] } };
+  const pending = { id: 'pending', state: 'deferred', reason: { code: 'PENDING_CAPABILITY', message: '原始资源待解析' } };
+  const value = item([raw, compressed, h264, hevc, low, dash, pending], '1080-hevc', 'hevc-b');
+  const snapshot = structuredClone(value), view = await mount(data(value));
   try {
-    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '原画');
-    assert.match(view.text(), /画质原画/);
-    await view.showQualities();
-    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p']);
-    assert.equal(view.elements('rs-backup-variants').length, 0);
-    assert.match(view.text(), /2 条线路/);
-    view.choices()[1].props.onClick(); await nextTick();
-    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '2160p');
-    await view.fail();
-    assert.equal(view.player().src, url('lower-b'));
-    assert.equal(view.textOf(view.elements('rs-backup-name')[1]), '2.2 MB · 2160p');
-    await view.showInfo();
-    assert.match(view.text(), /画质2160p/);
+    await view.click('画质选项');
+    assert.equal(view.choices().length, 6, 'only ordinary files of one measured resolution share a display card');
+    assert.equal(view.selection.currentSelection.value, null);
+    assert.equal(view.selection.currentTarget.value.url, url('hevc-b'));
+    assert.match(view.text(), /原始入口/); assert.match(view.text(), /原始资源待解析/); assert.match(view.text(), /暂不支持/);
+    await view.click('全部版本 (7)');
+    assert.equal(view.choices().length, 7);
+    assert.equal(view.selection.currentTarget.value.url, url('hevc-b'), 'expansion never selects a different source');
+    view.choices()[2].props.onClick(); await nextTick();
+    assert.deepEqual(view.selection.currentSelection.value, { variant_id: '1080-h264', source_id: 'h264-a' });
+    view.selection.choose({ variant_id: '1080-h264', source_id: 'h264-b' }); await nextTick();
+    await view.click('精简展示');
+    assert.equal(view.choices().length, 6);
+    assert.equal(view.selection.currentTarget.value.url, url('h264-b'), 'collapsing keeps the exact explicit route');
+    assert.match(view.textOf(view.choices()[2]), /h264/);
+    assert.deepEqual(value, snapshot, 'display grouping never mutates or removes domain variants');
   } finally { view.app.unmount(); }
 });
 
-test('one card per resolution hides variant controls while retaining source data and strict fallback', async () => {
-  const hd = { quality: '1080p', width: 1080, height: 1920, codec: 'h264', bit_rate: 919000 };
-  const small = { quality: '720p', width: 720, height: 1280, codec: 'h264', bit_rate: 801000 };
-  const data = { ...base, ...hd, size: 1100000, video_backup: [
-    { ...hd, url: url('hd-route-b'), size: 1100000 },
-    { ...hd, quality: '高清', codec: 'hevc', bit_rate: 523000, url: url('hd-hevc'), size: 600000 },
-    { ...small, url: url('720-first'), size: 900000 },
-    { ...small, bit_rate: 666000, url: url('720-other'), size: 800000 },
-  ] };
-  const before = structuredClone(data);
-  const view = await mount(data);
+test('player fallback stays in the selected variant, stops at three routes and ignores stale DOM events', async () => {
+  const view = await mount(data(item([variant('hd', ['a', 'b', 'c', 'd']), variant('lower', ['low'])])));
   try {
-    await view.showQualities();
-    assert.equal(view.choices().length, 2);
-    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['1.1 MB · 1080p', '0.9 MB · 720p']);
-    assert.equal(view.elements('rs-backup-variants').length, 0);
-    assert.equal(view.elements('rs-variant-item').length, 0);
-    assert.deepEqual(data, before, 'removing the controls must not remove or rewrite raw alternatives');
-    await view.fail();
-    assert.equal(view.player().src, url('hd-route-b'), 'the selected version retains its strict CDN fallback');
-    await view.fail();
-    assert.ok(view.alert(), 'exhausted routes cannot automatically switch codec or bitrate');
-    assert.deepEqual(view.switched, [url('hd-route-b')]);
-    // A selected route from the owning parser state still becomes this resolution's
-    // representative, even though the UI no longer offers the variant dropdown.
-    view.state.value = { ...view.state.value, currentVideoUrl: url('hd-hevc') }; await nextTick();
-    assert.equal(view.player().src, url('hd-hevc'));
-    assert.equal(view.textOf(view.elements('rs-backup-name')[0]), '0.6 MB · 1080p');
-    assert.match(view.textOf(view.choices()[0]), /523 Kbps.*hevc/);
-    view.copy(); assert.equal(view.copied.at(-1), url('hd-hevc'));
-    await view.fail();
-    assert.ok(view.alert(), 'same resolution does not authorize automatic codec or bitrate fallback');
-    assert.deepEqual(view.switched, [url('hd-route-b')]);
-    view.choices()[1].props.onClick(); await nextTick();
-    assert.equal(view.player().src, url('720-first'), 'unselected resolutions retain the upstream preferred version');
-    await view.fail();
-    assert.ok(view.alert());
-    assert.deepEqual(view.switched, [url('hd-route-b'), url('720-first')]);
-    assert.deepEqual(data, before);
+    const old = view.player(); await view.fail(old); assert.equal(view.player().src, url('b'));
+    await view.fail(old); assert.equal(view.player().src, url('b')); assert.equal(view.switched.length, 1);
+    await view.fail(); assert.equal(view.player().src, url('c')); await view.fail(); assert.ok(view.alert());
+    assert.equal(view.switched.length, 2); assert.equal(view.player().src, url('c'));
+    await view.click('复制链接'); await view.click('下载视频'); assert.equal(view.copied.at(-1), url('c')); assert.equal(view.downloaded.at(-1).url, url('c'));
+    await view.click('画质选项'); view.choices()[1].props.onClick(); await nextTick(); assert.equal(view.player().src, url('low'));
+    await view.fail(); assert.ok(view.alert()); assert.equal(view.player().src, url('low'));
+    view.choices()[0].props.onClick(); await nextTick(); await view.fail(); assert.equal(view.player().src, url('b'), 'manual selection resets only this player retry budget');
   } finally { view.app.unmount(); }
 });
 
-test('a 720p original endpoint never outranks 4K and an unverified original label never claims original quality', async () => {
-  const view = await mount({ ...base, video_backup: [
-    { ...format, quality: 'original', width: 720, height: 1280, url: url('720-original'),
-      is_original: true, metadata_source: 'mp4', size: 12376415 },
-    { url: url('unverified'), quality: 'original', size: 5000000 },
-  ] });
+test('new result resets playback failures while stale events cannot alter the new item', async () => {
+  const view = await mount(data(item([variant('single')])));
   try {
-    await view.showQualities();
-    assert.deepEqual(view.elements('rs-backup-name').map(view.textOf), ['大小未知 · 2160p', '12.4 MB · 720p', '5.0 MB · 画质未知']);
-    assert.match(view.text(), /原始入口/);
-    view.choices()[1].props.onClick(); await nextTick();
-    assert.equal(view.textOf(view.elements('rs-quality-tag')[0]), '720p');
-    assert.doesNotMatch(view.text(), /原画/);
+    await view.fail(); assert.ok(view.alert()); const stale = view.player();
+    view.store.resultData = data(item([variant('new', ['next', 'next-backup'])])); view.selection.syncResult(); view.state.value = { ...view.state.value, resultVersion: 2 }; await nextTick();
+    assert.equal(view.alert(), undefined); await view.fail(stale); assert.equal(view.player().src, url('next'));
+    await view.fail(); assert.equal(view.player().src, url('next-backup'));
   } finally { view.app.unmount(); }
 });
 
-test('invalid or absent byte counts stay unknown and sizes use decimal MB', () => {
-  for (const invalid of [undefined, null, '', ' ', true, {}, 0, -1, Infinity, 1.5, 'broken']) {
-    assert.equal(sources.formatMediaSize(invalid), '大小未知');
-  }
-  assert.equal(sources.formatMediaSize(1000000), '1.0 MB');
-  assert.equal(sources.formatMediaSize('60342212'), '60.3 MB');
-  assert.equal(sources.formatMediaSize(1), '<0.1 MB');
-  assert.equal(sources.formatMediaSize(undefined, 'en'), 'Size unknown');
-});
-
-test('Douyin zero plays show an explained unknown without overwriting real zeros or raw statistics', async () => {
-  const statistics = { play_count: 0, digg_count: 0, comment_count: 1031 };
-  const view = await mount({ ...base, extra: { statistics } });
-  try {
-    await view.showStats();
-    assert.deepEqual(view.elements('rs-stat-num').map(view.textOf), ['—', '0', '1031']);
-    assert.equal(view.elements('rs-stat-num')[0].props['aria-describedby'], 'rs-play-count-note');
-    assert.match(view.text(), /上游返回 0，实际播放量暂无法核实/);
-    assert.equal(statistics.play_count, 0);
-    view.state.value = { ...view.state.value, resultData: { ...base, extra: { statistics: { ...statistics, play_count: 120 } } } };
-    await nextTick();
-    assert.equal(view.textOf(view.elements('rs-stat-num')[0]), '120');
-    assert.equal(view.elements('rs-stat-note').length, 0);
-  } finally { view.app.unmount(); }
-});
-
-test('other platforms retain zero plays, missing plays are omitted, and explicit platform works without an input URL', async () => {
-  for (const data of [
-    { ...base, platform: 'bilibili' },
-    { ...base, _sourceUrl: 'https://www.weibo.com/123' },
-    { ...base, _sourceUrl: 'https://douyin.com.example.test/123' },
-  ]) {
-    const view = await mount({ ...data, extra: { statistics: { play_count: 0, digg_count: 0 } } });
-    try {
-      await view.showStats();
-      assert.deepEqual(view.elements('rs-stat-num').map(view.textOf), ['0', '0']);
-      assert.equal(view.elements('rs-stat-note').length, 0);
-    } finally { view.app.unmount(); }
-  }
-  const missing = await mount({ ...base, extra: { statistics: { digg_count: 0 } } });
-  try { await missing.showStats(); assert.deepEqual(missing.elements('rs-stat-label').map(missing.textOf), ['点赞']); }
-  finally { missing.app.unmount(); }
-  const explicit = await mount({ ...base, _sourceUrl: undefined, platform: '抖音', extra: { statistics: { play_count: 0 } } });
-  try {
-    await explicit.showStats();
-    assert.equal(explicit.textOf(explicit.elements('rs-stat-num')[0]), '—');
-    explicit.state.value = { ...explicit.state.value, locale: 'en' }; await nextTick();
-    assert.match(explicit.text(), /actual play count cannot currently be verified/);
-  } finally { explicit.app.unmount(); }
-});
-
-test('playback tries at most two same-quality alternatives, ignores old events, and manual/new-result choices reset attempts', async () => {
-  const view = await mount({ ...base, video_backup: [...base.video_backup,
-    { ...format, width: 1080, height: 1920, url: url('lower') }] });
-  try {
-    const old = view.player();
-    await view.fail(); assert.equal(view.player().src, url('b')); assert.equal(view.alert(), undefined);
-    await view.fail(old); assert.deepEqual(view.switched, [url('b')]);
-    view.copy(); assert.equal(view.copied.at(-1), url('b'));
-    await view.fail(); assert.equal(view.player().src, url('c'));
-    await view.fail(); assert.ok(view.alert());
-    assert.deepEqual(view.switched, [url('b'), url('c')], 'fourth route and lower quality must not be tried');
-    await view.showQualities();
-    const beforeManual = view.player(); view.choices()[0].props.onClick();
-    beforeManual.props.onError({ currentTarget: beforeManual }); await nextTick();
-    assert.equal(view.player().src, url('c'), 'an event from the old DOM during the render gap is stale');
-    assert.equal(view.alert(), undefined);
-    await view.fail(); assert.equal(view.player().src, url('a'), 'manual re-selection resets the bounded attempt budget');
-    view.state.value = { ...view.state.value, resultVersion: 2, currentVideoUrl: base.url }; await nextTick();
-    await view.fail(); assert.equal(view.player().src, url('b'));
-  } finally { view.app.unmount(); }
-});
-
-test('unknown sources do not auto-switch to another unknown or a known lower quality', async () => {
-  const view = await mount({ ...base, quality: 'unknown', video_backup: [
-    { quality: 'unknown', url: url('unknown') }, { ...format, url: url('known') },
-  ] });
-  try { await view.fail(); assert.ok(view.alert()); assert.deepEqual(view.switched, []); }
+test('statistics distinguish a verified zero from an unverified count without platform checks', async () => {
+  const view = await mount(data(item(), { statistics: { plays: { state: 'unverified' }, likes: { state: 'known', value: 0 } } }));
+  try { await view.click('数据'); assert.deepEqual(view.elements('rs-stat-num').map(view.textOf), ['—', '0']); assert.match(view.text(), /未将缺失值当作 0/); }
   finally { view.app.unmount(); }
-});
-
-test('multi-P failover updates the selected episode and resets its budget when the episode changes', async () => {
-  const episode = index => ({ ...format, index, url: url('a'), video_backup: [{ ...format, url: url('b') }] });
-  const videos = [episode(1), episode(2)];
-  const currentVideo = ref(videos[0]);
-  const selection = { currentVideo, currentVideoUrl: computed(() => currentVideo.value.url),
-    visibleList: ref(videos), selectedIndex: ref(0), collections: ref([]), sectionIndex: ref(0),
-    selectedCount: ref(0), total: ref(2), selectedSet: ref(new Set()) };
-  const view = await mount({ ...base, videos }, selection);
-  try {
-    await view.fail(); assert.equal(currentVideo.value.url, url('b'));
-    view.copy(); assert.equal(view.copied.at(-1), url('b'));
-    const previousPlayer = view.player();
-    currentVideo.value = videos[1]; selection.selectedIndex.value = 1; await nextTick();
-    assert.notEqual(view.player(), previousPlayer);
-    await view.fail(); assert.equal(currentVideo.value.url, url('b'));
-    await view.fail(previousPlayer); assert.deepEqual(view.switched, [url('b'), url('b')]);
-    await view.fail(); assert.ok(view.alert());
-  } finally { view.app.unmount(); }
 });

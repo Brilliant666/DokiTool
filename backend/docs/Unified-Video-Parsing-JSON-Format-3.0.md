@@ -1,3 +1,9 @@
+# Historical upstream reference
+
+This document preserves the upstream 3.0 format for parser maintenance only.
+It is not DokiTool's public API. The current contract is
+[unified media v1](../../docs/API.md); legacy public-field compatibility has been removed.
+
 <div align="center">
   <h1>Unified Video Parsing JSON Format 3.0</h1>
   <p>

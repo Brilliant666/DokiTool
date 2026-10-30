@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "silent",
+        "type": "video",
+        "default": {
+          "variant_id": "silent-complete",
+          "url": "https://media.example.test/silent-complete.mp4"
+        },
+        "variants": [
+          {
+            "id": "silent-complete",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": false,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/silent-complete.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

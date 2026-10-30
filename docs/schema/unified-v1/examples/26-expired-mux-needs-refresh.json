@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "expired-mux-item",
+        "type": "video",
+        "default": null,
+        "variants": [
+          {
+            "id": "expired-mux",
+            "delivery": {
+              "kind": "mux",
+              "resources": [
+                {
+                  "id": "expired-mux-video",
+                  "role": "video",
+                  "metadata": {
+                    "width": 3840,
+                    "height": 2160,
+                    "has_audio": false,
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/expired-mux-video",
+                        "expires_at": "2026-10-30T10:00:00Z"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "expired-mux-audio",
+                  "role": "audio",
+                  "metadata": {
+                    "has_audio": true,
+                    "audio_codec": "mp4a.40.2",
+                    "evidence": "upstream"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/expired-mux-audio",
+                        "expires_at": "2026-10-30T10:00:00Z"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "output": {
+                "container": "mp4",
+                "extension": "mp4",
+                "mime_type": "video/mp4"
+              }
+            }
+          }
+        ],
+        "default_unavailable_reason": "needs_refresh"
+      }
+    ],
+    "generated_at": "2026-10-30T12:00:00Z"
+  }
+}

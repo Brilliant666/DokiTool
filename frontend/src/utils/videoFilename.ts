@@ -61,13 +61,16 @@ export function buildMediaFilename(input: {
   title?: string;
   index?: number;
   fallback: string;
+  extension?: string;
 }): string {
+  const extension =
+    (input.extension || "mp4").replace(/[^a-z0-9]/gi, "").slice(0, 12) || "bin";
   const rawTitle = (input.title ?? "").trim();
   const page = typeof input.index === "number" ? input.index : undefined;
   const pageTag = page !== undefined && page > 0 ? `_P${page}` : "";
   if (rawTitle) {
     const base = cleanBase(rawTitle);
-    return `${base}${pageTag}.mp4`;
+    return `${base}${pageTag}.${extension}`;
   }
-  return `${hashMediaName(input.fallback)}.mp4`;
+  return `${hashMediaName(input.fallback)}.${extension}`;
 }

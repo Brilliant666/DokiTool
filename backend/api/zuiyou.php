@@ -168,11 +168,23 @@ function zuiyouResponse(array $data): array
     $member = is_array($post['member'] ?? null) ? $post['member'] : [];
     $images = is_array($post['imgs'] ?? null) ? $post['imgs'] : [];
     $videos = is_array($post['videos'] ?? null) ? $post['videos'] : [];
+    // imgs defines post order; the videos object is only an ID lookup table.
+    $orderedVideos = [];
+    foreach ($images as $image) {
+        $id = $image['id'] ?? null;
+        if ((is_int($id) || is_string($id)) && array_key_exists($id, $videos)) $orderedVideos[$id] = $videos[$id];
+    }
+    $videos = $orderedVideos + $videos;
+    foreach ($videos as $id => &$video) {
+        if (is_array($video)) $video['private_video_id'] = (string)$id;
+    }
+    unset($video);
     $first = $images[0] ?? [];
-    $id = $first['id'] ?? null;
-    $video = $id !== null ? ($videos[$id] ?? null) : null;
-    if (!is_array($video)) { $video = $videos ? reset($videos) : []; }
-    $url = snapMediaUrl(is_array($video) ? ($video['url'] ?? null) : null);
+    $url = '';
+    foreach ($videos as $video) {
+        $url = snapMediaUrl(is_array($video) ? ($video['url'] ?? null) : null);
+        if ($url !== '') break;
+    }
     $pictures = [];
     foreach ($images as $image) {
         $urls = is_array($image['urls'] ?? null) ? $image['urls'] : [];
@@ -188,6 +200,7 @@ function zuiyouResponse(array $data): array
         'title' => $post['content'] ?? '',
         'cover' => snapMediaUrl($first['urls']['540_webp']['urls'][0] ?? ($pictures[0] ?? null)),
         'url' => $url !== '' ? $url : null,
+        'private_videos' => array_values($videos),
     ];
     if ($url === '') { $result['images'] = $pictures; }
     return outputJson(200, '解析成功', $result);

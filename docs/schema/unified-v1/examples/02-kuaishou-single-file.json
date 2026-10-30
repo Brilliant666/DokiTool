@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "kuaishou",
+    "items": [
+      {
+        "id": "kuaishou-one",
+        "type": "video",
+        "default": {
+          "variant_id": "kuaishou-one-file",
+          "url": "https://media.example.test/kuaishou-one-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "kuaishou-one-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/kuaishou-one-file.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "xiaohongshu",
+    "items": [
+      {
+        "id": "kuaishou-one",
+        "type": "video",
+        "default": {
+          "variant_id": "kuaishou-one-file",
+          "url": "https://media.example.test/kuaishou-one-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "kuaishou-one-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/kuaishou-one-file.mp4"
+                }
+              ]
+            }
+          },
+          {
+            "id": "original-pending",
+            "state": "deferred",
+            "label": "原画候选（待解析）",
+            "provenance": "original_endpoint",
+            "reason": {
+              "code": "ORIGINAL_TRANSPORT_PENDING",
+              "message": "原画获取能力尚未接入；未确认此作品存在 4K 文件"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

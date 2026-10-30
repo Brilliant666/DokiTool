@@ -152,12 +152,15 @@ function toutiaoMediaUrl($value): string
 function toutiaoCandidates(array $list): array
 {
     $candidates = [];
-    foreach ($list as $entry) {
+    foreach ($list as $representationIndex => $entry) {
         if (!is_array($entry)) {
             continue;
         }
         $meta = is_array($entry['video_meta'] ?? null) ? $entry['video_meta'] : $entry;
-        $fields = [];
+        $identityUrls = [];
+        foreach (['main_url', 'backup_url', 'backup_url_1', 'backup_url_2'] as $key) if ($identity = toutiaoMediaUrl($entry[$key] ?? null)) $identityUrls[] = $identity;
+        sort($identityUrls);
+        $fields = ['private_representation_id' => hash('sha256', json_encode($identityUrls))];
         foreach (['width' => 'vwidth', 'height' => 'vheight', 'bit_rate' => 'real_bitrate', 'size' => 'size'] as $out => $key) {
             $value = $meta[$key] ?? ($out === 'bit_rate' ? ($meta['bitrate'] ?? null) : null);
             if (is_numeric($value) && (float)$value > 0) {
@@ -220,7 +223,7 @@ function toutiaoResponseFromPage(string $html, string $id): array
         'cover' => snapMediaUrl($video['coverUrl'] ?? $video['poster'] ?? null),
         'video_backup' => array_slice($candidates, 1)] + $candidates[0];
     if (is_string($user['description'] ?? null)) {
-        $data['description'] = $user['description'];
+        $data['author_description'] = $user['description'];
     }
     if (is_array($video['itemCell']['videoAbility']['music'] ?? null)) {
         $data['music'] = $video['itemCell']['videoAbility']['music'];

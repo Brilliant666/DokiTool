@@ -16,6 +16,10 @@ mediaCheck('signed media path is relative and constrained', str_starts_with($rel
 mediaCheck('valid ticket recovers the original signed URL', snapWeiboMediaVerifyTicket($ticket, $key, 1001)['u'] === $url);
 mediaCheck('expired ticket rejected', snapWeiboMediaVerifyTicket($ticket, $key, 2800) === null);
 mediaCheck('future-issued ticket rejected', snapWeiboMediaVerifyTicket($ticket, $key, 999) === null);
+$shortRelay = snapWeiboMediaUrl($url, $key, 1000, 1050);
+parse_str((string)parse_url($shortRelay, PHP_URL_QUERY), $shortQuery);
+mediaCheck('known earlier upstream expiry bounds signed ticket', snapWeiboMediaVerifyTicket($shortQuery['ticket'], $key, 1001)['exp'] === 1050 && snapWeiboMediaVerifyTicket($shortQuery['ticket'], $key, 1050) === null);
+mediaCheck('already expired source cannot mint ticket', snapWeiboMediaUrl($url, $key, 1000, 999) === null);
 mediaCheck('wrong key rejected', snapWeiboMediaVerifyTicket($ticket, str_repeat('other', 10), 1001) === null);
 $tampered = ($ticket[0] === 'A' ? 'B' : 'A') . substr($ticket, 1);
 mediaCheck('payload tampering rejected', snapWeiboMediaVerifyTicket($tampered, $key, 1001) === null);

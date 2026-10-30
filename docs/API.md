@@ -1,62 +1,95 @@
-# API 合同
+# API 合同：统一媒体 v1
 
-以下六个公开解析入口仅接受 GET，查询参数 `url` 是分享 URL 或包含分享 URL 的文本。路径固定，不能用用户输入选择任意 PHP 文件。
+公开解析使用同一套 `items → variants → delivery` 合同。正式结构见 [JSON Schema](schema/unified-v1/unified-v1.schema.json)，选择规则、单位、示例及验证方法见 [schema README](schema/unified-v1/README.md)。本合同取代旧的 `url/images/video_backup/videos/live_photo` 公共返回格式；前端不再双读旧字段，也不按平台猜测字段含义。
 
-| 路径 | 平台/入口 |
+## 固定入口
+
+以下 JSON 接口只接受 GET，必须携带 `schema_version=1.0`。缺少或不匹配的版本会返回明确错误，提示刷新/更新客户端；不会返回旧格式兜底。
+
+| 路径 | 参数与用途 |
 | --- | --- |
-| `/api/short_videos` | 识别域名后分发到内部单平台入口 |
-| `/api/douyin` | 抖音 |
-| `/api/ksjx` | 快手 |
-| `/api/bilibili` | B 站旧版解析器 `bilibili/bilibili.php` |
-| `/api/xhsjx` | 小红书 |
-| `/api/toutiao` | 头条 |
+| `/api/parse` | `url` 为分享 URL 或包含 URL 的分享文本；可选 `platform` 为目录中的 ID，`all` 或省略时识别域名。 |
+| `/api/resolve` | 使用后端给出的 `resolve_url`，携带原分享 `url` 与不透明的 `item_id`，解析指定条目。客户端不能从 ID 拼平台参数或借用其他分 P 的地址。 |
+| `/api/platforms` | 返回启用平台的公开目录。 |
 
-聚合入口另支持微博、皮皮虾、皮皮搞笑、最右。只有 `backend/lib/gateway.php` 列出的平台域名可进入对应解析器；`url` 的完整查询参数会保留，包含 B 站 `p=N`。
-
-另有 `/api/media/weibo?ticket=...` 固定媒体入口，只接受 GET/HEAD 和后端签发的短期票据，不能传任意 URL。GET 支持单段 Range、206/416 和完整 MP4 下载；HEAD 返回完整表示的元信息与零正文，忽略 Range。为兼容源 CDN 的 HEAD 限制，服务端仅探测前 8 字节并验证文件头与总长度，不预取完整视频。它不是 JSON 解析接口，也不在内部解析网关暴露。
-
-典型响应：
-
-```json
-{"code":200,"msg":"success","data":{"title":"示例作品","url":"https://media.example/video.mp4","images":[],"live_photo":[],"video_backup":[]}}
+```sh
+curl --get 'https://snap.example.com/api/parse' \
+  --data-urlencode 'schema_version=1.0' \
+  --data-urlencode 'url=https://www.douyin.com/video/EXAMPLE'
 ```
 
-必须同时检查 HTTP 状态与业务 `code`。HTTP 200 可能携带 `code:404/201/-1/0` 等业务失败。未知路由、方法或输入被网关拒绝；HTML、JSON 标量和无业务码响应转成 502；无可用媒体在前端显示错误。
+上面是格式示例，不是有效平台样本。分享 token、签名参数必须保持完整；不要把实际 token 或返回的签名 URL 写进公开日志、Issue 和夹具。
 
-`data` 可包含 `images`、`live_photo`、`video_backup`、`music`、`videos`、`extra.pages` 与合集信息。视频、图集和实况可能同时出现，客户端应保留所有有效媒体，不能因为存在实况就隐藏普通图片。
+目录响应为 `{"schema_version":"1.0","code":"OK","data":{"platforms":[...]}}`。每个平台包含 `id/name/site_url/capabilities`，可选 `icon`；不会返回内部文件路径。唯一注册源是 `backend/config/platforms.json`，同时供后端路由、CLI 导出和前端构建快照使用。运行中的页面也会获取目录，失败时保留构建快照。没有专用展示图标的新平台使用通用图标，不影响解析。
 
-## 媒体与结果信息
+旧 `/api/short_videos`、`/api/douyin`、`/api/ksjx`、`/api/bilibili`、`/api/xhsjx`、`/api/toutiao` 不再返回旧合同。内部解析仅允许受控 loopback 的 `/parse?platform=...&url=...`；公开 URL 不能选择任意 PHP 文件。
 
-- `url` 是后端为当前作品或指定分 P 选择的主视频地址；`video`、`imgurl`、字符串音乐地址等旧字段在适配层归一化。图集的首张图片不能被当作主视频播放。
-- 微博公开响应保留原始 `url`，同时增加 `media_delivery: "weibo-relay"`、主源及各备用源的 `playback_url`。客户端播放、复制和下载必须一致使用 `playback_url`；它是相对实际 API origin 的固定签名媒体路径，有效期 30 分钟。前端归一化后以 `original_url` 保留原始地址。其他平台继续使用原直链。
-- `video_backup` 使用含 `url` 的对象数组，可带 `label`、`quality` 和可取得的媒体属性；前端同时兼容旧版字符串数组。备用项的位置不代表画质排序，`original` 标签本身也不证明分辨率。
-- `width`、`height`、`bit_rate`、`codec` 描述所选媒体，只有源数据已知时才提供。播放器、复制链接与下载应使用同一个当前选源。
-- 抖音原始播放入口会经过有界 MP4 元数据探测。探测成功的条目带 `metadata_source: "mp4"`、`is_original: true` 及实测尺寸、视频码率、时长和文件字节数 `size`；`is_original` 只表示来自原始入口，不保证比其他源清晰。主源仍按尺寸、码率排序，不能把 720p 原始入口排在已知 4K 源之前。探测失败保留可用主源，未测量的候选不冒充原画。
-- 发布时间兼容 `create_time`（秒或毫秒时间戳）、`publish_time` 与旧 `extra.create_time`；未知时如实显示未知，不能用解析时间补齐。
-- `extra.statistics`、`extra.hashtags`、`extra.video_tags` 分别供数据、话题与标签展示。源站返回的零值与缺失值含义不同：零值可展示，缺失不能补为零。标题中的 `#话题` 可用于话题展示，不能据此生成统计数据。
+## 最小成功响应
 
-B 站按请求的 `p=N` 解析当前分 P，其他分 P 可只返回元数据和懒解析入口；客户端切换或下载时再请求相应分 P。根据 `videos[].index` 选择，不能给失败分 P 借用其他直链。批量下载有条目失败时必须报告失败，不得生成空 ZIP 后显示成功。
+```json
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "douyin",
+    "items": [{
+      "id": "video-1",
+      "type": "video",
+      "variants": [{
+        "id": "file-1",
+        "delivery": {
+          "kind": "file",
+          "sources": [{"url": "https://media.example.test/video.mp4"}]
+        }
+      }],
+      "default": {
+        "variant_id": "file-1",
+        "url": "https://media.example.test/video.mp4"
+      }
+    }]
+  }
+}
+```
 
-### 前端画质与下载
+作品标题、作者、封面、发布时间、标签、统计、分组和附件均为可选，未知值不凭空补齐。多个 item 必须有 `default_item_id`；它选择初始展示条目，不替代每个 item 的默认文件。背景音乐和字幕属于 `attachments`，不能混成视频画质。图像和实况可同时存在，不能互相覆盖。
 
-画质列表按完整尺寸、编码和原始码率合并相同档位的地址，组内保留备用线路；缺少可靠参数的候选保持独立。播放失败或普通文件下载选源时，最多尝试三条同档位线路，不自动降低画质。SW 附件开始交付后发生中断，不再自动换源或重开另一份下载。播放、复制和下载同步使用当前选择。
+## 默认选择与完整媒体
 
-画质卡片首行展示当前线路的文件大小和画质，大小采用该源有效的 `size` 字节数，按十进制 MB（1 MB = 1,000,000 字节）换算；缺失时显示大小未知，不借用其他源的大小。只有经过 MP4 探测、且不低于已知最高档的原始源才显示“原画”；低分辨率原始入口继续显示实际画质。分辨率相同的文件仍可能因码率和编码不同而有明显大小差异。
+默认选择由后端统一计算。`default` 只能指向当前 item 中最高合格的完整 `file` variant；多个来源时必须带 `source_id`。投影 URL、访问方式和已知过期时间必须与被引用的 source 一致。默认优先级、未知规格及同档处理详见 [服务端选择规则](schema/unified-v1/README.md#服务端选择与客户端职责)。
 
-抖音匿名响应中的零播放量无法核实为真实零值时，前端显示 `—` 并说明“上游返回 0，实际播放量暂无法核实”，保留 API 原值。此展示规则不影响其他平台的播放量，也不影响点赞、评论等计数的有效零值；缺失统计不补零。
+普通文件直接使用 `delivery.sources`，不套一层只有一个成员的 `resources`。只有音视频组合 `mux` 和实况 `pair` 使用 `resources`。无完整文件时 `default:null` 并说明 `processing_required`、`needs_refresh`、`needs_resolve` 或 `unavailable`；不能把视频裸轨当成完整视频。
 
-普通文件由浏览器直接读取媒体源：符合附件条件时交给原生下载，否则使用 Service Worker 流式交付；仅在 SW 任务启动前确认浏览器缺少所需流式能力时使用 Blob 兼容路径。注册、桥接加载、协议或源站故障，以及任务状态未知，都不触发自动 Blob 重下。Blob 没有固定文件大小阈值，但仍在浏览器内完整接收文件。三种方式都不是服务器中转标志，微博等明确代理地址除外。
+所有版本保留在 `variants`。已知更高规格但需要处理的可用版本由后端放入 `higher_quality_variants`，引用 variant ID，并给出准确的 `requires`。当前支持范围：
 
-SW 等待传输名额时不启动正式媒体请求；刷新查询仍存在的原任务，不是重新下载或断点续传。任务继续使用原 Worker，更新在任务结束后自然接替。总耗时包含点击后的准备和排队，传输均速另按交付阶段计算，不代表用户线路带宽或已落盘速度。暂时无法查询进度不会清零或直接判定传输失败。任务面板收起不影响下载，清理历史只处理已确认结束的任务。分片和 ZIP 保持独立流程。详见 [下载交付说明](DOWNLOADS.md)。
+| delivery | 本轮行为 |
+| --- | --- |
+| `file` | 完整视频、音频或图片；读取服务端默认/用户显式选择，接入原有下载管理器。 |
+| `hls` | 保留显式清单及作用域，通过既有 HLS 处理流程；不作为完整文件默认。 |
+| `segments` | 只有具备布局验证证据的 `byte_concat` 才允许拼接；`remux` 明确暂不支持。 |
+| `pair` | 静图与动态片段有明确角色，按实况操作处理。 |
+| `dash`、`mux` | 结构保留、能力识别与“暂不支持”提示；不执行音视频合流。 |
 
-### 已接入平台的解析策略
+variant 的 `state:"deferred"` 是待解析能力预留，只有 ID、可选标签/来源说明和 `reason`，没有媒体地址、规格或交付结构；不能进入默认选择或更高画质可交付引用。它也不代表已经拿到 4K。当前预留没有隐含的抓取器或自动重试入口。
 
-- 微博通过官方匿名访客会话读取视频组件和正文媒体信息，头条通过官方匿名 `ttwid` 会话读取页面数据。会话仅在单次解析内存中使用，不需要用户登录 Cookie，不返回会话值。上游仍可能限制匿名访问，初始化或访问失败会明确报错。
-- 解析成功与浏览器可播放是两项检查。微博媒体通过受控签名媒体通道补齐来源要求；未配置服务端签名密钥时公开微博解析返回 503，不能将旧的原 CDN 地址当作站内可播放成功。播放器失败时仍提供说明及原作品入口；过期票据需要重新解析。
-- 微博、头条按返回的尺寸和码率选择主源，保留其他画质和备用线路。皮皮虾读取新版分享页内的当前作品数据并核对作品 ID，不从评论附件取视频。
-- B 站使用普通服务端请求获取元数据与指定分 P。`quality` 描述本次播放接口给出的画质；`extra.source_dimension` 仅表示上传原片尺寸，不能作为当前直链分辨率。匿名样本可能只提供 720p，即使标题或原片标有 4K。
-- B 站 HTTP 412/429 等访问限制、上游连接/响应异常、作品不可见分别返回业务 503、502、404；客户端应显示返回的具体说明，不把临时拦截解释为作品已删除。
+前端通用函数校验并读取后端选择，不按尺寸、码率或数组位置重新挑默认。用户显式选中的 variant/source 在条目更新后仍保留；引用失效则明确提示重新选择。新解析结果不能修改已经建立的下载任务快照。
 
-内部入口为 `/parse/{platform}`，只用于受控 loopback HTTP，要求固定 Host 与 loopback 来源；它不能再次分发聚合入口。公开层与内部层需使用不同 FPM 池。相关配置见 [部署说明](DEPLOYMENT.md)。
+## 规格、统计与来源
 
-`/api/v1/session`、`/api/v1/parse`、原始 PHP 路径、原始 `svproxyurl.php` 开放媒体代理、抖音主页和网易云服务不属于本项目公开 API。
+- 尺寸是所选文件/轨道的尺寸，时长为 `duration_ms`，码率为 `*_bps`，大小为 source 的 `size_bytes`。`metadata.evidence` 区分 `probe/upstream/mixed/unknown`；混合证据逐字段说明。上传原片尺寸不是当前直链尺寸。
+- `provenance:"original_endpoint"` 仅说明来源。它不能独自证明更高画质；未验证规格的原始入口不能覆盖已知高规格完整文件。UI 展示后端标签与实际元数据，不自行将“原始入口”升级成“原画”。
+- 多 CDN 来源属于同一个已确认的文件版本；编码、原始码率、尺寸或明确规格冲突时不能仅按相同分辨率合并。缺少可靠同档证据的候选单独保留。
+- 统计项使用 `state:"known"` 与数值，或 `state:"unverified"`；真实零和无法确认的零不同。平台特有的原值解释由后端处理，前端只显示状态，不再特判抖音。
+- `access` 省略表示 `direct`；`relay` 必须是 API-relative 地址，前端按配置的 API origin 展开。source 不能携带 Cookie、Authorization 或任意请求头。`browser_fetch` 描述可读取性，不等同于默认文件资格，也不是服务器中转指令。
+- 已知有效期写 `expires_at`，同时响应提供 `generated_at`。过期来源不能作为默认；既有选择过期不能静默换成另一版本。
+
+## 分 P、失败和媒体服务
+
+条目状态分为可用、`deferred` 和 `unavailable`。分 P/合集顺序由 `groups[].item_ids` 表达；未解析条目带明确 `resolve_url`，失效条目保留身份与错误。切换、下载时解析对应条目，不能用 P1 直链填补失败的 P2。部分失败可以随其他成功项返回，整体无可用媒体则返回业务错误。
+
+错误响应有 `schema_version/code/error`，`error.code` 与顶层一致；错误无 `data`。客户端同时检查 HTTP 状态和业务码。主要错误码为 `INVALID_INPUT`、`UNSUPPORTED_PLATFORM`、`NO_MEDIA`、`CONTENT_UNAVAILABLE`、`UPSTREAM_INVALID_RESPONSE`、`UPSTREAM_UNAVAILABLE`、`UPSTREAM_TIMEOUT`、`UPSTREAM_BLOCKED`、`RATE_LIMITED`、`SERVICE_NOT_CONFIGURED`、`INTERNAL_ERROR`。可重试错误可提供 `retryable` 与 `retry_after_seconds`。
+
+微博仍通过固定 `/api/media/weibo?ticket=...` 签名媒体服务，GET/HEAD/Range 行为不变。公开层先为统一 source 签名，再重新计算 default，确保投影一致；不再向前端发送 `playback_url/original_url/media_delivery` 旧别名。未配置共享签名密钥明确报错。它不是通用 URL 代理；入口隔离与池配置见 [部署说明](DEPLOYMENT.md#微博播放与下载)。
+
+紫色下载按钮仍按原生附件、SW 流式、能力缺失时 Blob 兼容路径处理完整文件。选源、命名和任务快照在交付前固定；Worker、桥接页和刷新恢复沿用 PR #7，不因统一合同强制升级或重开任务。具体边界及历史实际保存证据见 [下载说明](DOWNLOADS.md)。
+
+`/api/v1/session`、`/api/v1/parse`、原始 PHP 路径、开放媒体代理、Cookie 主页和网易云服务不属于此公开合同。小红书 4K 的传输对照及未完成项见 [研究记录](research/xhs-4k-transport-comparison-2026-10-30.md)；实际媒体探测成功不等于 PHP 页面端到端或浏览器完整保存通过。

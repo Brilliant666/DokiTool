@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "pipigx",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/pipigx/synthetic-001",
+    "items": [
+      {
+        "id": "pipigx-one",
+        "type": "video",
+        "default": {
+          "variant_id": "pipigx-one-file",
+          "url": "https://media.example.test/pipigx-one-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "pipigx-one-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/pipigx-one-file.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

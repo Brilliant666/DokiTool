@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "zuiyou",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/zuiyou/synthetic-001",
+    "items": [
+      {
+        "id": "zy-image",
+        "type": "image",
+        "default": {
+          "variant_id": "zy-jpg",
+          "url": "https://media.example.test/zy-jpg.mp4"
+        },
+        "variants": [
+          {
+            "id": "zy-jpg",
+            "metadata": {
+              "width": 1200,
+              "height": 1600,
+              "container": "jpeg",
+              "extension": "jpg",
+              "mime_type": "image/jpeg",
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/zy-jpg.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

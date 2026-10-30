@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "bilibili",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/bilibili/synthetic-001",
+    "items": [
+      {
+        "id": "p1",
+        "type": "video",
+        "index": 1,
+        "default": {
+          "variant_id": "p1-file",
+          "url": "https://media.example.test/p1-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "p1-file",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/p1-file.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "p2",
+        "type": "video",
+        "index": 2,
+        "title": "合成 P2",
+        "duration_ms": 120000,
+        "default": null,
+        "state": "deferred",
+        "resolve_url": "/api/resolve?reference=p2",
+        "default_unavailable_reason": "needs_resolve"
+      },
+      {
+        "id": "p3",
+        "type": "video",
+        "index": 3,
+        "default": null,
+        "state": "unavailable",
+        "default_unavailable_reason": "unavailable",
+        "error": {
+          "code": "CONTENT_UNAVAILABLE",
+          "message": "合成：该条目不可用"
+        }
+      }
+    ],
+    "default_item_id": "p1",
+    "groups": [
+      {
+        "id": "parts",
+        "kind": "multipart",
+        "item_ids": [
+          "p1",
+          "p2",
+          "p3"
+        ],
+        "total_count": 3,
+        "complete": true
+      }
+    ],
+    "extra": {
+      "source_dimension": {
+        "width": 3840,
+        "height": 2160
+      }
+    }
+  },
+  "warnings": [
+    {
+      "code": "PARTIAL_RESULT",
+      "message": "合成：一项未解析，一项不可用",
+      "item_id": "p3"
+    }
+  ]
+}

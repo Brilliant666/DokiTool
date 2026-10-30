@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--php', required=True)
@@ -34,6 +35,11 @@ for suite in ['weibo', 'toutiao', 'pipixia', 'weibo-media', 'douyin-media']:
     parser_checks.append(dict(payload, successful=checked.returncode == 0
                               and payload.get('total', 0) > 0
                               and payload.get('passed') == payload.get('total')))
+for filename in ['unified-contract.php', 'test_unified_xhs.php',
+                 'unified-review-identity.php', 'unified-review-platforms.php']:
+    checked = run([str(backend / 'tests' / filename)])
+    payload = json.loads(checked.stdout)
+    parser_checks.append(dict(payload, successful=checked.returncode == 0 and payload.get('passed') == payload.get('total')))
 lint = []
 # Retained optional upstream files are ignored, not part of this product's API.
 inventory = json.loads((backend.parent / 'public-files.json').read_text(encoding='utf-8'))
@@ -44,14 +50,14 @@ for source in sorted(php_sources):
     lint.append({'path': source.relative_to(backend).as_posix(), 'passed': checked.returncode == 0})
 
 cases = [
-    ('real Bilibili exit() business failure', '/api/bilibili', 'GET', {'url': 'https://www.bilibili.com/not-a-video'}, '127.0.0.1', 'snap.dokitool.com', '', 200, -1, False),
-    ('real Pipigx HTTP400 business failure', '/parse/pipigx', 'GET', {'url': 'https://h5.pipigx.com/fixture'}, '127.0.0.1', 'snap.dokitool.com', 'internal', 400, 400, False),
-    ('internal rejects remote callers', '/parse/pipigx', 'GET', {'url': 'https://h5.pipigx.com/fixture'}, '8.8.8.8', 'snap.dokitool.com', 'internal', 403, 403, False),
-    ('internal rejects wrong Host', '/parse/douyin', 'GET', {}, '127.0.0.1', 'attacker.test', 'internal', 403, 403, False),
-    ('public media proxy closed', '/api/svproxyurl.php', 'GET', {}, '127.0.0.1', 'snap.dokitool.com', '', 404, 404, False),
-    ('internal cannot call aggregate recursively', '/api/short_videos', 'GET', {}, '127.0.0.1', 'snap.dokitool.com', 'internal', 404, 404, False),
-    ('POST is rejected', '/api/douyin', 'POST', {}, '127.0.0.1', 'snap.dokitool.com', '', 405, 405, False),
-    ('curl missing returns configuration failure', '/api/douyin', 'GET', {'url': 'https://v.douyin.com/fixture'}, '127.0.0.1', 'snap.dokitool.com', '', 503, 503, True),
+    ('real Bilibili business failure', '/parse', 'GET', {'platform': 'bilibili', 'url': 'https://www.bilibili.com/not-a-video'}, '127.0.0.1', 'snap.dokitool.com', 'internal', 400, 'INVALID_INPUT', False),
+    ('real Pipigx business failure', '/parse', 'GET', {'platform': 'pipigx', 'url': 'https://h5.pipigx.com/fixture'}, '127.0.0.1', 'snap.dokitool.com', 'internal', 400, 'INVALID_INPUT', False),
+    ('internal rejects remote callers', '/parse', 'GET', {}, '8.8.8.8', 'snap.dokitool.com', 'internal', 403, 'UPSTREAM_BLOCKED', False),
+    ('internal rejects wrong Host', '/parse', 'GET', {}, '127.0.0.1', 'attacker.test', 'internal', 403, 'UPSTREAM_BLOCKED', False),
+    ('public media proxy closed', '/api/svproxyurl.php', 'GET', {}, '127.0.0.1', 'snap.dokitool.com', '', 404, 'INVALID_INPUT', False),
+    ('internal cannot call aggregate recursively', '/api/parse', 'GET', {}, '127.0.0.1', 'snap.dokitool.com', 'internal', 404, 'INVALID_INPUT', False),
+    ('POST is rejected', '/api/parse', 'POST', {}, '127.0.0.1', 'snap.dokitool.com', '', 405, 'INVALID_INPUT', False),
+    ('curl missing returns configuration failure', '/api/parse', 'GET', {'schema_version': '1.0', 'url': 'https://v.douyin.com/fixture'}, '127.0.0.1', 'snap.dokitool.com', '', 503, 'SERVICE_NOT_CONFIGURED', True),
 ]
 process_checks = []
 for name, path, method, query, remote, host, kind, status, code, no_ini in cases:
@@ -65,13 +71,16 @@ for name, path, method, query, remote, host, kind, status, code, no_ini in cases
         passed = False
     process_checks.append({'name': name, 'passed': passed, 'expected_http_status': status, 'expected_business_code': code})
 
-env = dict(os.environ, SNAP_INTERNAL_ORIGIN='http://127.0.0.1:19187')
-case = run([str(backend / 'tests/cli-request.php'), '/api/short_videos', 'GET', json.dumps({'url': 'https://v.douyin.com/fixture'})], env)
+with socket.socket() as unused:
+    unused.bind(('127.0.0.1', 0))
+    unused_port = unused.getsockname()[1]
+env = dict(os.environ, SNAP_INTERNAL_ORIGIN=f'http://127.0.0.1:{unused_port}')
+case = run([str(backend / 'tests/cli-request.php'), '/api/parse', 'GET', json.dumps({'schema_version': '1.0', 'url': 'https://v.douyin.com/fixture'})], env)
 try:
-    passed = json.loads(case.stdout)['code'] == 502 and json.loads(case.stderr)['httpStatus'] == 502
+    passed = json.loads(case.stdout)['code'] == 'UPSTREAM_INVALID_RESPONSE' and json.loads(case.stderr)['httpStatus'] == 502
 except (ValueError, KeyError):
     passed = False
-process_checks.append({'name': 'aggregate loopback connection failure', 'passed': passed, 'expected_http_status': 502, 'expected_business_code': 502})
+process_checks.append({'name': 'aggregate loopback connection failure', 'passed': passed, 'expected_http_status': 502, 'expected_business_code': 'UPSTREAM_INVALID_RESPONSE'})
 
 http_integration = {
     'status': 'not_run_by_this_command',

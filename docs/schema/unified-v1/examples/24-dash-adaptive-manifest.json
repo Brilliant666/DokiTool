@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_dash",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_dash/synthetic-001",
+    "items": [
+      {
+        "id": "adaptive-dash",
+        "type": "video",
+        "default": null,
+        "variants": [
+          {
+            "id": "dash-adaptive",
+            "delivery": {
+              "kind": "dash",
+              "sources": [
+                {
+                  "url": "https://media.example.test/adaptive.mpd"
+                }
+              ],
+              "scope": "adaptive"
+            }
+          }
+        ],
+        "default_unavailable_reason": "processing_required"
+      }
+    ]
+  }
+}

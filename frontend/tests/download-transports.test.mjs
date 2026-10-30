@@ -177,8 +177,8 @@ test('Blob rejects error pages and incomplete files without saving', async () =>
   }
 });
 
-test('one complete format probe preserves strict native qualification and cancels after its first chunk', async () => {
-  const probes = []; let calls = 0, cancelled = false, options;
+test('declared complete files use native qualification without an extra format-reading probe', async () => {
+  let calls = 0, cancelled = false, options;
   globalThis.fetch = async (_url, init) => {
     calls++; options = init;
     return new Response(new ReadableStream({
@@ -186,8 +186,7 @@ test('one complete format probe preserves strict native qualification and cancel
       cancel() { cancelled = true; },
     }, { highWaterMark: 0 }), { headers: { 'content-type': 'video/mp4', 'content-disposition': 'attachment; filename=video.mp4' } });
   };
-  assert.equal(await segments.prepareSegments([request().url], signal(), value => probes.push(value)), null);
-  assert.deepEqual(probes, [{ url: request().url, attachment: { url: request().url, filename: 'video.mp4' } }]);
+  assert.deepEqual(await native.probeNative(request(),signal()),{url:request().url,filename:'video.mp4'});
   assert.equal(calls, 1); assert.equal(cancelled, true);
   assert.equal(options.headers?.Range, undefined); assert.equal(options.credentials, 'omit');
 });
@@ -199,20 +198,17 @@ test('partial, failed and disguised error responses cannot supply reusable nativ
     media([...new TextEncoder().encode('<html>denied</html>')]),
     new Response('denied', { status: 403 }),
   ]) {
-    const probes = [];
     globalThis.fetch = async () => response;
-    assert.equal(await segments.prepareSegments([request().url], signal(), value => probes.push(value)), null);
-    assert.deepEqual(probes, []);
+    assert.equal(await native.probeNative(request(),signal()),null);
   }
 });
 
-test('format probe still recognizes extensionless HLS and does not hand it to complete-file transports', async () => {
-  const probes = [];
-  globalThis.fetch = async () => new Response('#EXTM3U\n#EXTINF:1,\nfirst.ts\n#EXTINF:1,\nsecond.ts', { headers: { 'content-type': 'application/octet-stream' } });
-  assert.deepEqual(await segments.prepareSegments([request().url], signal(), value => probes.push(value)), [
+test('explicit extensionless HLS stays in its manifest pipeline', async () => {
+  globalThis.fetch = async () => new Response('#EXTM3U\n#EXTINF:1,\nfirst.ts\n#EXTINF:1,\nsecond.ts\n#EXT-X-ENDLIST', { headers: { 'content-type': 'application/octet-stream' } });
+  assert.deepEqual(await segments.resolveHlsSegments(request().url,signal()), [
     { url: 'https://cdn.test/first.ts' }, { url: 'https://cdn.test/second.ts' },
   ]);
-  assert.deepEqual(probes, []);
+  assert.equal(clicks.length,0);
 });
 
 test('cancelling a body read aborts the transfer and never triggers a save', async () => {

@@ -13,9 +13,8 @@
  * - 提供按分片打包为 ZIP 的能力（配合 JSZip）。
  */
 
-import type { SourceProbe } from "../downloads/types";
-import { inspectNativeResponse } from "../downloads/native";
-import { extensionsFor, mediaCredentials, mediaUrl, mimeType } from "../downloads/file";
+import { mediaCredentials } from "../downloads/file";
+import { sourceUrl } from "./mediaContract";
 
 /** 带可选字节区间的分片描述（HLS BYTERANGE / 普通整文件分片通用） */
 export interface HlsSegment {
@@ -55,7 +54,8 @@ function triggerDownload(blob: Blob, filename: string): void {
 
 /** 字节区间 → Range 头值；无区间返回 undefined */
 function rangeHeader(segment: HlsSegment): string | undefined {
-  if (segment.start === undefined || segment.length === undefined) return undefined;
+  if (segment.start === undefined || segment.length === undefined)
+    return undefined;
   return `bytes=${segment.start}-${segment.start + segment.length - 1}`;
 }
 
@@ -78,9 +78,38 @@ async function fetchArrayBuffer(
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
       const headers: Record<string, string> = {};
-      if (range) headers.Range = `bytes=${range.start}-${range.start + range.length - 1}`;
-      const response = await fetch(url, { method: "GET", mode: "cors", headers, signal });
-      if (!response.ok) throw new Error(`分片请求失败（HTTP ${response.status}）`);
+      if (range)
+        headers.Range = `bytes=${range.start}-${range.start + range.length - 1}`;
+      const response = await fetch(url, {
+        method: "GET",
+        mode: "cors",
+        headers,
+        signal,
+      });
+      if (!response.ok)
+        throw new Error(`分片请求失败（HTTP ${response.status}）`);
+      if (
+        /text\/html|application\/json/i.test(
+          response.headers.get("content-type") || "",
+        )
+      ) {
+        void response.body?.cancel();
+        throw new Error("分片地址返回了错误页面");
+      }
+      if (range) {
+        const declared = /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/.exec(
+          response.headers.get("content-range") || "",
+        );
+        if (
+          response.status !== 206 ||
+          !declared ||
+          Number(declared[1]) !== range.start ||
+          Number(declared[2]) !== range.start + range.length - 1
+        ) {
+          void response.body?.cancel();
+          throw new Error("分片服务器没有返回请求的字节范围");
+        }
+      }
       if (!response.body) throw new Error("该分片不支持流式读取");
 
       const total = Number(response.headers.get("content-length")) || 0;
@@ -94,9 +123,13 @@ async function fetchArrayBuffer(
         loaded += value.length;
         onChunk?.(loaded, total);
       }
+      if (!loaded || (range && loaded !== range.length))
+        throw new Error("分片字节范围不完整");
       // 有 content-length 时校验完整性
       if (total > 0 && loaded !== total) {
-        throw new Error(`分片下载不完整：期望 ${total} 字节，实际 ${loaded} 字节`);
+        throw new Error(
+          `分片下载不完整：期望 ${total} 字节，实际 ${loaded} 字节`,
+        );
       }
       // 拼接为连续 ArrayBuffer
       const merged = new Uint8Array(loaded);
@@ -107,70 +140,17 @@ async function fetchArrayBuffer(
       }
       return merged.buffer;
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (error instanceof DOMException && error.name === "AbortError")
+        throw error;
       lastError = error;
       if (attempt < retries) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, 400 * (attempt + 1)),
+        );
       }
     }
   }
   throw lastError instanceof Error ? lastError : new Error("分片下载失败");
-}
-
-/** 是否为「分片命名」的视频 URL（形如 xxx_0.mp4 / xxx-12.ts）：
- *  要求文件名以 `_数字` 或 `-数字` 结尾（数字前有明确分隔符），
- *  避免把 `...c2c33608.mp4` 这类哈希/时间戳结尾的完整文件误判为分片。 */
-export function looksLikeSegmentUrl(url: string): boolean {
-  return /[_-]\d+\.[a-z0-9]+(?:$|\?)/i.test(url);
-}
-
-/**
- * 探测可能的兄弟分片（仅作兜底）：
- * 当 URL 的文件名形如 `xxx_<n>.mp4` 时，尝试枚举 n, n+1, n+2...；
- * 用 Range 头做轻量存在性校验，遇到首个不可达即停止。
- */
-export async function probeSiblingSegments(
-  url: string,
-  maxSegments = 24,
-  signal?: AbortSignal,
-): Promise<string[]> {
-  try {
-    const parsed = new URL(url);
-    const lastSeg = parsed.pathname.split("/").pop() || "";
-    // 仅当数字前有 _ 或 - 分隔时才探测，避免误伤哈希/时间戳命名
-    const match = lastSeg.match(/^(.*?[_-])(\d+)(\.[a-z0-9]+)$/i);
-    if (!match) return [];
-    const prefix = match[1];
-    const start = Number(match[2]);
-    const ext = match[3];
-    const digits = match[2].length;
-
-    const candidates: string[] = [];
-    for (let i = start; i < start + maxSegments; i++) {
-      const idx = String(i).padStart(digits, "0");
-      const basename = `${prefix}${idx}${ext}`;
-      const candidate =
-        parsed.origin + parsed.pathname.replace(/[^/]+$/, basename) + parsed.search;
-      if (i === start) {
-        candidates.push(candidate);
-        continue;
-      }
-      // 轻量校验：请求首字节
-      const ok = await fetch(candidate, {
-        method: "GET",
-        headers: { Range: "bytes=0-0" },
-        mode: "cors",
-        signal,
-      })
-        .then((r) => r.status === 206 || r.status === 200)
-        .catch(() => false);
-      if (!ok) break;
-      candidates.push(candidate);
-    }
-    return candidates;
-  } catch {
-    return [];
-  }
 }
 
 /** 解析 BYTERANGE 值 `len[@offset]`；offset 缺省时延续上一区间末尾（RFC 8216） */
@@ -183,161 +163,96 @@ function parseByteRange(
   const length = Number(match[1]);
   const start =
     match[2] !== undefined ? Number(match[2]) : (previousEndExclusive ?? 0);
-  return { start, length };
+  return Number.isSafeInteger(start) &&
+    start >= 0 &&
+    Number.isSafeInteger(length) &&
+    length > 0
+    ? { start, length }
+    : null;
 }
 
-/**
- * 解析 HLS m3u8 清单，返回全部分片（按播放顺序，含 BYTERANGE 字节区间）。
- * - 非 m3u8 / 清单请求失败（含 CORS 拦截）→ null
- * - 清单含 `#EXT-X-KEY`（AES 加密分片）→ null（前端无法解密，放弃合并）
- * - 多码率（#EXT-X-STREAM-INF）→ 递归解析第一条子清单
- * - fMP4（#EXT-X-MAP）→ init 段（含其 BYTERANGE）置于最前
- * - 只返回 >1 段，避免把单段清单当分片处理
+/** Read only an explicitly declared, complete single-rendition HLS VOD.
+ * Adaptive masters, external audio, encryption and discontinuities need a
+ * processing executor; they cannot be silently flattened into a complete file.
  */
 export async function resolveHlsSegments(
   url: string,
   signal?: AbortSignal,
-  onProbe?: (probe: SourceProbe) => void,
 ): Promise<HlsSegment[] | null> {
-  let probeResponse: Response | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    // Read only the first chunk, then cancel. A real complete GET also lets the
-    // download coordinator reuse attachment headers instead of probing again.
-    probeResponse = await fetch(url, {
-      method: "GET",
+    const response = await fetch(url, {
       mode: "cors",
       signal,
       credentials: mediaCredentials(url),
       referrerPolicy: "no-referrer",
     });
-    if (!probeResponse.ok || !probeResponse.body) return null;
-    reader = probeResponse.body.getReader();
-    const firstChunk = await reader.read();
-    void reader.cancel().catch(() => {});
-    const headBytes = firstChunk.value?.subarray(0, 4096) ?? new Uint8Array(0);
-    const probeText = new TextDecoder().decode(headBytes);
-    if (!probeText.includes("#EXTM3U")) {
-      const type = mimeType(probeResponse.headers.get("content-type"));
-      const mediaType = extensionsFor(type).length > 0 || /^(?:application|binary)\/octet-stream$/.test(type);
-      if (headBytes.length && mediaType && probeResponse.status === 200 && probeResponse.type !== "opaque" && !probeResponse.headers.has("content-range")
-          && !/^(?:<!doctype|<html|\{"|\[\{)/i.test(probeText.trimStart())) {
-        onProbe?.({ url: mediaUrl(url), attachment: inspectNativeResponse(probeResponse, url) });
+    if (!response.ok || !response.body) return null;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = "",
+      size = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.length;
+        if (size > 2 * 1024 * 1024) return null;
+        text += decoder.decode(chunk.value, { stream: true });
       }
+      text += decoder.decode();
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    if (
+      !text.trimStart().startsWith("#EXTM3U") ||
+      !text.includes("#EXT-X-ENDLIST") ||
+      /#EXT-X-STREAM-INF|#EXT-X-MEDIA:|#EXT-X-KEY|#EXT-X-DISCONTINUITY/.test(
+        text,
+      )
+    )
       return null;
-    }
-    if (/^#EXT-X-KEY:/m.test(probeText)) return null; // 加密流，前端无法合并
-
-    // 确认为清单后再全量拉取
-    const response = await fetch(url, { method: "GET", mode: "cors", signal });
-    if (!response.ok) return null;
-    const text = await response.text();
-    if (!text.includes("#EXTM3U")) return null;
-
-    const base = new URL(url);
-    const toAbs = (uri: string) => new URL(uri, base).href;
-    const lines = text.split(/\r?\n/).map((line) => line.trim());
-
-    // 多码率清单：递归解析第一条子清单
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
-        const sub = lines[i + 1];
-        if (sub && !sub.startsWith("#")) {
-          return resolveHlsSegments(toAbs(sub), signal);
-        }
-      }
-    }
-
+    const toAbsolute = (uri: string) =>
+      sourceUrl({ url: new URL(uri, url).href });
     const segments: HlsSegment[] = [];
-    let previousEndExclusive: number | null = null;
-    let pendingRange: { start: number; length: number } | null = null;
-
-    const pushSegment = (uri: string, range: { start: number; length: number } | null) => {
-      segments.push({
-        url: toAbs(uri),
-        ...(range ? { start: range.start, length: range.length } : {}),
-      });
-    };
-
-    for (const line of lines) {
-      if (!line || line.startsWith("#")) {
-        if (line.startsWith("#EXT-X-MAP")) {
-          const uri = /URI="([^"]+)"/.exec(line)?.[1];
-          if (!uri) continue;
-          const rangeMatch = /BYTERANGE="([^"]+)"/.exec(line)?.[1];
-          const range = rangeMatch ? parseByteRange(rangeMatch, null) : null;
-          pushSegment(uri, range);
-        } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
-          pendingRange = parseByteRange(line.slice("#EXT-X-BYTERANGE:".length), previousEndExclusive);
-        }
-        continue;
+    let previousEnd: number | null = null,
+      previousUrl = "";
+    let pending: string | null = null;
+    for (const line of text.split(/\r?\n/).map((value) => value.trim())) {
+      if (!line) continue;
+      if (line.startsWith("#EXT-X-MAP:")) {
+        const uri = /URI="([^"]+)"/.exec(line)?.[1];
+        if (!uri || segments.length) return null;
+        const rawRange = /BYTERANGE="([^"]+)"/.exec(line)?.[1];
+        const range = rawRange ? parseByteRange(rawRange, null) : null;
+        if (rawRange && !range) return null;
+        segments.push({ url: toAbsolute(uri), ...(range || {}) });
+      } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
+        if (pending) return null;
+        pending = line.slice("#EXT-X-BYTERANGE:".length);
+      } else if (!line.startsWith("#")) {
+        const absolute = toAbsolute(line);
+        if (
+          pending &&
+          !pending.includes("@") &&
+          (previousEnd === null || absolute !== previousUrl)
+        )
+          return null;
+        const range: { start: number; length: number } | null = pending
+          ? parseByteRange(pending, previousEnd)
+          : null;
+        if (pending && !range) return null;
+        segments.push({ url: absolute, ...(range || {}) });
+        previousEnd = range ? range.start + range.length : null;
+        previousUrl = absolute;
+        pending = null;
+        if (segments.length > 2000) return null;
       }
-      const range = pendingRange;
-      pendingRange = null;
-      pushSegment(line, range);
-      previousEndExclusive = range ? range.start + range.length : null;
-      if (segments.length >= 2000) break; // 安全上限
     }
-    return segments.length > 1 ? segments : null;
-  } catch {
+    return segments.length && !pending ? segments : null;
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return null;
-  } finally {
-    void (reader ? reader.cancel() : probeResponse?.body?.cancel())?.catch(() => {});
   }
-}
-
-/**
- * 判断 URL 是否「疑似 HLS 清单」：.m3u8 后缀，或快手 remux / hlsob 备用流地址。
- * 用途：分片解析失败（如清单请求被 CORS 拦截）时拦截，避免把清单文本当 mp4 下载
- * （表现为只得到几十字节的文本文件，即「只下到分片片段」）。
- */
-export function looksLikeHlsManifest(url: string): boolean {
-  const lower = (url ?? "").toLowerCase();
-  if (!lower) return false;
-  return (
-    /\.m3u8(?:\?|$)/.test(lower) ||
-    lower.includes("hlsob") ||
-    lower.includes("remux")
-  );
-}
-
-/** 判断分片合并后的容器：存在 .ts 分片 → ts（TS 流直接拼接），否则按 mp4（fMP4 拼接） */
-export function detectSegmentContainer(segments: (HlsSegment | string)[]): "ts" | "mp4" {
-  const probe =
-    segments.find((s) => /\.ts(?:\?|$)/i.test(typeof s === "string" ? s : s.url)) ??
-    segments[0] ??
-    "";
-  const url = typeof probe === "string" ? probe : probe.url;
-  return /\.ts(?:\?|$)/i.test(url) ? "ts" : "mp4";
-}
-
-/**
- * 下载前的统一智能识别：按候选顺序逐个探测（首个成功者胜出）。
- * 每个候选依次尝试：
- * 1) HLS 清单解析（清单请求被 CORS 拦截或格式不符时立即失败，代价极小）；
- * 2) 分片命名（xxx_0.mp4）的兄弟分片探测。
- * 典型场景：快手主清单无 CORS 头、备用清单（video_backup）开放 CORS，
- * 按候选探测即可纯前端拿到可下载的完整分片列表。
- * @returns 分片列表（≥2 段），null 表示全部候选都不是可用分片流
- */
-export async function prepareSegments(
-  candidates: (string | null | undefined)[],
-  signal?: AbortSignal,
-  onProbe?: (probe: SourceProbe) => void,
-): Promise<HlsSegment[] | null> {
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    const url = (candidate ?? "").trim();
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    const hls = await resolveHlsSegments(url, signal, onProbe);
-    if (hls) return hls;
-    if (looksLikeSegmentUrl(url)) {
-      const siblings = await probeSiblingSegments(url, 24, signal);
-      if (siblings.length > 1) return siblings.map((s) => ({ url: s }));
-    }
-  }
-  return null;
 }
 
 /** 归一化：字符串分片 → 整文件 HlsSegment */
@@ -395,11 +310,16 @@ export async function mergeSegments(
       (loaded, total) => {
         const segTotal = totalBytes > 0 ? totalBytes : total * usable.length;
         onProgress?.({
-          loaded: totalBytes > 0 ? totalLoaded + loaded : ((i + loaded / (total || 1)) / usable.length) * (totalBytes || 1),
+          loaded:
+            totalBytes > 0
+              ? totalLoaded + loaded
+              : ((i + loaded / (total || 1)) / usable.length) *
+                (totalBytes || 1),
           total: totalBytes || segTotal,
-          percent: totalBytes > 0
-            ? Math.round(((totalLoaded + loaded) / totalBytes) * 100)
-            : Math.round(((i + loaded / (total || 1)) / usable.length) * 100),
+          percent:
+            totalBytes > 0
+              ? Math.round(((totalLoaded + loaded) / totalBytes) * 100)
+              : Math.round(((i + loaded / (total || 1)) / usable.length) * 100),
           segment: i + 1,
           segmentCount: usable.length,
         });
@@ -413,9 +333,10 @@ export async function mergeSegments(
     onProgress?.({
       loaded: totalLoaded,
       total: totalBytes || totalLoaded,
-      percent: totalBytes > 0
-        ? Math.round((totalLoaded / totalBytes) * 100)
-        : Math.round(((i + 1) / usable.length) * 100),
+      percent:
+        totalBytes > 0
+          ? Math.round((totalLoaded / totalBytes) * 100)
+          : Math.round(((i + 1) / usable.length) * 100),
       segment: i + 1,
       segmentCount: usable.length,
     });
@@ -440,7 +361,10 @@ export async function mergeAndDownload(
   options: MergeOptions,
 ): Promise<boolean> {
   const { signal, filename } = options;
-  const merged = await mergeSegments(segments, { signal, onProgress: options.onProgress });
+  const merged = await mergeSegments(segments, {
+    signal,
+    onProgress: options.onProgress,
+  });
   triggerDownload(new Blob([merged]), filename);
   return true;
 }

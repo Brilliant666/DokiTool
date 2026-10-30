@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "bilibili",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/bilibili/synthetic-001",
+    "items": [
+      {
+        "id": "local-p1",
+        "type": "video",
+        "index": 1,
+        "default": {
+          "variant_id": "same-local-id",
+          "url": "https://media.example.test/p1-file"
+        },
+        "variants": [
+          {
+            "id": "same-local-id",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/p1-file"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "local-p2",
+        "type": "video",
+        "index": 2,
+        "default": {
+          "variant_id": "same-local-id",
+          "url": "https://media.example.test/p2-file"
+        },
+        "variants": [
+          {
+            "id": "same-local-id",
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/p2-file"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "default_item_id": "local-p1"
+  }
+}

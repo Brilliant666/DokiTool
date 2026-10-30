@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "weibo",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/weibo/synthetic-001",
+    "items": [
+      {
+        "id": "wb-one",
+        "type": "video",
+        "default": {
+          "variant_id": "wb-1080",
+          "url": "/api/media?ticket=DESIGN_FIXTURE_weibo",
+          "access": "relay"
+        },
+        "variants": [
+          {
+            "id": "wb-1080",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "/api/media?ticket=DESIGN_FIXTURE_weibo",
+                  "access": "relay"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "cover": {
+      "url": "/api/media?ticket=DESIGN_FIXTURE_weibo-cover",
+      "access": "relay"
+    }
+  }
+}

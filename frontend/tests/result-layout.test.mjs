@@ -8,12 +8,18 @@ import { createRenderer, h, markRaw, nextTick, ref } from 'vue';
 
 const require = createRequire(import.meta.url);
 const originalGlobals = { window: globalThis.window, document: globalThis.document };
-let ResultSection;
+let ResultSection, useVideoSelection, validateMediaEnvelope;
 before(async () => {
-  const utilities = await readFile(new URL('../src/utils/mediaSources.ts', import.meta.url), 'utf8');
-  const sourceModule = { exports: {} };
-  const sources = await transformWithEsbuild(utilities, 'mediaSources.ts', { loader: 'ts', format: 'cjs' });
-  new Function('require', 'module', 'exports', sources.code)(require, sourceModule, sourceModule.exports);
+  const modules = { '../services/apiConfig': { apiConfig: { baseUrl: '' } } };
+  for (const id of ['../utils/mediaSources', '../utils/mediaContract', '../composables/useVideoSelection']) {
+    const utilities = await readFile(new URL(`../src/${id.slice(3)}.ts`, import.meta.url), 'utf8');
+    const module = { exports: {} };
+    const compiled = await transformWithEsbuild(utilities, `${id}.ts`, { loader: 'ts', format: 'cjs' });
+    new Function('require', 'module', 'exports', compiled.code)(id => modules[id] || require(id), module, module.exports);
+    modules[id] = module.exports;
+  }
+  ({ useVideoSelection } = modules['../composables/useVideoSelection']);
+  ({ validateMediaEnvelope } = modules['../utils/mediaContract']);
   const content = await readFile(new URL('../src/components/ResultSection.vue', import.meta.url), 'utf8');
   const { descriptor } = parse(content);
   const script = compileScript(descriptor, { id: 'result-layout', inlineTemplate: true,
@@ -23,21 +29,41 @@ before(async () => {
   new Function('require', 'module', 'exports', compiled.code)((id) => {
     if (id === './AppIcon.vue') return { __esModule: true, default: { render: () => h('i') } };
     if (id === './VideoPlaylist.vue') return { __esModule: true, default: { render: () => h('div', { class: 'test-playlist' }) } };
-    if (id === '../utils/mediaSources') return sourceModule.exports;
+    if (modules[id]) return modules[id];
     return require(id);
   }, module, module.exports);
   ResultSection = module.exports.default;
 });
 after(() => Object.assign(globalThis, originalGlobals));
 
+const fileVariant = (id, url, metadata = {}) => ({
+  id, metadata, delivery: { kind: 'file', sources: [{ url, size_bytes: 3000000 }] },
+});
+const fileItem = (id, type, url) => ({
+  id, type, variants: [fileVariant('main', url)], default: { variant_id: 'main', url },
+});
+const videoItem = {
+  ...fileItem('video-1', 'video', 'https://media.test/main.mp4'),
+  variants: [
+    fileVariant('main', 'https://media.test/main.mp4', { width: 1080, height: 1920, video_codec: 'h264', bitrate_bps: 1000000, duration_ms: 24000 }),
+    fileVariant('small', 'https://media.test/small.mp4', { width: 720, height: 1280 }),
+  ],
+};
+const imageItem = fileItem('image-1', 'image', 'https://media.test/photo.jpg');
+const liveItem = {
+  id: 'live-1', type: 'live_photo', default: null, default_unavailable_reason: 'processing_required',
+  variants: [{ id: 'live-pair', delivery: { kind: 'pair', resources: [
+    { id: 'cover', role: 'image', delivery: { kind: 'file', sources: [{ url: 'https://media.test/photo.jpg' }] } },
+    { id: 'motion', role: 'motion', delivery: { kind: 'file', sources: [{ url: 'https://media.test/live.mp4' }] } },
+  ] } }],
+};
 const video = {
-  url: 'https://media.test/main.mp4', quality: '1080p', width: 1080, height: 1920,
-  codec: 'h264', bit_rate: 1000000, size: 3000000, duration: 24,
-  type: 'video', title: '作品标题', _sourceUrl: 'https://www.douyin.com/video/123',
-  author: { name: '作者', id: '123' }, images: [], live_photo: [],
-  music: { url: 'https://media.test/music.mp3', title: '配乐' },
-  extra: { statistics: { digg_count: 123 }, hashtags: [{ name: '标签' }] },
-  video_backup: [{ url: 'https://media.test/small.mp4', quality: '720p', width: 720, height: 1280 }],
+  platform: 'douyin', title: '作品标题', source_url: 'https://www.douyin.com/video/123',
+  items: [videoItem], default_item_id: videoItem.id, author: { name: '作者', id: '123' },
+  attachments: [{ id: 'music', role: 'background_audio', title: '配乐', resource: {
+    id: 'audio', role: 'audio', delivery: { kind: 'file', sources: [{ url: 'https://media.test/music.mp3' }] },
+  } }],
+  statistics: { likes: { value: 123, state: 'known' } }, tags: ['标签'],
 };
 const hasClass = (node, name) => String(node.props.class || '').split(' ').includes(name);
 
@@ -103,10 +129,14 @@ async function mount(data = video, desktop = true) {
     remove: detach,
     patchProp(node, key, _, value) { node.props[key] = value; if (key === 'src') node.src = value; },
   });
-  const state = ref({ resultData: data, resultVersion: 1, currentVideoUrl: data.url,
+  validateMediaEnvelope({ schema_version: '1.0', code: 'OK', data });
+  const state = ref({ resultData: data, resultVersion: 1,
     locale: 'zh-CN', formatNumber: String, formatDuration: String,
-    onSwitchVideo(source) { state.value = { ...state.value, currentVideoUrl: source.url }; },
+    onSwitchVideo(choice) { selection.choose(choice); },
   });
+  const selection = markRaw(useVideoSelection({ videoStore: { get resultData() { return state.value.resultData; } } }));
+  selection.syncResult();
+  state.value.selection = selection;
   const root = element('root');
   const app = renderer.createApp({ render: () => h(ResultSection, state.value) });
   const findAll = (node, match) => [...(match(node) ? [node] : []), ...node.children.flatMap(child => findAll(child, match))];
@@ -198,7 +228,7 @@ test('hidden details remeasure on language, selected quality, title wrapping and
     view.dimensions.details = 400;
     view.dimensions.author = 100;
     view.state.value = { ...view.state.value, resultVersion: 2,
-      resultData: { ...video, _sourceUrl: 'https://www.douyin.com/video/456' } };
+      resultData: { ...video, source_url: 'https://www.douyin.com/video/456' } };
     await view.flush();
     assert.equal(view.baseline()['--rs-details-column-height'], '562px', 'a new result replaces the previous baseline');
     assert.ok(!hasClass(view.details(), 'rs-tab-panel--measure'), 'a new result opens its visible details');
@@ -226,14 +256,16 @@ test('mixed media, live photos and multi-episode results retain their existing n
   const view = await mount();
   try {
     const cases = [
-      [{ images: ['https://media.test/photo.jpg'] }, 'rs-card--gallery'],
-      [{ type: 'live', live_photo: [{ image: 'https://media.test/photo.jpg', video: 'https://media.test/live.mp4' }] }, 'rs-live-carousel'],
-      [{ live_photo: [{ image: 'https://media.test/photo.jpg', video: 'https://media.test/live.mp4' }] }, 'rs-live-carousel'],
-      [{ videos: [video, { ...video, url: 'https://media.test/part2.mp4' }] }, 'test-playlist'],
-      [{ type: 'collection', videos: [video] }, 'test-playlist'],
+      [{ items: [videoItem, imageItem] }, 'rs-card--gallery'],
+      [{ items: [liveItem], default_item_id: liveItem.id }, 'rs-live-carousel'],
+      [{ items: [videoItem, liveItem] }, 'rs-live-carousel'],
+      [{ items: [videoItem, fileItem('video-2', 'video', 'https://media.test/part2.mp4')] }, 'test-playlist'],
+      [{ groups: [{ id: 'collection', kind: 'collection', item_ids: [videoItem.id] }] }, 'test-playlist'],
     ];
     for (const [changes, mediaClass] of cases) {
       view.state.value = { ...view.state.value, resultData: { ...video, ...changes } };
+      validateMediaEnvelope({ schema_version: '1.0', code: 'OK', data: view.state.value.resultData });
+      view.state.value.selection.syncResult();
       await view.flush();
       assert.deepEqual(view.baseline(), {});
       assert.ok(!hasClass(view.main(), 'rs-main--align-details'));
@@ -243,6 +275,7 @@ test('mixed media, live photos and multi-episode results retain their existing n
       assert.equal(view.details(), undefined);
     }
     view.state.value = { ...view.state.value, resultData: video };
+    view.state.value.selection.syncResult();
     await view.flush();
     assert.equal(view.baseline()['--rs-details-column-height'], '602px');
   } finally { view.app.unmount(); }

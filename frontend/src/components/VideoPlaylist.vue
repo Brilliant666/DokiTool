@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import AppIcon from './AppIcon.vue'
+import AppIcon from "./AppIcon.vue";
 import { computed } from "vue";
-import type { MediaCollection, MediaVideo } from "../types/media";
+import { sourceUrl, readyItem } from "../utils/mediaContract";
+import { variantLabel } from "../utils/mediaSources";
+import { apiConfig } from "../services/apiConfig";
+import type { MediaGroup, MediaItem } from "../types/media";
 
 const props = defineProps<{
-  videos: MediaVideo[];
+  videos: MediaItem[];
   currentIndex: number;
   selectedSet?: Set<number>;
   total?: number;
+  resolvingIds?: Set<string>;
   disabled?: boolean;
   /** 合集列表（有值时分集编号显示 EP 前缀；>1 个合集时展示切换 Tab） */
-  collections?: MediaCollection[];
+  collections?: MediaGroup[];
   /** 当前合集序号 */
   activeCollection?: number;
 }>();
@@ -25,7 +29,9 @@ const emit = defineEmits<{
 
 const selected = computed(() => props.selectedSet ?? new Set<number>());
 const selectedCount = computed(() => selected.value.size);
-const allCount = computed(() => props.videos.filter((v) => !v.error).length);
+const allCount = computed(
+  () => props.videos.filter((v) => v.state !== "unavailable").length,
+);
 const allSelected = computed(
   () => selectedCount.value > 0 && selectedCount.value === allCount.value,
 );
@@ -46,13 +52,26 @@ const formatDuration = (seconds?: number | null): string => {
   return `${m}:${String(s).padStart(2, "0")}`;
 };
 
-const visibleDuration = (video: MediaVideo): string => {
-  if (video.durationFormat) return video.durationFormat;
-  return formatDuration(video.duration);
-};
+const visibleDuration = (item: MediaItem) =>
+  formatDuration((item.duration_ms || 0) / 1000);
+const quality = (item: MediaItem) =>
+  readyItem(item)
+    ? variantLabel(
+        item.variants.find(
+          (variant) => variant.id === item.default?.variant_id,
+        ),
+      )
+    : "";
+const cover = (item: MediaItem) =>
+  item.cover ? sourceUrl(item.cover, { apiOrigin: apiConfig.baseUrl }) : "";
 
 const handleKeydown = (e: KeyboardEvent, index: number): void => {
-  if (e.target !== e.currentTarget || props.disabled || props.videos[index]?.error) return;
+  if (
+    e.target !== e.currentTarget ||
+    props.disabled ||
+    props.videos[index]?.state === "unavailable"
+  )
+    return;
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();
     emit("select", index);
@@ -70,22 +89,25 @@ const onCoverError = (e: Event): void => {
     <!-- 合集切换 Tab（多合集时） -->
     <div v-if="showTabs" class="vlib-tabs ux-scrollbar-hide" role="tablist">
       <button
-        v-for="col in collections"
-        :key="col.index"
+        v-for="(col, colIndex) in collections"
+        :key="col.id"
         role="tab"
         class="vlib-tab"
-        :class="{ 'vlib-tab--on': col.index === activeCollection }"
-        :aria-selected="col.index === activeCollection"
+        :class="{ 'vlib-tab--on': colIndex === activeCollection }"
+        :aria-selected="colIndex === activeCollection"
         :disabled="disabled"
-        @click="emit('select-collection', col.index)"
+        @click="emit('select-collection', colIndex)"
       >
         <span class="vlib-tab-name">{{ col.title }}</span>
-        <span class="vlib-tab-count">{{ col.episodes.length }}</span>
+        <span class="vlib-tab-count">{{ col.item_ids.length }}</span>
       </button>
     </div>
 
     <!-- 多选工具条 -->
-    <div v-if="props.total !== undefined && props.total > 1" class="vlib-toolbar">
+    <div
+      v-if="props.total !== undefined && props.total > 1"
+      class="vlib-toolbar"
+    >
       <span class="vlib-toolbar-count">
         已选 <strong>{{ selectedCount }}</strong> / {{ allCount }}
       </span>
@@ -95,7 +117,7 @@ const onCoverError = (e: Event): void => {
           :disabled="disabled"
           @click="allSelected ? emit('clear-selection') : emit('select-all')"
         >
-          {{ allSelected ? '清空' : '全选' }}
+          {{ allSelected ? "清空" : "全选" }}
         </button>
       </div>
     </div>
@@ -107,36 +129,38 @@ const onCoverError = (e: Event): void => {
         :key="idx"
         class="vlib-card"
         :class="{
-          'vlib-card--current': idx === currentIndex && !v.error && !v._resolving,
-          'vlib-card--error': !!v.error,
-          'vlib-card--disabled': !!v.error,
-          'vlib-card--resolving': !!v._resolving,
+          'vlib-card--current':
+            idx === currentIndex &&
+            v.state !== 'unavailable' &&
+            !resolvingIds?.has(v.id),
+          'vlib-card--error': v.state === 'unavailable',
+          'vlib-card--disabled': v.state === 'unavailable',
+          'vlib-card--resolving': resolvingIds?.has(v.id),
         }"
         role="listitem"
         :aria-selected="idx === currentIndex"
-        :aria-disabled="!!v.error"
+        :aria-disabled="v.state === 'unavailable'"
         tabindex="0"
-        @click="!v.error && !disabled && emit('select', idx)"
+        @click="v.state !== 'unavailable' && !disabled && emit('select', idx)"
         @keydown="handleKeydown($event, idx)"
       >
         <!-- checkbox -->
-        <label
-          class="vlib-check"
-          @click.stop
-        >
+        <label class="vlib-check" @click.stop>
           <input
             type="checkbox"
             class="ux-checkbox"
-            :disabled="!!v.error || disabled"
+            :disabled="v.state === 'unavailable' || disabled"
             :checked="selected.has(idx)"
-            @change.stop="!v.error && !disabled && emit('toggle', idx)"
+            @change.stop="
+              v.state !== 'unavailable' && !disabled && emit('toggle', idx)
+            "
           />
         </label>
 
         <div class="vlib-card-cover">
           <img
             v-if="v.cover"
-            :src="v.cover"
+            :src="cover(v)"
             class="vlib-card-img"
             :alt="v.title || `P${idx + 1}`"
             @error="onCoverError"
@@ -144,11 +168,17 @@ const onCoverError = (e: Event): void => {
           <div v-else class="vlib-card-cover-fb">
             <AppIcon class="fas fa-film"></AppIcon>
           </div>
-          <span class="vlib-ep">{{ epPrefix }}{{ v._epNo || v.index || idx + 1 }}</span>
-          <span v-if="v._resolving" class="vlib-ep-resolving" aria-label="解析中">
+          <span class="vlib-ep">{{ epPrefix }}{{ v.index || idx + 1 }}</span>
+          <span
+            v-if="resolvingIds?.has(v.id)"
+            class="vlib-ep-resolving"
+            aria-label="解析中"
+          >
             <AppIcon class="fas fa-spinner fa-spin"></AppIcon>
           </span>
-          <span v-else-if="v.error" class="vlib-ep-error">⚠</span>
+          <span v-else-if="v.state === 'unavailable'" class="vlib-ep-error"
+            >⚠</span
+          >
         </div>
 
         <div class="vlib-card-body">
@@ -160,7 +190,7 @@ const onCoverError = (e: Event): void => {
               <AppIcon class="fas fa-clock"></AppIcon>
               {{ visibleDuration(v) }}
             </span>
-            <span v-if="v.quality" class="vlib-quality">{{ v.quality }}</span>
+            <span v-if="quality(v)" class="vlib-quality">{{ quality(v) }}</span>
           </div>
         </div>
       </div>

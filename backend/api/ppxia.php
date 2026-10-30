@@ -119,10 +119,11 @@ function pipixiaItemResponse(array $item, string $expectedId): array
     $candidates = [];
     $sources = [$item['origin_video_download'] ?? null];
     foreach (['video_download', 'video_high', 'video_mid', 'video_low', 'video_fallback'] as $name) $sources[] = $video[$name] ?? null;
-    foreach ($sources as $source) {
+    foreach ($sources as $representationIndex => $source) {
         foreach (pipixiaUrls($source) as $url) {
             if (isset($candidates[$url])) continue;
-            $candidate = ['url' => $url, 'quality' => 'unknown'];
+            $identityUrls = pipixiaUrls($source); sort($identityUrls);
+            $candidate = ['url' => $url, 'quality' => 'unknown', 'private_representation_id' => hash('sha256', json_encode($identityUrls))];
             foreach (['width', 'height'] as $key) {
                 if (is_numeric($source[$key] ?? null) && $source[$key] > 0) $candidate[$key] = (int)$source[$key];
             }
@@ -150,7 +151,7 @@ function pipixiaItemResponse(array $item, string $expectedId): array
         'url' => $selected['url'] ?? '', 'images' => $images, 'imgurl' => $images,
         'video_backup' => array_slice($candidates, 1),
     ];
-    foreach (['width', 'height', 'quality'] as $key) if (isset($selected[$key])) $data[$key] = $selected[$key];
+    foreach (['width', 'height', 'quality', 'private_representation_id'] as $key) if (isset($selected[$key])) $data[$key] = $selected[$key];
     $duration = $video['duration'] ?? $item['duration'] ?? null;
     if (is_numeric($duration) && $duration >= 0) $data['duration'] = (float)$duration;
     if (is_numeric($item['create_time'] ?? null) && $item['create_time'] > 0) $data['create_time'] = (int)$item['create_time'];

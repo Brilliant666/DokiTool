@@ -1,626 +1,758 @@
 <script setup>
-import AppIcon from './AppIcon.vue'
-import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import VideoPlaylist from './VideoPlaylist.vue'
-import { formatMediaSize, getMediaSources, getSameQualityUrls, groupMediaQualities, isHighestOriginalSource, mediaSourceQuality } from '../utils/mediaSources'
-
+import { computed, ref, watch, onMounted, onUnmounted, nextTick } from "vue";
+import AppIcon from "./AppIcon.vue";
+import VideoPlaylist from "./VideoPlaylist.vue";
+import {
+  readyItem,
+  readyVariant,
+  getDownloadTarget,
+  sourceUrl,
+  resourceSource,
+  requiredCapabilities,
+} from "../utils/mediaContract";
+import {
+  variantLabel,
+  formatMediaSize,
+  groupVariantsForDisplay,
+} from "../utils/mediaSources";
+import { apiConfig } from "../services/apiConfig";
 const props = defineProps({
   resultData: Object,
-  isDownloading: Boolean,
-  showBackup: Boolean,
+  resultVersion: Number,
   locale: String,
+  selection: Object,
+  isDownloading: Boolean,
+  resolvingIds: Object,
   formatNumber: Function,
   formatDuration: Function,
-  currentVideoUrl: String,
-  resultVersion: Number,
-  /** 选集状态（多 P 时可用） */
-  selection: Object
-})
-
+});
 const emit = defineEmits([
-  'download-main', 'download-backup', 'download-all', 'download-images', 'download-image', 'download-music',
-  'download-live-video', 'download-live-cover', 'download-all-live', 'download-all-live-covers',
-  'copy-url', 'toggle-backup', 'switch-video',
-  'select-video', 'toggle-video', 'select-all-videos', 'clear-selection',
-  'select-collection',
-  'download-index', 'download-selected', 'download-all-videos',
-  'download-selected-zip', 'download-all-zip'
-])
-
-// ── computed state ──
-const hasVideo = computed(() => !!props.resultData?.url)
-const hasImages = computed(() => props.resultData?.images?.length > 0)
-const hasMusic = computed(() => !!props.resultData?.music?.url)
-const qualityMedia = computed(() => (isMulti.value ? currentVideoItem.value : null) || props.resultData)
-const qualityCandidates = computed(() => getMediaSources(qualityMedia.value))
-const qualityOptions = computed(() => groupMediaQualities(qualityMedia.value).map(group => {
-  const variants = group.variants.map(variant => ({
-    ...(variant.sources.find(source => source.url === activeVideoUrl.value) || variant.sources[0]),
-    variantKey: variant.key,
-    sources: variant.sources,
-    active: variant.sources.some(source => source.url === activeVideoUrl.value),
-  }))
-  const selected = variants.find(variant => variant.active) || variants[0]
-  return {
-    ...selected,
-    groupKey: group.key,
-  }
-}))
-const hasBackup = computed(() => qualityCandidates.value.length > 0)
-const qualityLabel = (source) => mediaSourceQuality(source, qualityCandidates.value, props.locale)
-const isOriginalQuality = (source) => isHighestOriginalSource(source, qualityCandidates.value)
-// Keep a measured resolution's card name stable across upstream encoding labels.
-const qualityOptionLabel = (source) => !isOriginalQuality(source) && source.width && source.height
-  ? `${Math.min(source.width, source.height)}p` : qualityLabel(source)
-const activeQuality = computed(() => qualityCandidates.value.find((item) => item.url === (isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url)))
-const isLive = computed(() => props.resultData?.type === 'live')
-const hasLivePhotos = computed(() => (props.resultData?.live_photo?.length || 0) > 0)
-const totalLivePhotos = computed(() => props.resultData?.live_photo?.length || 0)
-const hasBothMedia = computed(() => hasVideo.value && hasImages.value)
-const isImageType = computed(() => props.resultData?.type === 'image')
-const isCollection = computed(() =>
-  ['collection', 'collections', 'season', 'ugc_season'].includes(props.resultData?.type)
-)
-const isVideoType = computed(() => props.resultData?.type === 'video' || (!props.resultData?.type && hasVideo.value))
-const isLiveType = computed(() => props.resultData?.type === 'live')
-// 多集展示条件：视频条目 >1，或存在合集/分集元数据（合集仅回传 1 条时也要展示选集列表）
-const isMulti = computed(
+  "download-main",
+  "download-all",
+  "download-images",
+  "download-image",
+  "download-music",
+  "download-live-video",
+  "download-live-cover",
+  "download-all-live",
+  "download-all-live-covers",
+  "copy-url",
+  "switch-video",
+  "select-video",
+  "toggle-video",
+  "select-all-videos",
+  "clear-selection",
+  "select-collection",
+  "download-index",
+  "download-selected",
+  "download-all-videos",
+  "download-selected-zip",
+  "download-all-zip",
+  "refresh-item",
+]);
+const context = { apiOrigin: apiConfig.baseUrl };
+const urlOf = (source) => (source ? sourceUrl(source, context) : "");
+const currentItem = computed(() => props.selection?.currentVideo.value || null);
+const target = computed(() => props.selection?.currentTarget.value || null);
+const activeVideoUrl = computed(() =>
+  target.value?.kind === "file" ? target.value.url : "",
+);
+const activeVariant = computed(() =>
+  target.value && "variant" in target.value
+    ? target.value.variant
+    : readyItem(currentItem.value)
+      ? currentItem.value.variants.find(
+          (v) => v.id === props.selection?.currentSelection.value?.variant_id,
+        )
+      : null,
+);
+const metadata = computed(() => activeVariant.value?.metadata || {});
+const hasVideo = computed(
   () =>
-    (props.resultData?.videos?.length || 0) > 1 ||
-    (props.resultData?.collections?.length || 0) > 0 ||
-    isCollection.value,
-)
-
-const activeImageIndex = ref(0)
-const imageModalOpen = ref(false)
-const activeTab = ref('info')
-const collapsedSections = ref({})
-const activeLiveIndex = ref(0)
-const liveViewMode = ref('video')
-const showCopyToast = ref(false)
-const copyToastText = ref('')
-const videoEl = ref(null)
-const infoColumnEl = ref(null)
-const authorCardEl = ref(null)
-const infoCardEl = ref(null)
-const tabsEl = ref(null)
-const detailsPanelEl = ref(null)
-const desktopLayout = ref(false)
-const detailsCardHeight = ref(0)
-const detailsColumnHeight = ref(0)
-const canAlignDetails = computed(() => desktopLayout.value && hasVideo.value &&
-  !isMulti.value && !hasImages.value && !hasLivePhotos.value && !isLiveType.value)
-const hasDetailsBaseline = computed(() => canAlignDetails.value && detailsColumnHeight.value > 0)
-const detailsLayoutStyle = computed(() => hasDetailsBaseline.value ? {
-  '--rs-details-card-height': `${detailsCardHeight.value}px`,
-  '--rs-details-column-height': `${detailsColumnHeight.value}px`,
-} : undefined)
-
-// A different result can contain fewer images/live items. Reset its carousel and
-// close the previous modal so no stale index points outside the new result.
-watch(() => props.resultData, (data, previous) => {
-  if (!data || !previous || data._sourceUrl !== previous._sourceUrl) {
-    activeImageIndex.value = 0
-    activeLiveIndex.value = 0
-    activeTab.value = 'info'
-    imageModalOpen.value = false
-    if (typeof document !== 'undefined') document.body.style.overflow = ''
-  }
-})
-
-// 选中集变更 → 播放器 reload 归零
-watch(
-  () => props.selection?.currentVideoUrl?.value,
-  () => {
-    if (videoEl.value) {
-      videoEl.value.currentTime = 0
-      // src 变更后主动 reload，防续播旧进度
-      videoEl.value.load && videoEl.value.load()
-    }
-  }
-)
-
-const currentIndex = computed(() => props.selection?.selectedIndex?.value ?? 0)
-// 选集展示列表：合集时为当前合集的分集，否则为全量 videos
-const visibleVideos = computed(
-  () => props.selection?.visibleList?.value ?? props.resultData?.videos ?? []
-)
-const collections = computed(() => props.selection?.collections?.value ?? [])
-const activeCollection = computed(() => props.selection?.sectionIndex?.value ?? 0)
-const selectedVideoUrl = computed(() => {
-  const item = currentVideoItem.value
-  // 未懒解析出直链的分集：不回退到顶层 url（避免播错集），交给解析遮罩
-  if (item) return item.url || ''
-  return (
-    props.selection?.currentVideoUrl?.value ||
-    props.currentVideoUrl ||
-    props.resultData?.url ||
-    ''
-  )
-})
-const activeVideoUrl = computed(() => isMulti.value ? selectedVideoUrl.value : props.currentVideoUrl || props.resultData?.url || '')
-const sourceHint = computed(() => {
-  if (props.resultData?.media_delivery !== 'weibo-relay') return t(props.locale, 'sourceHint')
-  const active = activeVideoUrl.value
-  const sources = [props.resultData, ...(props.resultData?.video_backup || [])]
-  const viaService = sources.some(source => source.media_delivery === 'weibo-relay' && source.url === active)
-  return t(props.locale, viaService ? 'weiboSourceHint' : 'sourceHint')
-})
-const selectedCount = computed(() => props.selection?.selectedCount?.value ?? 0)
-const selectedTotal = computed(() => props.selection?.total?.value ?? props.resultData?.videos?.length ?? 0)
-
-// 当前选中的分集对象（用于解析中/缺链状态判断）
-const currentVideoItem = computed(
-  () => props.selection?.currentVideo?.value ?? visibleVideos.value?.[currentIndex.value] ?? null
-)
-const playbackFailed = ref(false)
-const manualSelection = ref(0)
-const mediaIdentity = computed(() => JSON.stringify([
-  props.resultVersion || 0, props.resultData?._sourceUrl || '',
-  isMulti.value ? [currentVideoItem.value?._bvid, currentVideoItem.value?._cid, currentVideoItem.value?.index, activeCollection.value] : null,
-]))
-const playerKey = computed(() => JSON.stringify([mediaIdentity.value, activeVideoUrl.value, manualSelection.value]))
-const attemptedSources = new Set()
-let automaticSwitches = 0
-let pendingAutomaticUrl = ''
-const resetPlaybackAttempts = () => {
-  attemptedSources.clear()
-  automaticSwitches = 0
-  pendingAutomaticUrl = ''
-  playbackFailed.value = false
-}
-const selectQuality = (source) => {
-  resetPlaybackAttempts()
-  manualSelection.value++
-  emit('switch-video', source)
-}
-const originalPageUrl = computed(() => {
-  const source = props.resultData?._sourceUrl
-  if (typeof source !== 'string') return ''
-  try {
-    const parsed = new URL(source)
-    return ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password ? parsed.href : ''
-  } catch { return '' }
-})
-watch([mediaIdentity, activeVideoUrl], ([identity, url], [previousIdentity]) => {
-  if (identity !== previousIdentity || url !== pendingAutomaticUrl) resetPlaybackAttempts()
-  pendingAutomaticUrl = ''
-  playbackFailed.value = false
-}, { flush: 'sync' })
-const updatePlaybackStatus = (event, failed) => {
-  const player = event.currentTarget
-  // A removed player's queued event must not change the newly selected source.
-  if (player !== videoEl.value || !activeVideoUrl.value) return
-  if ((player.currentSrc || player.src) !== activeVideoUrl.value) return
-  // Props may already identify a new selection before Vue replaces the old DOM node.
-  if (typeof player.getAttribute === 'function' && player.getAttribute('data-playback-key') !== playerKey.value) return
-  if (pendingAutomaticUrl) return
-  if (failed) {
-    attemptedSources.add(activeVideoUrl.value)
-    const nextUrl = automaticSwitches < 2
-      ? getSameQualityUrls(qualityMedia.value, activeVideoUrl.value).find(url => !attemptedSources.has(url))
-      : undefined
-    const nextSource = qualityCandidates.value.find(source => source.url === nextUrl)
-    if (nextSource) {
-      automaticSwitches++
-      attemptedSources.add(nextUrl)
-      pendingAutomaticUrl = nextUrl
-      playbackFailed.value = false
-      emit('switch-video', nextSource)
-      return
-    }
-  }
-  playbackFailed.value = failed
-}
-// 该 P/合集分集正在懒解析中（B 站）
-const isResolving = computed(() => !!currentVideoItem.value?._resolving)
-// 当前分集既没有直链也没有顶层 url（等待解析 / 解析失败）
-const noCurrentUrl = computed(
-  () => !!currentVideoItem.value && !currentVideoItem.value.url && !currentVideoItem.value.error
-)
-
-const copyToClipboard = async (text, index = -1) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    copyToastText.value = text.length > 20 ? text.substring(0, 20) + '...' : text
-    showCopyToast.value = true
-    setTimeout(() => {
-      showCopyToast.value = false
-    }, 2000)
-  } catch (err) {
-    console.error('Copy failed:', err)
-  }
-}
-
-const author = computed(() => {
-  if (!props.resultData) return null
-  let name = ''
-  if (props.resultData.author) {
-    if (typeof props.resultData.author === 'string') name = props.resultData.author
-    else if (typeof props.resultData.author === 'object') {
-      name = props.resultData.author.name || props.resultData.author.nickname || props.resultData.author.user_name || ''
-    }
-  }
-  let avatar = ''
-  if (props.resultData.avatar) avatar = props.resultData.avatar
-  else if (props.resultData.author && typeof props.resultData.author === 'object') {
-    avatar = props.resultData.author.avatar || props.resultData.author.avatar_thumb || props.resultData.author.cover || ''
-  }
-  let id = ''
-  if (props.resultData.author && typeof props.resultData.author === 'object') {
-    id = props.resultData.author.id || ''
-  }
-  const likeCount = props.resultData?.extra?.statistics?.digg_count
-  const likeCountNum = likeCount !== undefined && likeCount !== null && likeCount !== '' && Number.isFinite(Number(likeCount)) ? props.formatNumber(likeCount) : null
-  return { name, avatar, id, likeCountNum }
-})
-
-const infoCards = computed(() => {
-  if (!props.resultData) return []
-  const data = props.resultData
-  const cards = []
-  cards.push({ label: content[props.locale]?.infoTitle || '作品标题', value: data.title || content[props.locale]?.unknownTitle || '未知标题', icon: 'fa-pen' })
-  const publishTs = data.extra?.create_time ?? data.create_time ?? data.extra?.publish_time ?? data.publish_time ?? data.time
-  cards.push({ label: content[props.locale]?.publishTime || '发布时间', value: formatDate(publishTs) || content[props.locale]?.unknownTime || '未知时间', icon: 'fa-calendar' })
-  let typeText = content[props.locale]?.unknownType || '未知'
-  const type = data.type || (data.images && data.images.length > 0 ? 'images' : 'video')
-  if (['video', 'videos'].includes(type)) typeText = content[props.locale]?.video || '视频'
-  else if (isCollection.value) typeText = content[props.locale]?.collection || '合集'
-  else if (['image', 'images', 'normal'].includes(type)) typeText = content[props.locale]?.images || '图片集'
-  else if (type === 'live') typeText = content[props.locale]?.live || '实况解析'
-  else typeText = data.images && data.images.length > 0 ? (content[props.locale]?.images || '图片集') : (content[props.locale]?.video || '视频')
-  cards.push({ label: content[props.locale]?.type || '类型', value: typeText, icon: 'fa-cube' })
-  const source = activeQuality.value || data
-  if (type !== 'live' && (source.quality || source.width || source.height)) {
-    cards.push({ label: content[props.locale]?.quality || '画质', value: qualityLabel(source), icon: 'fa-expand' })
-  }
-  if (source.width && source.height) cards.push({ label: t(props.locale, 'resolution'), value: `${source.width}×${source.height}`, icon: 'fa-arrows-alt' })
-  if (source.codec) cards.push({ label: t(props.locale, 'codec'), value: source.codec, icon: 'fa-microchip' })
-  if (source.bit_rate || source.bitrate) cards.push({ label: t(props.locale, 'bitRate'), value: formatBitrate(source.bit_rate || source.bitrate), icon: 'fa-wave-square' })
-  if (data.duration) {
-    cards.push({ label: content[props.locale]?.duration || '时长', value: props.formatDuration(data.duration), icon: 'fa-clock' })
-  }
-  return cards
-})
-
-const isDouyinResult = computed(() => {
-  const platform = String(props.resultData?.platform || '').trim().toLowerCase()
-  if (platform) return ['douyin', '抖音'].includes(platform)
-  try {
-    const host = new URL(props.resultData?._sourceUrl || '').hostname.toLowerCase()
-    return ['douyin.com', 'iesdouyin.com'].some(domain => host === domain || host.endsWith(`.${domain}`))
-  } catch { return false }
-})
-const playCountNote = computed(() => props.locale === 'en'
-  ? 'The source returned 0; the actual play count cannot currently be verified.'
-  : '上游返回 0，实际播放量暂无法核实。')
-const stats = computed(() => {
-  if (!props.resultData?.extra?.statistics) return []
-  const s = props.resultData.extra.statistics
-  const statMap = [
-    { key: 'play_count', label: content[props.locale]?.statPlay || '播放', value: s.play_count, icon: 'fa-play-circle' },
-    { key: 'digg_count', label: content[props.locale]?.statLike || '点赞', value: s.digg_count, icon: 'fa-heart' },
-    { key: 'comment_count', label: content[props.locale]?.statComment || '评论', value: s.comment_count, icon: 'fa-comment-dots' },
-    { key: 'collect_count', label: content[props.locale]?.statCollect || '收藏', value: s.collect_count, icon: 'fa-star' },
-    { key: 'share_count', label: content[props.locale]?.statShare || '分享', value: s.share_count, icon: 'fa-share-alt' },
-  ]
-  return statMap.filter(item => item.value !== undefined && item.value !== null && item.value !== '' && Number.isFinite(Number(item.value)) && Number(item.value) >= 0)
-    .map(item => ({ ...item, unverified: item.key === 'play_count' && isDouyinResult.value && Number(item.value) === 0 }))
-})
-
-const hashtags = computed(() => {
-  if (!props.resultData?.extra?.hashtags) return []
-  return props.resultData.extra.hashtags.map(item => ({ name: item.name || '', type: 'hashtag' }))
-})
-
-const videoTags = computed(() => {
-  if (!props.resultData?.extra?.video_tags) return []
-  return props.resultData.extra.video_tags.map(item => ({ name: item.name || '', type: 'tag' }))
-})
-
-const allTags = computed(() => [...hashtags.value, ...videoTags.value])
-
-const content = {
-  'zh-CN': {
-    resultTitle: '解析结果',
-    sourceHint: '当前使用源链接直连播放与下载',
-    weiboSourceHint: '当前通过本站服务播放与下载微博视频',
-    playbackFailed: '该视频源无法在本站直接播放，可尝试其他画质或打开原作品。',
-    openOriginal: '打开原作品',
-    downloadSingle: '下载视频',
-    downloadLive: '下载实况',
-    downloadAll: '下载全部',
-    downloadSelected: '下载选中',
-    downloadAllVideos: '下载全部',
-    downloadSelectedZip: '选中打包ZIP',
-    downloadAllZip: '全部打包ZIP',
-    resolving: '解析中…',
-    episodes: '分集',
-    collections: '合集',
-    copyVideo: '复制链接',
-    backupTitle: '备用画质',
-    unknown: '未知',
-    allImages: '下载全部图片',
-    downloadAllLive: '下载全部实况',
-    downloadAllCovers: '下载全部封面',
-    musicTitle: '背景音乐',
-    unknownMusic: '未知音乐',
-    unknownAuthor: '未知作者',
-    liveVideo: '实况',
-    infoTitle: '作品标题',
-    unknownTitle: '未知标题',
-    publishTime: '发布时间',
-    unknownTime: '未知时间',
-    type: '作品类型',
-    video: '视频',
-    images: '图片集',
-    live: '实况',
-    collection: '合集',
-    unknownType: '未知',
-    quality: '画质',
-    duration: '时长',
-    unknownQuality: '未知',
-    overlayVideo: '下载视频',
-    overlayCover: '下载封面',
-    infoLikes: '获赞 {count}',
-    copied: '已复制',
-    copiedHint: '链接已复制到剪贴板',
-    statPlay: '播放',
-    statLike: '点赞',
-    statComment: '评论',
-    statCollect: '收藏',
-    statShare: '分享',
-    tabInfo: '详情',
-    tabStats: '数据',
-    tabTags: '标签',
-    tabMusic: '音乐',
-    tabBackup: '画质选项',
-    imagesTitle: '图片集',
-    imagesCount: '{count} 张',
-    liveCount: '{count} 组',
-    bitRate: '码率',
-    codec: '编码',
-    resolution: '分辨率',
-    currentPlaying: '当前播放',
-    preview: '预览',
-    close: '关闭',
-    page: '页',
-    videoSource: '视频源',
-    imageSource: '图片来源',
-    liveSource: '实况来源',
-    noBackups: '暂无备用画质',
-    selectQuality: '选择画质',
+    currentItem.value && ["video", "audio"].includes(currentItem.value.type),
+);
+const imageItems = computed(() =>
+  props.resultData.items.filter((item) => item.type === "image"),
+);
+const liveItems = computed(() =>
+  props.resultData.items.filter((item) => item.type === "live_photo"),
+);
+const attachments = computed(() => props.resultData.attachments || []);
+const hasImages = computed(() => imageItems.value.length > 0);
+const activeLiveIndex = ref(0),
+  liveViewMode = ref("video");
+const totalLivePhotos = computed(() => liveItems.value.length);
+const hasLivePhotos = computed(() => liveItems.value.length > 0);
+const hasMusic = computed(() => attachments.value.length > 0);
+const isMulti = computed(() => props.selection?.isMulti.value);
+const currentIndex = computed(() => props.selection?.selectedIndex.value ?? 0);
+const visibleVideos = computed(() => props.selection?.visibleList.value || []);
+const collections = computed(() => props.selection?.collections.value || []);
+const activeCollection = computed(
+  () => props.selection?.sectionIndex.value || 0,
+);
+const selectedCount = computed(() => props.selection?.selectedCount.value || 0);
+const selectedTotal = computed(() => props.selection?.total.value || 0);
+const isResolving = computed(() =>
+  props.resolvingIds?.has(currentItem.value?.id),
+);
+const allQualityOptions = computed(() =>
+  readyItem(currentItem.value)
+    ? currentItem.value.variants.map((variant) => {
+        const selected = props.selection.currentSelection.value;
+        const active =
+          (selected?.variant_id || currentItem.value.default?.variant_id) ===
+          variant.id;
+        const source =
+          readyVariant(variant) && variant.delivery.kind === "file"
+            ? variant.delivery.sources.find(
+                (source) =>
+                  active &&
+                  source.id ===
+                    (selected?.source_id ||
+                      currentItem.value.default?.source_id),
+              ) || variant.delivery.sources[0]
+            : null;
+        return {
+          variant,
+          source,
+          active,
+          capabilities: readyVariant(variant)
+            ? requiredCapabilities(variant.delivery)
+            : [],
+          higher: currentItem.value.higher_quality_variants?.find(
+            (entry) => entry.variant_id === variant.id,
+          ),
+        };
+      })
+    : [],
+);
+const showAllQualityVariants = ref(false);
+const qualityGroups = computed(() =>
+  groupVariantsForDisplay(
+    readyItem(currentItem.value) ? currentItem.value.variants : [],
+  ),
+);
+const hasHiddenQualityVariants = computed(
+  () => qualityGroups.value.length < allQualityOptions.value.length,
+);
+const qualityOptions = computed(() => {
+  if (showAllQualityVariants.value) return allQualityOptions.value;
+  const optionsById = new Map(
+    allQualityOptions.value.map((option) => [option.variant.id, option]),
+  );
+  return qualityGroups.value.map((group) => {
+    const options = group.map((variant) => optionsById.get(variant.id));
+    // A group's representative is display state, never an automatic choice.
+    return options.find((option) => option.active) || options[0];
+  });
+});
+const hasBackup = computed(() => allQualityOptions.value.length > 0);
+const imageUrl = (item) => {
+  const selected = props.selection?.selectionFor(item.id);
+  const result = getDownloadTarget(item, selected, context);
+  return result.kind === "file" ? result.url : "";
+};
+const liveVariant = (item) => {
+  if (!readyItem(item)) return null;
+  const choice = props.selection?.selectionFor(item.id);
+  return choice
+    ? item.variants.find((variant) => variant.id === choice.variant_id)
+    : item.variants.length === 1
+      ? item.variants[0]
+      : null;
+};
+const liveResources = (item) =>
+  readyVariant(liveVariant(item)) && liveVariant(item).delivery.kind === "pair"
+    ? liveVariant(item).delivery.resources
+    : [];
+const liveUrl = (item, role) => {
+  const resource = liveResources(item).find(
+    (resource) => resource.role === role,
+  );
+  return resource ? urlOf(resourceSource(resource)) : "";
+};
+const attachmentUrl = (attachment) =>
+  attachment.resource.delivery.kind === "file"
+    ? urlOf(resourceSource(attachment.resource))
+    : "";
+const targetMessage = computed(() =>
+  target.value && "message" in target.value
+    ? target.value.message
+    : target.value?.kind === "file"
+      ? ""
+      : "该版本需要处理后下载，暂不能在播放器直接播放",
+);
+const sourceHint = computed(() =>
+  t(
+    props.locale,
+    target.value?.kind === "file" && target.value.source.access === "relay"
+      ? "relaySourceHint"
+      : "sourceHint",
+  ),
+);
+const author = computed(() => props.resultData.author || null);
+const stats = computed(() =>
+  Object.entries(props.resultData.statistics || {}).map(([key, stat]) => ({
+    key,
+    value: stat.value,
+    unverified: stat.state === "unverified",
+    icon:
+      {
+        likes: "fa-heart",
+        comments: "fa-comment",
+        saves: "fa-bookmark",
+        shares: "fa-share-alt",
+      }[key] || "fa-play",
+    label: t(
+      props.locale,
+      {
+        plays: "statPlay",
+        views: "statPlay",
+        likes: "statLike",
+        comments: "statComment",
+        shares: "statShare",
+        saves: "statCollect",
+      }[key] || key,
+    ),
+  })),
+);
+const allTags = computed(() => props.resultData.tags || []);
+const playCountNote = computed(() =>
+  props.locale === "en"
+    ? "The platform did not provide verified counts."
+    : "平台未提供可确认的统计值，未将缺失值当作 0。",
+);
+const mediaTypeBadge = computed(() => ({
+  icon: hasImages.value ? "fa-images" : "fa-play",
+  text: isMulti.value
+    ? t(props.locale, "collection")
+    : t(
+        props.locale,
+        currentItem.value?.type === "live_photo"
+          ? "live"
+          : currentItem.value?.type === "image"
+            ? "images"
+            : "video",
+      ),
+  style: hasImages.value ? "image" : "video",
+}));
+const infoCards = computed(() => [
+  {
+    icon: "fa-pen",
+    label: t(props.locale, "infoTitle"),
+    value:
+      currentItem.value?.title ||
+      props.resultData.title ||
+      t(props.locale, "unknownTitle"),
   },
-  'en': {
-    resultTitle: 'Result',
-    sourceHint: 'Using direct source link',
-    weiboSourceHint: 'Weibo playback and downloads use this site’s media service',
-    playbackFailed: 'This source cannot play directly here. Try another quality or open the original post.',
-    openOriginal: 'Open original post',
-    downloadSingle: 'Download Video',
-    downloadLive: 'Download Live',
-    downloadAll: 'Download All',
-    downloadSelected: 'Download Selected',
-    downloadAllVideos: 'Download All',
-    downloadSelectedZip: 'Selected as ZIP',
-    downloadAllZip: 'All as ZIP',
-    resolving: 'Resolving…',
-    episodes: 'Episodes',
-    collections: 'Collections',
-    copyVideo: 'Copy URL',
-    backupTitle: 'Backup Quality',
-    unknown: 'Unknown',
-    allImages: 'Download Images',
-    downloadAllLive: 'Download All Live',
-    downloadAllCovers: 'Download All Covers',
-    musicTitle: 'Background Music',
-    unknownMusic: 'Unknown Music',
-    unknownAuthor: 'Unknown Artist',
-    liveVideo: 'Live',
-    infoTitle: 'Title',
-    unknownTitle: 'Unknown Title',
-    publishTime: 'Published',
-    unknownTime: 'Unknown',
-    type: 'Type',
-    video: 'Video',
-    images: 'Album',
-    live: 'Live',
-    collection: 'Collection',
-    unknownType: 'Unknown',
-    quality: 'Quality',
-    duration: 'Duration',
-    unknownQuality: 'Unknown',
-    overlayVideo: 'Download Video',
-    overlayCover: 'Download Cover',
-    infoLikes: '{count} likes',
-    copied: 'Copied',
-    copiedHint: 'URL copied to clipboard',
-    statPlay: 'Plays',
-    statLike: 'Likes',
-    statComment: 'Comments',
-    statCollect: 'Favorites',
-    statShare: 'Shares',
-    tabInfo: 'Details',
-    tabStats: 'Stats',
-    tabTags: 'Tags',
-    tabMusic: 'Music',
-    tabBackup: 'Quality',
-    imagesTitle: 'Album',
-    imagesCount: '{count} images',
-    liveCount: '{count} groups',
-    bitRate: 'Bitrate',
-    codec: 'Codec',
-    resolution: 'Resolution',
-    currentPlaying: 'Now Playing',
-    preview: 'Preview',
-    close: 'Close',
-    page: 'page',
-    videoSource: 'Video Source',
-    imageSource: 'Image Source',
-    liveSource: 'Live Source',
-    noBackups: 'No backup qualities',
-    selectQuality: 'Select Quality',
+  {
+    icon: "fa-calendar",
+    label: t(props.locale, "publishTime"),
+    value:
+      formatDate(props.resultData.published_at) ||
+      t(props.locale, "unknownTime"),
+  },
+  {
+    icon: "fa-cube",
+    label: t(props.locale, "type"),
+    value: currentItem.value?.type || t(props.locale, "unknownType"),
+  },
+  {
+    icon: "fa-expand",
+    label: t(props.locale, "quality"),
+    value: variantLabel(activeVariant.value, props.locale),
+  },
+  {
+    icon: "fa-clock",
+    label: t(props.locale, "duration"),
+    value:
+      props.formatDuration?.(
+        (metadata.value.duration_ms || currentItem.value?.duration_ms || 0) /
+          1000,
+      ) || "—",
+  },
+]);
+const activeTab = ref("info"),
+  videoEl = ref(null),
+  playbackFailed = ref(false),
+  manualSelection = ref(0);
+const mediaIdentity = computed(() =>
+  JSON.stringify([props.resultVersion, currentItem.value?.id]),
+);
+const playerKey = computed(() =>
+  JSON.stringify([
+    mediaIdentity.value,
+    activeVideoUrl.value,
+    manualSelection.value,
+  ]),
+);
+const attemptedSources = new Set();
+watch(mediaIdentity, () => {
+  attemptedSources.clear();
+  playbackFailed.value = false;
+  activeTab.value = "info";
+  showAllQualityVariants.value = false;
+});
+watch(activeVideoUrl, () => {
+  playbackFailed.value = false;
+});
+const selectQuality = (option) => {
+  manualSelection.value++;
+  attemptedSources.clear();
+  playbackFailed.value = false;
+  emit("switch-video", {
+    variant_id: option.variant.id,
+    ...(option.source?.id ? { source_id: option.source.id } : {}),
+  });
+};
+const originalPageUrl = computed(() => {
+  try {
+    const raw = currentItem.value?.source_url || props.resultData.source_url;
+    return raw ? sourceUrl({ url: raw }) : "";
+  } catch {
+    return "";
   }
-}
+});
+const updatePlaybackStatus = (event, failed) => {
+  const element = event?.currentTarget || event?.target;
+  if (
+    !element ||
+    (element.dataset?.playbackKey ||
+      element.getAttribute?.("data-playback-key") ||
+      element.props?.["data-playback-key"]) !== playerKey.value ||
+    (element.currentSrc && element.currentSrc !== activeVideoUrl.value)
+  )
+    return;
+  if (!failed) {
+    playbackFailed.value = false;
+    return;
+  }
+  if (target.value?.kind !== "file") return;
+  attemptedSources.add(target.value.url);
+  const next = target.value.routes.find((url) => !attemptedSources.has(url));
+  if (next && attemptedSources.size < 3) {
+    const source = target.value.variant.delivery.sources.find(
+      (source) => urlOf(source) === next,
+    );
+    if (source) {
+      emit("switch-video", {
+        variant_id: target.value.variant.id,
+        ...(source.id ? { source_id: source.id } : {}),
+      });
+      return;
+    }
+  }
+  playbackFailed.value = true;
+};
+const activeImageIndex = ref(0),
+  imageModalOpen = ref(false),
+  showCopyToast = ref(false),
+  copyToastText = ref("");
+let copyTimer;
+const copyToClipboard = async (text) => {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(String(text));
+    copyToastText.value = String(text);
+    showCopyToast.value = true;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (showCopyToast.value = false), 2000);
+  } catch {
+    emit("copy-url", text);
+  }
+};
+const openImageModal = (index) => {
+  activeImageIndex.value = index;
+  imageModalOpen.value = true;
+  props.selection.selectItem(imageItems.value[index].id);
+  document.body.style.overflow = "hidden";
+};
+const closeImageModal = () => {
+  imageModalOpen.value = false;
+  document.body.style.overflow = "";
+};
+const nextImage = () => {
+  activeImageIndex.value =
+    (activeImageIndex.value + 1) % imageItems.value.length;
+  props.selection.selectItem(imageItems.value[activeImageIndex.value].id);
+};
+const prevImage = () => {
+  activeImageIndex.value =
+    (activeImageIndex.value - 1 + imageItems.value.length) %
+    imageItems.value.length;
+  props.selection.selectItem(imageItems.value[activeImageIndex.value].id);
+};
+const handleKeydown = (event) => {
+  if (!imageModalOpen.value) return;
+  if (event.key === "Escape") closeImageModal();
+  if (event.key === "ArrowRight") nextImage();
+  if (event.key === "ArrowLeft") prevImage();
+};
+watch(
+  () => props.resultVersion,
+  () => {
+    activeImageIndex.value = 0;
+    activeLiveIndex.value = 0;
+    closeImageModal();
+  },
+);
+onMounted(() => window.addEventListener("keydown", handleKeydown));
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown);
+  document.body.style.overflow = "";
+  clearTimeout(copyTimer);
+});
+const infoColumnEl = ref(null),
+  authorCardEl = ref(null),
+  infoCardEl = ref(null),
+  tabsEl = ref(null),
+  detailsPanelEl = ref(null);
+const desktopLayout = ref(false),
+  detailsCardHeight = ref(0),
+  detailsColumnHeight = ref(0);
+const canAlignDetails = computed(
+  () =>
+    desktopLayout.value &&
+    hasVideo.value &&
+    !isMulti.value &&
+    !hasImages.value &&
+    !hasLivePhotos.value,
+);
+const hasDetailsBaseline = computed(
+  () => canAlignDetails.value && detailsColumnHeight.value > 0,
+);
+const detailsLayoutStyle = computed(() =>
+  hasDetailsBaseline.value
+    ? {
+        "--rs-details-card-height": `${detailsCardHeight.value}px`,
+        "--rs-details-column-height": `${detailsColumnHeight.value}px`,
+      }
+    : undefined,
+);
+const tabs = computed(() => [
+  { key: "info", icon: "fa-info-circle", label: t(props.locale, "tabInfo") },
+  ...(stats.value.length
+    ? [
+        {
+          key: "stats",
+          icon: "fa-chart-bar",
+          label: t(props.locale, "tabStats"),
+        },
+      ]
+    : []),
+  ...(hasBackup.value
+    ? [
+        {
+          key: "backup",
+          icon: "fa-layer-group",
+          label: t(props.locale, "tabBackup"),
+        },
+      ]
+    : []),
+  ...(allTags.value.length
+    ? [{ key: "tags", icon: "fa-tags", label: t(props.locale, "tabTags") }]
+    : []),
+  ...(hasMusic.value
+    ? [{ key: "music", icon: "fa-music", label: t(props.locale, "tabMusic") }]
+    : []),
+]);
+const content = {
+  "zh-CN": {
+    resultTitle: "解析结果",
+    sourceHint: "当前使用源链接直连播放与下载",
+    relaySourceHint: "当前通过本站媒体服务播放与下载",
+    playbackFailed: "该视频源无法在本站直接播放，可尝试其他画质或打开原作品。",
+    openOriginal: "打开原作品",
+    downloadSingle: "下载视频",
+    downloadLive: "下载实况",
+    downloadAll: "下载全部",
+    downloadSelected: "下载选中",
+    downloadAllVideos: "下载全部",
+    downloadSelectedZip: "选中打包ZIP",
+    downloadAllZip: "全部打包ZIP",
+    resolving: "解析中…",
+    episodes: "分集",
+    collections: "合集",
+    copyVideo: "复制链接",
+    backupTitle: "备用画质",
+    unknown: "未知",
+    allImages: "下载全部图片",
+    downloadAllLive: "下载全部实况",
+    downloadAllCovers: "下载全部封面",
+    musicTitle: "背景音乐",
+    unknownMusic: "未知音乐",
+    unknownAuthor: "未知作者",
+    liveVideo: "实况",
+    infoTitle: "作品标题",
+    unknownTitle: "未知标题",
+    publishTime: "发布时间",
+    unknownTime: "未知时间",
+    type: "作品类型",
+    video: "视频",
+    images: "图片集",
+    live: "实况",
+    collection: "合集",
+    unknownType: "未知",
+    quality: "画质",
+    duration: "时长",
+    unknownQuality: "未知",
+    overlayVideo: "下载视频",
+    overlayCover: "下载封面",
+    infoLikes: "获赞 {count}",
+    copied: "已复制",
+    copiedHint: "链接已复制到剪贴板",
+    statPlay: "播放",
+    statLike: "点赞",
+    statComment: "评论",
+    statCollect: "收藏",
+    statShare: "分享",
+    tabInfo: "详情",
+    tabStats: "数据",
+    tabTags: "标签",
+    tabMusic: "音乐",
+    tabBackup: "画质选项",
+    imagesTitle: "图片集",
+    imagesCount: "{count} 张",
+    liveCount: "{count} 组",
+    bitRate: "码率",
+    codec: "编码",
+    resolution: "分辨率",
+    currentPlaying: "当前播放",
+    preview: "预览",
+    close: "关闭",
+    page: "页",
+    videoSource: "视频源",
+    imageSource: "图片来源",
+    liveSource: "实况来源",
+    noBackups: "暂无备用画质",
+    selectQuality: "选择画质",
+  },
+  en: {
+    resultTitle: "Result",
+    sourceHint: "Using direct source link",
+    relaySourceHint: "Playback and downloads use this site’s media service",
+    playbackFailed:
+      "This source cannot play directly here. Try another quality or open the original post.",
+    openOriginal: "Open original post",
+    downloadSingle: "Download Video",
+    downloadLive: "Download Live",
+    downloadAll: "Download All",
+    downloadSelected: "Download Selected",
+    downloadAllVideos: "Download All",
+    downloadSelectedZip: "Selected as ZIP",
+    downloadAllZip: "All as ZIP",
+    resolving: "Resolving…",
+    episodes: "Episodes",
+    collections: "Collections",
+    copyVideo: "Copy URL",
+    backupTitle: "Backup Quality",
+    unknown: "Unknown",
+    allImages: "Download Images",
+    downloadAllLive: "Download All Live",
+    downloadAllCovers: "Download All Covers",
+    musicTitle: "Background Music",
+    unknownMusic: "Unknown Music",
+    unknownAuthor: "Unknown Artist",
+    liveVideo: "Live",
+    infoTitle: "Title",
+    unknownTitle: "Unknown Title",
+    publishTime: "Published",
+    unknownTime: "Unknown",
+    type: "Type",
+    video: "Video",
+    images: "Album",
+    live: "Live",
+    collection: "Collection",
+    unknownType: "Unknown",
+    quality: "Quality",
+    duration: "Duration",
+    unknownQuality: "Unknown",
+    overlayVideo: "Download Video",
+    overlayCover: "Download Cover",
+    infoLikes: "{count} likes",
+    copied: "Copied",
+    copiedHint: "URL copied to clipboard",
+    statPlay: "Plays",
+    statLike: "Likes",
+    statComment: "Comments",
+    statCollect: "Favorites",
+    statShare: "Shares",
+    tabInfo: "Details",
+    tabStats: "Stats",
+    tabTags: "Tags",
+    tabMusic: "Music",
+    tabBackup: "Quality",
+    imagesTitle: "Album",
+    imagesCount: "{count} images",
+    liveCount: "{count} groups",
+    bitRate: "Bitrate",
+    codec: "Codec",
+    resolution: "Resolution",
+    currentPlaying: "Now Playing",
+    preview: "Preview",
+    close: "Close",
+    page: "page",
+    videoSource: "Video Source",
+    imageSource: "Image Source",
+    liveSource: "Live Source",
+    noBackups: "No backup qualities",
+    selectQuality: "Select Quality",
+  },
+};
 
-const t = (locale, key) => content[locale]?.[key] || content['zh-CN'][key] || key
+const t = (locale, key) =>
+  content[locale]?.[key] || content["zh-CN"][key] || key;
 
 const formatDate = (timestamp) => {
-  if (!timestamp) return ''
-  const numeric = typeof timestamp === 'number' || /^\d+(\.\d+)?$/.test(String(timestamp))
-  const value = numeric ? Number(timestamp) * (Number(timestamp) < 1e12 ? 1000 : 1) : String(timestamp).replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T')
-  const date = new Date(value)
-  if (isNaN(date.getTime())) return ''
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  const time = [date.getHours(), date.getMinutes(), date.getSeconds()].map((value) => String(value).padStart(2, '0')).join(':')
-  return `${y}-${m}-${d} ${time}`
-}
+  if (!timestamp) return "";
+  const numeric =
+    typeof timestamp === "number" || /^\d+(\.\d+)?$/.test(String(timestamp));
+  const value = numeric
+    ? Number(timestamp) * (Number(timestamp) < 1e12 ? 1000 : 1)
+    : String(timestamp).replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T");
+  const date = new Date(value);
+  if (isNaN(date.getTime())) return "";
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(":");
+  return `${y}-${m}-${d} ${time}`;
+};
+
+const qualityBitrates = (metadata = {}) => [
+  { key: "bitrate_bps", label: props.locale === "en" ? "Total" : "总码率" },
+  { key: "video_bitrate_bps", label: props.locale === "en" ? "Video" : "视频码率" },
+  { key: "audio_bitrate_bps", label: props.locale === "en" ? "Audio" : "音频码率" },
+].filter(rate => metadata[rate.key] > 0).map(rate => ({ ...rate, value: metadata[rate.key] }));
 
 const formatBitrate = (val) => {
-  const n = Number(val || 0)
-  if (n <= 0) return ''
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + ' Mbps'
-  if (n >= 1000) return (n / 1000).toFixed(0) + ' Kbps'
-  return n + ' bps'
-}
-
-const mediaTypeBadge = computed(() => {
-  if (isLiveType.value) return { icon: 'fa-broadcast-tower', text: t(props.locale, 'live'), style: 'live' }
-  if (isImageType.value) return { icon: 'fa-images', text: t(props.locale, 'images'), style: 'image' }
-  if (isCollection.value) return { icon: 'fa-layer-group', text: t(props.locale, 'collection'), style: 'video' }
-  return { icon: 'fa-play', text: t(props.locale, 'video'), style: 'video' }
-})
-
-// ── image modal ──
-const openImageModal = (index) => {
-  activeImageIndex.value = index
-  imageModalOpen.value = true
-  document.body.style.overflow = 'hidden'
-}
-
-const closeImageModal = () => {
-  imageModalOpen.value = false
-  document.body.style.overflow = ''
-}
-
-const nextImage = () => {
-  if (props.resultData?.images) {
-    activeImageIndex.value = (activeImageIndex.value + 1) % props.resultData.images.length
-  }
-}
-
-const prevImage = () => {
-  if (props.resultData?.images) {
-    activeImageIndex.value = (activeImageIndex.value - 1 + props.resultData.images.length) % props.resultData.images.length
-  }
-}
-
-const handleKeydown = (e) => {
-  if (!imageModalOpen.value) return
-  if (e.key === 'Escape') closeImageModal()
-  if (e.key === 'ArrowRight') nextImage()
-  if (e.key === 'ArrowLeft') prevImage()
-}
-
-onMounted(() => window.addEventListener('keydown', handleKeydown))
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-  document.body.style.overflow = ''
-})
-
-const tabs = computed(() => {
-  const items = [{ key: 'info', icon: 'fa-info-circle', label: t(props.locale, 'tabInfo') }]
-  if (stats.value.length > 0) items.push({ key: 'stats', icon: 'fa-chart-bar', label: t(props.locale, 'tabStats') })
-  if (hasBackup.value) items.push({ key: 'backup', icon: 'fa-layer-group', label: t(props.locale, 'tabBackup') })
-  if (allTags.value.length > 0) items.push({ key: 'tags', icon: 'fa-tags', label: t(props.locale, 'tabTags') })
-  if (hasMusic.value) items.push({ key: 'music', icon: 'fa-music', label: t(props.locale, 'tabMusic') })
-  return items
-})
+  const n = Number(val || 0);
+  if (n <= 0) return "";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + " Mbps";
+  if (n >= 1000) return (n / 1000).toFixed(0) + " Kbps";
+  return n + " bps";
+};
 
 // Measure the details panel, never the selected tab. While another desktop tab
 // is open the same panel stays laid out, but hidden/inert and out of normal flow.
 // Its natural height therefore follows translations, wrapping and source details
 // without letting a long quality/tag list resize the player.
-let layoutDisposed = false
-let layoutFrame = 0
-let layoutQueued = false
-let layoutObserver
-let observedLayoutNodes = []
-let desktopQuery
+let layoutDisposed = false;
+let layoutFrame = 0;
+let layoutQueued = false;
+let layoutObserver;
+let observedLayoutNodes = [];
+let desktopQuery;
 const clearDetailsBaseline = () => {
-  detailsCardHeight.value = 0
-  detailsColumnHeight.value = 0
-}
+  detailsCardHeight.value = 0;
+  detailsColumnHeight.value = 0;
+};
 const measureDetailsLayout = () => {
-  if (layoutDisposed) return
+  if (layoutDisposed) return;
   const nodes = canAlignDetails.value
-    ? [detailsPanelEl.value, tabsEl.value, authorCardEl.value, infoCardEl.value].filter(Boolean)
-    : []
-  if (layoutObserver && (nodes.length !== observedLayoutNodes.length || nodes.some((node, index) => node !== observedLayoutNodes[index]))) {
-    layoutObserver.disconnect()
-    nodes.forEach(node => layoutObserver.observe(node))
-    observedLayoutNodes = nodes
+    ? [
+        detailsPanelEl.value,
+        tabsEl.value,
+        authorCardEl.value,
+        infoCardEl.value,
+      ].filter(Boolean)
+    : [];
+  if (
+    layoutObserver &&
+    (nodes.length !== observedLayoutNodes.length ||
+      nodes.some((node, index) => node !== observedLayoutNodes[index]))
+  ) {
+    layoutObserver.disconnect();
+    nodes.forEach((node) => layoutObserver.observe(node));
+    observedLayoutNodes = nodes;
   }
-  if (!canAlignDetails.value) { clearDetailsBaseline(); return }
-  const details = detailsPanelEl.value?.getBoundingClientRect?.()
-  const navigation = tabsEl.value?.getBoundingClientRect?.()
-  if (!details?.width || !details.height || !navigation?.height || !window.getComputedStyle) return
-  const cardStyle = window.getComputedStyle(infoCardEl.value)
-  const columnStyle = window.getComputedStyle(infoColumnEl.value)
-  const pixels = value => Number.parseFloat(value) || 0
-  const cardHeight = Math.ceil(details.height + navigation.height +
-    pixels(cardStyle.borderTopWidth) + pixels(cardStyle.borderBottomWidth))
-  const authorHeight = authorCardEl.value?.getBoundingClientRect?.().height || 0
-  const columnHeight = Math.ceil(cardHeight + authorHeight + (authorHeight ? pixels(columnStyle.rowGap) : 0))
-  if (detailsCardHeight.value !== cardHeight) detailsCardHeight.value = cardHeight
-  if (detailsColumnHeight.value !== columnHeight) detailsColumnHeight.value = columnHeight
-}
+  if (!canAlignDetails.value) {
+    clearDetailsBaseline();
+    return;
+  }
+  const details = detailsPanelEl.value?.getBoundingClientRect?.();
+  const navigation = tabsEl.value?.getBoundingClientRect?.();
+  if (
+    !details?.width ||
+    !details.height ||
+    !navigation?.height ||
+    !window.getComputedStyle
+  )
+    return;
+  const cardStyle = window.getComputedStyle(infoCardEl.value);
+  const columnStyle = window.getComputedStyle(infoColumnEl.value);
+  const pixels = (value) => Number.parseFloat(value) || 0;
+  const cardHeight = Math.ceil(
+    details.height +
+      navigation.height +
+      pixels(cardStyle.borderTopWidth) +
+      pixels(cardStyle.borderBottomWidth),
+  );
+  const authorHeight =
+    authorCardEl.value?.getBoundingClientRect?.().height || 0;
+  const columnHeight = Math.ceil(
+    cardHeight + authorHeight + (authorHeight ? pixels(columnStyle.rowGap) : 0),
+  );
+  if (detailsCardHeight.value !== cardHeight)
+    detailsCardHeight.value = cardHeight;
+  if (detailsColumnHeight.value !== columnHeight)
+    detailsColumnHeight.value = columnHeight;
+};
 const queueDetailsMeasurement = () => {
-  if (layoutDisposed || layoutQueued) return
-  layoutQueued = true
+  if (layoutDisposed || layoutQueued) return;
+  layoutQueued = true;
   nextTick(() => {
-    if (layoutDisposed) { layoutQueued = false; return }
-    const measure = () => {
-      layoutFrame = 0
-      layoutQueued = false
-      measureDetailsLayout()
+    if (layoutDisposed) {
+      layoutQueued = false;
+      return;
     }
-    if (window.requestAnimationFrame) layoutFrame = window.requestAnimationFrame(measure)
-    else measure()
-  })
-}
+    const measure = () => {
+      layoutFrame = 0;
+      layoutQueued = false;
+      measureDetailsLayout();
+    };
+    if (window.requestAnimationFrame)
+      layoutFrame = window.requestAnimationFrame(measure);
+    else measure();
+  });
+};
 const updateLayoutViewport = () => {
-  desktopLayout.value = desktopQuery?.matches ?? window.innerWidth >= 1040
-  if (!desktopLayout.value) clearDetailsBaseline()
-  queueDetailsMeasurement()
-}
-watch([canAlignDetails, mediaIdentity], () => {
-  clearDetailsBaseline()
-  queueDetailsMeasurement()
-}, { flush: 'post' })
-watch([infoCards, author, tabs, activeTab, () => props.locale], queueDetailsMeasurement, { flush: 'post' })
+  desktopLayout.value = desktopQuery?.matches ?? window.innerWidth >= 1040;
+  if (!desktopLayout.value) clearDetailsBaseline();
+  queueDetailsMeasurement();
+};
+watch(
+  [canAlignDetails, mediaIdentity],
+  () => {
+    clearDetailsBaseline();
+    queueDetailsMeasurement();
+  },
+  { flush: "post" },
+);
+watch(
+  [infoCards, author, tabs, activeTab, () => props.locale],
+  queueDetailsMeasurement,
+  { flush: "post" },
+);
 onMounted(() => {
-  desktopQuery = window.matchMedia?.('(min-width: 1040px)')
-  if (window.ResizeObserver) layoutObserver = new window.ResizeObserver(queueDetailsMeasurement)
-  desktopQuery?.addEventListener?.('change', updateLayoutViewport)
-  window.addEventListener('resize', updateLayoutViewport, { passive: true })
-  updateLayoutViewport()
-})
+  desktopQuery = window.matchMedia?.("(min-width: 1040px)");
+  if (window.ResizeObserver)
+    layoutObserver = new window.ResizeObserver(queueDetailsMeasurement);
+  desktopQuery?.addEventListener?.("change", updateLayoutViewport);
+  window.addEventListener("resize", updateLayoutViewport, { passive: true });
+  updateLayoutViewport();
+});
 onUnmounted(() => {
-  layoutDisposed = true
-  if (layoutFrame) window.cancelAnimationFrame?.(layoutFrame)
-  layoutObserver?.disconnect()
-  desktopQuery?.removeEventListener?.('change', updateLayoutViewport)
-  window.removeEventListener('resize', updateLayoutViewport)
-})
-
-const toggleSection = (key) => {
-  collapsedSections.value[key] = !collapsedSections.value[key]
-}
+  layoutDisposed = true;
+  if (layoutFrame) window.cancelAnimationFrame?.(layoutFrame);
+  layoutObserver?.disconnect();
+  desktopQuery?.removeEventListener?.("change", updateLayoutViewport);
+  window.removeEventListener("resize", updateLayoutViewport);
+});
 </script>
-
 <template>
   <section
     v-if="resultData"
@@ -628,9 +760,6 @@ const toggleSection = (key) => {
     role="region"
     :aria-label="t(locale, 'resultTitle')"
   >
-    <!-- ════════════════════════════════════════════════════════
-         HEADER BAR
-         ════════════════════════════════════════════════════════ -->
     <div class="rs-header">
       <div class="rs-header-inner">
         <div class="rs-header-left">
@@ -638,229 +767,210 @@ const toggleSection = (key) => {
             <div class="rs-status-dot"></div>
             <div class="rs-status-dot-pulse"></div>
           </div>
-          <span class="rs-header-title">{{ t(locale, 'resultTitle') }}</span>
-          <span class="rs-header-badge" :class="'rs-header-badge--' + mediaTypeBadge.style">
-            <AppIcon :class="['fas', mediaTypeBadge.icon]"></AppIcon>
-            {{ mediaTypeBadge.text }}
-          </span>
+          <span class="rs-header-title">{{ t(locale, "resultTitle") }}</span
+          ><span
+            class="rs-header-badge"
+            :class="'rs-header-badge--' + mediaTypeBadge.style"
+            ><AppIcon :class="['fas', mediaTypeBadge.icon]" />{{
+              mediaTypeBadge.text
+            }}</span
+          >
         </div>
         <div class="rs-header-right">
-          <span class="rs-header-hint">
-            <AppIcon class="fas fa-link rs-header-hint-icon"></AppIcon>
-            <span class="rs-header-hint-text">{{ sourceHint }}</span>
-          </span>
+          <span class="rs-header-hint"
+            ><AppIcon class="fas fa-link rs-header-hint-icon" /><span
+              class="rs-header-hint-text"
+              >{{ sourceHint }}</span
+            ></span
+          >
         </div>
       </div>
     </div>
-
     <div v-if="playbackFailed" class="rs-playback-error" role="alert">
-      <span>{{ t(locale, 'playbackFailed') }}</span>
-      <a v-if="originalPageUrl" :href="originalPageUrl" target="_blank" rel="noopener noreferrer">{{ t(locale, 'openOriginal') }}</a>
+      <span>{{ t(locale, "playbackFailed") }}</span
+      ><a
+        v-if="originalPageUrl"
+        :href="originalPageUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        >{{ t(locale, "openOriginal") }}</a
+      >
     </div>
-
-    <!-- ════════════════════════════════════════════════════════
-         MAIN GRID: media-left + info-right (desktop)
-                     stacked on mobile/tablet
-         ════════════════════════════════════════════════════════ -->
     <div
       class="rs-main"
       :class="{ 'rs-main--align-details': hasDetailsBaseline }"
       :style="detailsLayoutStyle"
     >
-      <!-- ============================================================
-           LEFT COLUMN: Media Content
-           ============================================================ -->
       <div class="rs-media-col">
-        <!-- ── MULTI-EPISODE：播放器 + 选集列表 ── -->
-        <template v-if="isMulti">
-          <div class="rs-card rs-card--video">
-            <div class="rs-card-hd">
-              <div class="rs-card-hd-left">
-                <AppIcon class="fas fa-play-circle rs-card-icon"></AppIcon>
-                <span>{{ t(locale, 'videoSource') }}</span>
-              </div>
-              <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
-            </div>
-            <div class="rs-video-stage">
-              <video
-                :key="playerKey"
-                :data-playback-key="playerKey"
-                ref="videoEl"
-                :src="selectedVideoUrl || undefined"
-                controls
-                referrerpolicy="no-referrer"
-                class="rs-video"
-                :poster="resultData.cover || undefined"
-                @error="updatePlaybackStatus($event, true)"
-                @loadeddata="updatePlaybackStatus($event, false)"
-              >
-                <track kind="captions" :src="undefined" />
-              </video>
-              <!-- B 站多 P 解析遮罩 -->
-              <div
-                v-if="isResolving || (noCurrentUrl && !currentVideoItem?.error)"
-                class="rs-stage-overlay"
-              >
-                <div class="rs-stage-spinner"></div>
-                <span>{{ t(locale, 'resolving') }}</span>
-              </div>
-            </div>
-            <div class="rs-card-actions">
-              <button
-                @click="emit('download-index', currentIndex)"
-                class="rs-btn rs-btn--primary"
-                :disabled="isDownloading"
-              >
-                <AppIcon class="fas fa-download"></AppIcon>
-                <span>{{ t(locale, 'downloadSingle') }}</span>
-              </button>
-              <template v-if="selectedCount > 0">
-                <button
-                  @click="emit('download-selected')"
-                  class="rs-btn rs-btn--accent"
-                  :disabled="isDownloading"
-                >
-                  <AppIcon class="fas fa-layer-group"></AppIcon>
-                  <span>{{ t(locale, 'downloadSelected') }}（{{ selectedCount }}）</span>
-                </button>
-                <button
-                  @click="emit('download-selected-zip', props.selection?.getBatchVideos?.() ?? [])"
-                  class="rs-btn rs-btn--ghost"
-                  :disabled="isDownloading"
-                >
-                  <AppIcon class="fas fa-file-archive"></AppIcon>
-                  <span>{{ t(locale, 'downloadSelectedZip') }}</span>
-                </button>
-              </template>
-              <template v-else>
-                <button
-                  @click="emit('download-all-videos')"
-                  class="rs-btn rs-btn--accent"
-                  :disabled="isDownloading"
-                >
-                  <AppIcon class="fas fa-download"></AppIcon>
-                  <span>{{ t(locale, 'downloadAllVideos') }}</span>
-                </button>
-                <button
-                  @click="emit('download-all-zip', resultData.videos ?? [])"
-                  class="rs-btn rs-btn--ghost"
-                  :disabled="isDownloading"
-                >
-                  <AppIcon class="fas fa-file-archive"></AppIcon>
-                  <span>{{ t(locale, 'downloadAllZip') }}</span>
-                </button>
-              </template>
-              <button
-                @click="emit('copy-url', selectedVideoUrl)"
-                class="rs-btn rs-btn--ghost-light"
-              >
-                <AppIcon class="fas fa-copy"></AppIcon>
-                <span>{{ t(locale, 'copyVideo') }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="rs-card rs-card--playlist">
-            <div class="rs-card-hd">
-              <div class="rs-card-hd-left">
-                <AppIcon class="fas fa-list rs-card-icon"></AppIcon>
-                <span>{{ t(locale, 'episodes') }}（{{ visibleVideos.length }}）</span>
-              </div>
-              <span v-if="collections.length > 1" class="rs-count-tag">
-                {{ collections.length }} {{ t(locale, 'collections') }}
-              </span>
-            </div>
-            <div class="rs-playlist">
-              <VideoPlaylist
-                :videos="visibleVideos"
-                :current-index="currentIndex"
-                :selected-set="props.selection?.selectedSet?.value"
-                :total="selectedTotal"
-                :disabled="isDownloading"
-                :collections="collections"
-                :active-collection="activeCollection"
-                @select="emit('select-video', $event)"
-                @toggle="emit('toggle-video', $event)"
-                @select-all="emit('select-all-videos')"
-                @clear-selection="emit('clear-selection')"
-                @select-collection="emit('select-collection', $event)"
-              />
-            </div>
-          </div>
-        </template>
-
-        <!-- ── VIDEO PLAYER（单集）── -->
-        <div v-else-if="hasVideo" class="rs-card rs-card--video">
+        <div v-if="hasVideo" class="rs-card rs-card--video">
           <div class="rs-card-hd">
             <div class="rs-card-hd-left">
-              <AppIcon class="fas fa-play-circle rs-card-icon"></AppIcon>
-              <span>{{ t(locale, 'videoSource') }}</span>
+              <AppIcon class="fas fa-play-circle rs-card-icon" /><span>{{
+                t(locale, "videoSource")
+              }}</span>
             </div>
-            <span v-if="activeQuality || qualityMedia?.quality" class="rs-quality-tag">{{ qualityLabel(activeQuality || qualityMedia) }}</span>
+            <span v-if="activeVariant" class="rs-quality-tag">{{
+              variantLabel(activeVariant, locale)
+            }}</span>
           </div>
           <div class="rs-video-stage">
-            <video
+            <audio
+              v-if="currentItem.type === 'audio' && activeVideoUrl"
               :key="playerKey"
               :data-playback-key="playerKey"
+              :src="activeVideoUrl"
+              controls
+              class="rs-music-player"
+              @error="updatePlaybackStatus($event, true)"
+              @loadeddata="updatePlaybackStatus($event, false)"
+            />
+            <video
+              v-else
+              :key="playerKey"
               ref="videoEl"
-              :src="currentVideoUrl || resultData.url"
+              :data-playback-key="playerKey"
+              :src="activeVideoUrl || undefined"
               controls
               referrerpolicy="no-referrer"
               class="rs-video"
-              :poster="resultData.cover || undefined"
+              :poster="
+                urlOf(currentItem.cover || resultData.cover) || undefined
+              "
               @error="updatePlaybackStatus($event, true)"
               @loadeddata="updatePlaybackStatus($event, false)"
             >
               <track kind="captions" :src="undefined" />
             </video>
+            <div v-if="isResolving || !activeVideoUrl" class="rs-stage-overlay">
+              <div v-if="isResolving" class="rs-stage-spinner"></div>
+              <span>{{
+                isResolving ? t(locale, "resolving") : targetMessage
+              }}</span
+              ><button
+                v-if="currentItem.resolve_url && !isResolving"
+                class="rs-btn rs-btn--ghost"
+                @click="emit('refresh-item', currentItem)"
+              >
+                {{ locale === "en" ? "Refresh item" : "刷新此条目" }}
+              </button>
+            </div>
           </div>
           <div class="rs-card-actions">
-            <button @click="emit('download-main')" class="rs-btn rs-btn--primary">
-              <AppIcon class="fas fa-download"></AppIcon>
-              <span>{{ isLive ? t(locale, 'downloadLive') : t(locale, 'downloadSingle') }}</span>
+            <button
+              @click="emit('download-main')"
+              class="rs-btn rs-btn--primary"
+              :disabled="
+                isResolving ||
+                target?.kind === 'unsupported' ||
+                target?.kind === 'unavailable' ||
+                target?.kind === 'invalid'
+              "
+            >
+              <AppIcon class="fas fa-download" /><span>{{
+                t(locale, "downloadSingle")
+              }}</span>
             </button>
             <button
-              v-if="hasBothMedia || isLive || hasLivePhotos"
-              @click="emit('download-all')"
+              v-if="isMulti"
+              @click="
+                selectedCount
+                  ? emit('download-selected')
+                  : emit('download-all-videos')
+              "
               class="rs-btn rs-btn--accent"
             >
-              <AppIcon class="fas fa-layer-group"></AppIcon>
-              <span>{{ t(locale, 'downloadAll') }}</span>
+              <AppIcon class="fas fa-layer-group" /><span>{{
+                selectedCount
+                  ? t(locale, "downloadSelected") + "（" + selectedCount + "）"
+                  : t(locale, "downloadAllVideos")
+              }}</span>
             </button>
-            <button @click="emit('copy-url', currentVideoUrl || resultData.url)" class="rs-btn rs-btn--ghost-light">
-              <AppIcon class="fas fa-copy"></AppIcon>
-              <span>{{ t(locale, 'copyVideo') }}</span>
+            <button
+              v-if="isMulti"
+              @click="
+                emit(
+                  'download-selected-zip',
+                  selectedCount
+                    ? selection.getBatchVideos()
+                    : selection.list.value,
+                )
+              "
+              class="rs-btn rs-btn--ghost"
+            >
+              <AppIcon class="fas fa-file-archive" />{{
+                t(locale, "downloadAllZip")
+              }}
+            </button>
+            <button
+              @click="emit('copy-url', activeVideoUrl)"
+              class="rs-btn rs-btn--ghost-light"
+              :disabled="!activeVideoUrl"
+            >
+              <AppIcon class="fas fa-copy" /><span>{{
+                t(locale, "copyVideo")
+              }}</span>
             </button>
           </div>
         </div>
-
+        <div v-if="isMulti" class="rs-card rs-card--playlist">
+          <div class="rs-card-hd">
+            <div class="rs-card-hd-left">
+              <AppIcon class="fas fa-list rs-card-icon" /><span
+                >{{ t(locale, "episodes") }}（{{ visibleVideos.length }}）</span
+              >
+            </div>
+          </div>
+          <div class="rs-playlist">
+            <VideoPlaylist
+              :videos="visibleVideos"
+              :current-index="currentIndex"
+              :selected-set="selection.selectedSet.value"
+              :total="selectedTotal"
+              :collections="collections"
+              :active-collection="activeCollection"
+              :resolving-ids="resolvingIds"
+              @select="emit('select-video', $event)"
+              @toggle="emit('toggle-video', $event)"
+              @select-all="emit('select-all-videos')"
+              @clear-selection="emit('clear-selection')"
+              @select-collection="emit('select-collection', $event)"
+            />
+          </div>
+        </div>
         <!-- ── IMAGE GALLERY ── -->
         <div v-if="hasImages" class="rs-card rs-card--gallery">
           <div class="rs-card-hd">
             <div class="rs-card-hd-left">
               <AppIcon class="fas fa-images rs-card-icon"></AppIcon>
-              <span>{{ t(locale, 'imageSource') }}</span>
+              <span>{{ t(locale, "imageSource") }}</span>
             </div>
-            <span class="rs-count-tag">{{ t(locale, 'imagesCount').replace('{count}', resultData.images.length) }}</span>
+            <span class="rs-count-tag">{{
+              t(locale, "imagesCount").replace("{count}", imageItems.length)
+            }}</span>
           </div>
 
           <div
             class="rs-gallery"
             :class="{
-              'rs-gallery--1': resultData.images.length === 1,
-              'rs-gallery--2': resultData.images.length === 2,
-              'rs-gallery--3': resultData.images.length >= 3 && resultData.images.length <= 6,
-              'rs-gallery--4': resultData.images.length > 6
+              'rs-gallery--1': imageItems.length === 1,
+              'rs-gallery--2': imageItems.length === 2,
+              'rs-gallery--3': imageItems.length >= 3 && imageItems.length <= 6,
+              'rs-gallery--4': imageItems.length > 6,
             }"
           >
             <button
-              v-for="(img, idx) in resultData.images"
-              :key="idx"
+              v-for="(item, idx) in imageItems"
+              :key="item.id"
               @click="openImageModal(idx)"
               class="rs-gallery-item"
               :aria-label="`${t(locale, 'preview')} ${idx + 1}`"
             >
-              <img :src="img" class="rs-gallery-img" :alt="`${t(locale, 'imagesTitle')} ${idx + 1}`" loading="lazy" />
+              <img
+                :src="imageUrl(item)"
+                class="rs-gallery-img"
+                :alt="`${t(locale, 'imagesTitle')} ${idx + 1}`"
+                loading="lazy"
+              />
               <div class="rs-gallery-mask">
                 <AppIcon class="fas fa-search-plus"></AppIcon>
               </div>
@@ -868,9 +978,14 @@ const toggleSection = (key) => {
           </div>
 
           <div class="rs-card-actions">
-            <button @click="emit('download-images')" class="rs-btn rs-btn--primary">
+            <button
+              @click="emit('download-images')"
+              class="rs-btn rs-btn--primary"
+            >
               <AppIcon class="fas fa-download"></AppIcon>
-              <span>{{ t(locale, 'allImages') }} ({{ resultData.images.length }})</span>
+              <span
+                >{{ t(locale, "allImages") }} ({{ imageItems.length }})</span
+              >
             </button>
           </div>
         </div>
@@ -882,24 +997,40 @@ const toggleSection = (key) => {
             <div class="rs-live-carousel-hd">
               <span class="rs-live-badge">
                 <span class="rs-live-dot"></span>
-                {{ t(locale, 'live') }} {{ activeLiveIndex + 1 }}/{{ totalLivePhotos }}
+                {{ t(locale, "live") }} {{ activeLiveIndex + 1 }}/{{
+                  totalLivePhotos
+                }}
               </span>
+              <button
+                v-if="liveItems[activeLiveIndex]?.variants?.length > 1"
+                class="rs-btn rs-btn--ghost rs-btn--sm"
+                @click="
+                  selection.selectItem(liveItems[activeLiveIndex].id);
+                  activeTab = 'backup';
+                "
+              >
+                {{ t(locale, "selectQuality") }}
+              </button>
               <div class="rs-live-toggle">
                 <button
                   @click="liveViewMode = 'video'"
                   class="rs-live-toggle-btn"
-                  :class="{ 'rs-live-toggle-btn--on': liveViewMode === 'video' }"
+                  :class="{
+                    'rs-live-toggle-btn--on': liveViewMode === 'video',
+                  }"
                 >
                   <AppIcon class="fas fa-video"></AppIcon>
-                  {{ t(locale, 'overlayVideo') }}
+                  {{ t(locale, "overlayVideo") }}
                 </button>
                 <button
                   @click="liveViewMode = 'cover'"
                   class="rs-live-toggle-btn"
-                  :class="{ 'rs-live-toggle-btn--on': liveViewMode === 'cover' }"
+                  :class="{
+                    'rs-live-toggle-btn--on': liveViewMode === 'cover',
+                  }"
                 >
                   <AppIcon class="fas fa-image"></AppIcon>
-                  {{ t(locale, 'overlayCover') }}
+                  {{ t(locale, "overlayCover") }}
                 </button>
               </div>
             </div>
@@ -908,14 +1039,21 @@ const toggleSection = (key) => {
             <div class="rs-live-carousel-body">
               <!-- 导航箭头 -->
               <button
-                @click="activeLiveIndex = activeLiveIndex === 0 ? totalLivePhotos - 1 : activeLiveIndex - 1"
+                @click="
+                  activeLiveIndex =
+                    activeLiveIndex === 0
+                      ? totalLivePhotos - 1
+                      : activeLiveIndex - 1
+                "
                 class="rs-live-nav rs-live-nav--prev"
                 :disabled="totalLivePhotos <= 1"
               >
                 <AppIcon class="fas fa-chevron-left"></AppIcon>
               </button>
               <button
-                @click="activeLiveIndex = (activeLiveIndex + 1) % totalLivePhotos"
+                @click="
+                  activeLiveIndex = (activeLiveIndex + 1) % totalLivePhotos
+                "
                 class="rs-live-nav rs-live-nav--next"
                 :disabled="totalLivePhotos <= 1"
               >
@@ -926,8 +1064,8 @@ const toggleSection = (key) => {
               <div class="rs-live-carousel-content">
                 <template v-if="liveViewMode === 'video'">
                   <video
-                    :src="resultData.live_photo[activeLiveIndex]?.video"
-                    :poster="resultData.live_photo[activeLiveIndex]?.image"
+                    :src="liveUrl(liveItems[activeLiveIndex], 'motion')"
+                    :poster="liveUrl(liveItems[activeLiveIndex], 'image')"
                     controls
                     referrerpolicy="no-referrer"
                     class="rs-live-carousel-video"
@@ -937,7 +1075,7 @@ const toggleSection = (key) => {
                 </template>
                 <template v-else>
                   <img
-                    :src="resultData.live_photo[activeLiveIndex]?.image"
+                    :src="liveUrl(liveItems[activeLiveIndex], 'image')"
                     class="rs-live-carousel-image"
                     :alt="`${t(locale, 'live')} ${activeLiveIndex + 1}`"
                   />
@@ -948,78 +1086,88 @@ const toggleSection = (key) => {
             <!-- 当前项操作按钮 -->
             <div class="rs-live-carousel-actions">
               <button
-                @click="emit('download-live-video', resultData.live_photo[activeLiveIndex])"
+                @click="emit('download-live-video', liveItems[activeLiveIndex])"
                 class="rs-btn rs-btn--ghost rs-btn--sm"
               >
                 <AppIcon class="fas fa-video"></AppIcon>
-                {{ t(locale, 'overlayVideo') }}
+                {{ t(locale, "overlayVideo") }}
               </button>
               <button
-                @click="emit('download-live-cover', resultData.live_photo[activeLiveIndex])"
+                @click="emit('download-live-cover', liveItems[activeLiveIndex])"
                 class="rs-btn rs-btn--ghost rs-btn--sm"
               >
                 <AppIcon class="fas fa-image"></AppIcon>
-                {{ t(locale, 'overlayCover') }}
+                {{ t(locale, "overlayCover") }}
               </button>
             </div>
           </div>
 
           <!-- 底部批量下载 -->
           <div class="rs-live-bulk-bar">
-            <button @click="emit('download-all-live')" class="rs-btn rs-btn--primary rs-btn--block">
+            <button
+              @click="emit('download-all-live')"
+              class="rs-btn rs-btn--primary rs-btn--block"
+            >
               <AppIcon class="fas fa-download"></AppIcon>
-              {{ t(locale, 'downloadAllLive') }} ({{ totalLivePhotos }} {{ t(locale, 'live') }})
+              {{ t(locale, "downloadAllLive") }} ({{ totalLivePhotos }}
+              {{ t(locale, "live") }})
             </button>
-            <button @click="emit('download-all-live-covers')" class="rs-btn rs-btn--ghost rs-btn--block">
+            <button
+              @click="emit('download-all-live-covers')"
+              class="rs-btn rs-btn--ghost rs-btn--block"
+            >
               <AppIcon class="fas fa-images"></AppIcon>
-              {{ t(locale, 'downloadAllCovers') }} ({{ totalLivePhotos }})
+              {{ t(locale, "downloadAllCovers") }} ({{ totalLivePhotos }})
             </button>
           </div>
         </div>
       </div>
-
-      <!-- ============================================================
-           RIGHT COLUMN: Info Panel
-           ============================================================ -->
       <div ref="infoColumnEl" class="rs-info-col">
-        <!-- ── AUTHOR CARD ── -->
-        <div v-if="author && (author.name || author.avatar)" ref="authorCardEl" class="rs-card rs-card--author">
+        <div v-if="author" ref="authorCardEl" class="rs-card rs-card--author">
           <div class="rs-author-inner">
             <div class="rs-author-avatar-wrap">
               <img
                 v-if="author.avatar"
-                :src="author.avatar"
+                :src="urlOf(author.avatar)"
                 class="rs-author-avatar"
                 :alt="author.name || 'Author'"
-                @error="$event.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22><rect fill=%22%23e2e8f0%22 width=%2248%22 height=%2248%22/><text x=%2224%22 y=%2228%22 text-anchor=%22middle%22 fill=%22%2394a3b8%22 font-size=%2216%22>?</text></svg>'"
+                referrerpolicy="no-referrer"
               />
               <div v-else class="rs-author-avatar-fb">
-                <AppIcon class="fas fa-user"></AppIcon>
+                <AppIcon class="fas fa-user" />
               </div>
             </div>
             <div class="rs-author-detail">
-              <div 
-                class="rs-author-name rs-copyable" 
+              <div
+                class="rs-author-name rs-copyable"
                 @click="copyToClipboard(author.name)"
               >
-                {{ author.name }}
+                {{ author.name || t(locale, "unknownAuthor") }}
               </div>
-              <div 
-                v-if="author.id" 
+              <div
+                v-if="author.id"
                 class="rs-author-id rs-copyable"
                 @click="copyToClipboard(author.id)"
               >
                 @{{ author.id }}
               </div>
-              <div v-if="author.likeCountNum !== null" class="rs-author-likes">
-                <AppIcon class="fas fa-heart"></AppIcon>
-                {{ t(locale, 'infoLikes').replace('{count}', author.likeCountNum) }}
+              <div
+                v-if="
+                  resultData.statistics?.likes?.state !== 'unverified' &&
+                  resultData.statistics?.likes
+                "
+                class="rs-author-likes"
+              >
+                <AppIcon class="fas fa-heart" />{{
+                  t(locale, "infoLikes").replace(
+                    "{count}",
+                    formatNumber(resultData.statistics.likes.value),
+                  )
+                }}
               </div>
             </div>
           </div>
         </div>
-
-        <!-- ── TAB NAVIGATION ── -->
         <div ref="infoCardEl" class="rs-card rs-card--info">
           <nav ref="tabsEl" class="rs-tabs">
             <button
@@ -1029,12 +1177,9 @@ const toggleSection = (key) => {
               class="rs-tab"
               :class="{ 'rs-tab--on': activeTab === tab.key }"
             >
-              <AppIcon :class="['fas', tab.icon]"></AppIcon>
-              <span>{{ tab.label }}</span>
+              <AppIcon :class="['fas', tab.icon]" /><span>{{ tab.label }}</span>
             </button>
           </nav>
-
-          <!-- ── TAB: 详情 ── -->
           <div
             v-if="activeTab === 'info' || canAlignDetails"
             ref="detailsPanelEl"
@@ -1044,216 +1189,263 @@ const toggleSection = (key) => {
             :inert="activeTab !== 'info' ? '' : undefined"
           >
             <div class="rs-info-list">
-              <div 
-                v-for="(card, idx) in infoCards" 
-                :key="idx" 
+              <div
+                v-for="card in infoCards"
+                :key="card.label"
                 class="rs-info-row rs-copyable"
                 @click="copyToClipboard(card.value)"
               >
                 <div class="rs-info-icon">
-                  <AppIcon :class="['fas', card.icon]"></AppIcon>
+                  <AppIcon :class="['fas', card.icon]" />
                 </div>
                 <div class="rs-info-text">
-                  <span class="rs-info-key">{{ card.label }}</span>
-                  <span class="rs-info-val">{{ card.value }}</span>
+                  <span class="rs-info-key">{{ card.label }}</span
+                  ><span class="rs-info-val">{{ card.value }}</span>
                 </div>
               </div>
             </div>
           </div>
-
-          <!-- ── TAB: 数据统计 ── -->
           <div v-if="activeTab === 'stats'" class="rs-tab-panel">
             <div class="rs-stat-grid">
-              <div v-for="(stat, idx) in stats" :key="idx" class="rs-stat-cell">
+              <div v-for="stat in stats" :key="stat.key" class="rs-stat-cell">
                 <div class="rs-stat-icon">
-                  <AppIcon :class="['fas', stat.icon]"></AppIcon>
+                  <AppIcon :class="['fas', stat.icon]" />
                 </div>
-                <div class="rs-stat-num" :aria-describedby="stat.unverified ? 'rs-play-count-note' : undefined">{{ stat.unverified ? '—' : formatNumber(stat.value) }}</div>
+                <div class="rs-stat-num">
+                  {{ stat.unverified ? "—" : formatNumber(stat.value) }}
+                </div>
                 <div class="rs-stat-label">{{ stat.label }}</div>
               </div>
             </div>
-            <p v-if="stats.some(stat => stat.unverified)" id="rs-play-count-note" class="rs-stat-note">{{ playCountNote }}</p>
+            <p
+              v-if="stats.some((stat) => stat.unverified)"
+              class="rs-stat-note"
+            >
+              {{ playCountNote }}
+            </p>
           </div>
-
-          <!-- ── TAB: 画质选项 ── -->
           <div v-if="activeTab === 'backup'" class="rs-tab-panel">
-            <template v-if="hasBackup">
-              <div class="rs-backup-label-row">
-                <span>{{ t(locale, 'selectQuality') }}</span>
-              </div>
-              <div class="rs-backup-list">
-                <div
-                  v-for="backup in qualityOptions"
-                  :key="backup.groupKey"
-                  class="rs-backup-group"
+            <div class="rs-backup-label-row">
+              <span>{{ t(locale, "selectQuality") }}</span>
+              <button
+                v-if="hasHiddenQualityVariants"
+                class="rs-quality-display-toggle"
+                :aria-expanded="showAllQualityVariants"
+                @click="showAllQualityVariants = !showAllQualityVariants"
+              >
+                {{
+                  showAllQualityVariants
+                    ? locale === "en" ? "Compact view" : "精简展示"
+                    : locale === "en"
+                      ? `All versions (${allQualityOptions.length})`
+                      : `全部版本 (${allQualityOptions.length})`
+                }}
+              </button>
+            </div>
+            <div class="rs-backup-list">
+              <div
+                v-for="option in qualityOptions"
+                :key="option.variant.id"
+                class="rs-backup-group"
+              >
+                <button
+                  @click="selectQuality(option)"
+                  class="rs-backup-item"
+                  :disabled="option.variant.state === 'deferred'"
+                  :class="{ 'rs-backup-item--cur': option.active }"
                 >
-                  <button
-                    @click="selectQuality(backup)"
-                    class="rs-backup-item"
-                    :class="{ 'rs-backup-item--cur': backup.active }"
+                  <div class="rs-backup-hd">
+                    <span class="rs-backup-name"
+                      >{{
+                        formatMediaSize(option.source?.size_bytes, locale)
+                      }}
+                      · {{ variantLabel(option.variant, locale) }}</span
+                    ><span v-if="option.active" class="rs-backup-playing"
+                      ><AppIcon class="fas fa-circle-check rs-backup-cur" />{{
+                        t(locale, "currentPlaying")
+                      }}</span
+                    >
+                  </div>
+                  <div class="rs-backup-meta">
+                    <span
+                      v-if="option.variant.provenance === 'original_endpoint'"
+                      class="rs-backup-meta-tag"
+                      >原始入口</span
+                    ><span
+                      v-if="option.variant.delivery?.sources?.length > 1"
+                      class="rs-backup-meta-tag"
+                      >{{ option.variant.delivery.sources.length }} 条线路</span
+                    ><span
+                      v-for="rate in qualityBitrates(option.variant.metadata)"
+                      :key="rate.key"
+                      class="rs-backup-meta-tag"
+                    ><AppIcon class="fas fa-wave-square" />
+                      {{ rate.label }} {{ formatBitrate(rate.value) }}
+                    </span
+                    ><span
+                      v-if="
+                        option.variant.metadata?.width &&
+                        option.variant.metadata?.height
+                      "
+                      class="rs-backup-meta-tag"
+                      ><AppIcon class="fas fa-arrows-alt" />{{
+                        option.variant.metadata.width
+                      }}×{{ option.variant.metadata.height }}</span
+                    ><span
+                      v-if="option.variant.metadata?.video_codec"
+                      class="rs-backup-meta-tag"
+                      ><AppIcon class="fas fa-microchip" />{{
+                        option.variant.metadata.video_codec
+                      }}</span
+                    ><span
+                      v-if="option.capabilities.length"
+                      class="rs-backup-meta-tag"
+                      >{{ option.capabilities.join(" + ") }}</span
+                    >
+                  </div>
+                  <p
+                    v-if="option.variant.state === 'deferred'"
+                    class="rs-stat-note"
                   >
-                    <div class="rs-backup-hd">
-                      <span class="rs-backup-name">{{ formatMediaSize(backup.size, locale) }} · {{ qualityOptionLabel(backup) }}</span>
-                      <span v-if="backup.active" class="rs-backup-playing">
-                        <AppIcon class="fas fa-circle-check rs-backup-cur"></AppIcon> {{ t(locale, 'currentPlaying') }}
-                      </span>
-                    </div>
-                    <div class="rs-backup-meta">
-                      <span v-if="backup.is_original && backup.metadata_source === 'mp4' && !isOriginalQuality(backup)" class="rs-backup-meta-tag">{{ locale === 'en' ? 'Original endpoint' : '原始入口' }}</span>
-                      <span v-if="backup.sources.length > 1" class="rs-backup-meta-tag">{{ locale === 'en' ? `${backup.sources.length} routes` : `${backup.sources.length} 条线路` }}</span>
-                      <span v-if="backup.bit_rate" class="rs-backup-meta-tag">
-                        <AppIcon class="fas fa-wave-square"></AppIcon>{{ formatBitrate(backup.bit_rate) }}
-                      </span>
-                      <span v-if="backup.width && backup.height" class="rs-backup-meta-tag">
-                        <AppIcon class="fas fa-arrows-alt"></AppIcon>{{ backup.width }}×{{ backup.height }}
-                      </span>
-                      <span v-if="backup.codec" class="rs-backup-meta-tag">
-                        <AppIcon class="fas fa-microchip"></AppIcon>{{ backup.codec }}
-                      </span>
-                    </div>
-                  </button>
-                </div>
+                    {{ option.variant.reason.message }} ·
+                    {{ locale === "en" ? "Awaiting resolution" : "待解析" }}
+                  </p>
+                  <p v-if="option.higher" class="rs-stat-note">
+                    {{
+                      locale === "en"
+                        ? "Higher quality requires: "
+                        : "更高画质需要："
+                    }}{{ option.higher.requires.join(" + ") }}
+                  </p>
+                  <p
+                    v-if="
+                      option.capabilities.some((value) =>
+                        ['dash', 'mux', 'segment_remux'].includes(value),
+                      )
+                    "
+                    class="rs-stat-note"
+                  >
+                    {{
+                      locale === "en"
+                        ? "Processing is not supported yet"
+                        : "所需处理能力暂不支持"
+                    }}
+                  </p>
+                </button>
               </div>
-            </template>
-            <div v-else class="rs-empty">
-              <AppIcon class="fas fa-inbox"></AppIcon>
-              <span>{{ t(locale, 'noBackups') }}</span>
             </div>
           </div>
-
-          <!-- ── TAB: 标签 ── -->
           <div v-if="activeTab === 'tags'" class="rs-tab-panel">
             <div class="rs-tags-wrap">
-              <span 
-                v-for="(tag, idx) in hashtags" 
-                :key="'ht-' + idx" 
+              <span
+                v-for="tag in allTags"
+                :key="tag"
                 class="rs-tag rs-tag--hash rs-copyable-tag"
-                @click="copyToClipboard(tag.name)"
+                @click="copyToClipboard(tag)"
+                ># {{ tag }}</span
               >
-                # {{ tag.name }}
-              </span>
-              <span 
-                v-for="(tag, idx) in videoTags" 
-                :key="'vt-' + idx" 
-                class="rs-tag rs-tag--vt rs-copyable-tag"
-                @click="copyToClipboard(tag.name)"
-              >
-                <AppIcon class="fas fa-tag"></AppIcon> {{ tag.name }}
-              </span>
             </div>
           </div>
-
-          <!-- ── TAB: 背景音乐 ── -->
           <div v-if="activeTab === 'music'" class="rs-tab-panel">
-            <div class="rs-music">
-              <div class="rs-music-cover-wrap">
-                <img
-                  v-if="resultData.music.cover"
-                  :src="resultData.music.cover"
-                  class="rs-music-cover"
-                  :alt="resultData.music.title || 'Cover'"
-                  @error="$event.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 80 80%22><rect fill=%22%23e2e8f0%22 width=%2280%22 height=%2280%22 rx=%2240%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%2394a3b8%22 font-size=%2228%22>♪</text></svg>'"
-                />
-                <div v-else class="rs-music-cover-fb">
-                  <AppIcon class="fas fa-music"></AppIcon>
-                </div>
-                <div class="rs-music-disc"></div>
+            <div
+              v-for="attachment in attachments"
+              :key="attachment.id"
+              class="rs-music"
+            >
+              <div class="rs-music-title">
+                {{ attachment.title || t(locale, "unknownMusic") }}
               </div>
-              <div class="rs-music-info">
-                <div class="rs-music-title">{{ resultData.music.title || t(locale, 'unknownMusic') }}</div>
-                <div class="rs-music-artist">{{ resultData.music.author || t(locale, 'unknownAuthor') }}</div>
+              <div class="rs-music-artist">
+                {{ attachment.author?.name || "" }}
               </div>
-              <audio :src="resultData.music.url" controls class="rs-music-player">
-                <track kind="captions" :src="undefined" />
-              </audio>
-              <button @click="emit('download-music', resultData.music)" class="rs-btn rs-btn--primary rs-btn--sm rs-btn--block">
-                <AppIcon class="fas fa-download"></AppIcon>
-                <span>{{ locale === 'zh-CN' ? '下载音乐' : 'Download' }}</span>
+              <audio
+                v-if="
+                  attachment.role === 'background_audio' &&
+                  attachmentUrl(attachment)
+                "
+                :src="attachmentUrl(attachment)"
+                controls
+                class="rs-music-player"
+              />
+              <p v-else-if="!attachmentUrl(attachment)" class="rs-stat-note">
+                该附件暂不支持直接播放
+              </p>
+              <button
+                @click="emit('download-music', attachment)"
+                class="rs-btn rs-btn--primary rs-btn--sm rs-btn--block"
+              >
+                <AppIcon class="fas fa-download" />{{
+                  locale === "en" ? "Download" : "下载附件"
+                }}
               </button>
             </div>
           </div>
         </div>
       </div>
     </div>
-
-    <!-- ════════════════════════════════════════════════════════
-         IMAGE MODAL
-         ════════════════════════════════════════════════════════ -->
-    <Teleport to="body">
-      <Transition name="rs-modal">
-        <div
-          v-if="imageModalOpen"
+    <Teleport to="body"
+      ><Transition name="rs-modal"
+        ><div
+          v-if="imageModalOpen && imageItems[activeImageIndex]"
           class="rs-modal"
           @click.self="closeImageModal"
           role="dialog"
           aria-modal="true"
           :aria-label="t(locale, 'preview')"
         >
-          <button @click="closeImageModal" class="rs-modal-close" :aria-label="t(locale, 'close')">
-            <AppIcon class="fas fa-times"></AppIcon>
-          </button>
-
           <button
-            v-if="resultData.images?.length > 1"
+            @click="closeImageModal"
+            class="rs-modal-close"
+            :aria-label="t(locale, 'close')"
+          >
+            <AppIcon class="fas fa-times" /></button
+          ><button
+            v-if="imageItems.length > 1"
             @click="prevImage"
             class="rs-modal-nav rs-modal-nav--prev"
           >
-            <AppIcon class="fas fa-chevron-left"></AppIcon>
-          </button>
-          <button
-            v-if="resultData.images?.length > 1"
+            <AppIcon class="fas fa-chevron-left" /></button
+          ><button
+            v-if="imageItems.length > 1"
             @click="nextImage"
             class="rs-modal-nav rs-modal-nav--next"
           >
-            <AppIcon class="fas fa-chevron-right"></AppIcon>
+            <AppIcon class="fas fa-chevron-right" />
           </button>
-
           <div class="rs-modal-body">
             <img
-              :src="resultData.images[activeImageIndex]"
+              :src="imageUrl(imageItems[activeImageIndex])"
               class="rs-modal-img"
-              :alt="`${t(locale, 'imagesTitle')} ${activeImageIndex + 1}`"
+              :alt="imageItems[activeImageIndex].title || 'Image'"
             />
           </div>
-
-          <button class="rs-btn rs-btn--primary" @click="emit('download-image', resultData.images[activeImageIndex])">
-            <AppIcon class="fas fa-download"></AppIcon>{{ locale === 'en' ? 'Download image' : '下载图片' }}
+          <button
+            class="rs-btn rs-btn--primary"
+            @click="emit('download-image', imageItems[activeImageIndex])"
+          >
+            <AppIcon class="fas fa-download" />{{
+              locale === "en" ? "Download image" : "下载图片"
+            }}
           </button>
-          <div v-if="resultData.images?.length > 1" class="rs-modal-pager">
-            <button
-              v-for="(_, idx) in resultData.images"
-              :key="idx"
-              @click="activeImageIndex = idx"
-              class="rs-modal-dot"
-              :class="{ 'rs-modal-dot--on': idx === activeImageIndex }"
-            ></button>
-          </div>
           <div class="rs-modal-num">
-            {{ activeImageIndex + 1 }} / {{ resultData.images?.length }}
+            {{ activeImageIndex + 1 }} / {{ imageItems.length }}
           </div>
-        </div>
-      </Transition>
-    </Teleport>
-
-    <!-- ════════════════════════════════════════════════════════
-         COPY TOAST
-         ════════════════════════════════════════════════════════ -->
-    <Teleport to="body">
-      <Transition name="rs-toast">
-        <div v-if="showCopyToast" class="rs-copy-toast">
-          <div class="rs-copy-toast-icon">
-            <AppIcon class="fas fa-check"></AppIcon>
-          </div>
+        </div></Transition
+      ></Teleport
+    >
+    <Teleport to="body"
+      ><Transition name="rs-toast"
+        ><div v-if="showCopyToast" class="rs-copy-toast">
+          <div class="rs-copy-toast-icon"><AppIcon class="fas fa-check" /></div>
           <div class="rs-copy-toast-content">
-            <div class="rs-copy-toast-title">{{ locale === 'zh-CN' ? '复制成功' : 'Copied' }}</div>
+            <div class="rs-copy-toast-title">{{ t(locale, "copied") }}</div>
             <div class="rs-copy-toast-text">{{ copyToastText }}</div>
           </div>
-        </div>
-      </Transition>
-    </Teleport>
+        </div></Transition
+      ></Teleport
+    >
   </section>
 </template>
-
 <style scoped>
 /* ═══════════════════════════════════════════════════════════════
    DESIGN TOKENS — enterprise-grade design system
@@ -2305,10 +2497,22 @@ const toggleSection = (key) => {
    BACKUP QUALITIES
    ═══════════════════════════════════════════════════════════════ */
 .rs-backup-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
   font-size: .6875rem;
   color: var(--c-fg-3);
   margin-bottom: .5rem;
   font-weight: 500;
+}
+.rs-quality-display-toggle {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--c-accent);
+  font: inherit;
+  cursor: pointer;
 }
 .rs-backup-list {
   display: flex;

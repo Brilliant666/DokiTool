@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_hls",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_hls/synthetic-001",
+    "items": [
+      {
+        "id": "hls-one",
+        "type": "video",
+        "default": null,
+        "variants": [
+          {
+            "id": "hls-adaptive",
+            "delivery": {
+              "kind": "hls",
+              "sources": [
+                {
+                  "url": "https://media.example.test/master.m3u8"
+                }
+              ],
+              "scope": "adaptive"
+            }
+          }
+        ],
+        "default_unavailable_reason": "processing_required"
+      }
+    ]
+  }
+}

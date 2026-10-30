@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_audio",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_audio/synthetic-001",
+    "items": [
+      {
+        "id": "audio-one",
+        "type": "audio",
+        "default": {
+          "variant_id": "audio-aac",
+          "url": "https://media.example.test/audio-aac.mp4"
+        },
+        "variants": [
+          {
+            "id": "audio-aac",
+            "metadata": {
+              "duration_ms": 12500,
+              "has_audio": true,
+              "audio_codec": "mp4a.40.2",
+              "audio_channels": 2,
+              "sample_rate_hz": 48000,
+              "container": "mp4",
+              "extension": "m4a",
+              "mime_type": "audio/mp4",
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/audio-aac.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

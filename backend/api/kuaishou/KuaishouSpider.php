@@ -151,11 +151,9 @@ class KuaishouSpider
         }
 
         // 3. 尝试提取视频
-        if (isset($photo['mainMvUrls']) || (isset($photo['photoType']) && $photo['photoType'] === 'VIDEO')) {
-            $videoUrl = $photo['mainMvUrls'][0]['url'] ?? '';
-            if (empty($videoUrl) && isset($photo['manifest']['adaptationSet'][0]['representation'][0]['url'])) {
-                $videoUrl = $photo['manifest']['adaptationSet'][0]['representation'][0]['url'];
-            }
+        if (isset($photo['mainMvUrls']) || isset($photo['manifest']) || ($photo['photoType'] ?? '') === 'VIDEO') {
+            $candidates = $this->mediaCandidates($photo['manifest'] ?? [], $photo['mainMvUrls'] ?? []);
+            $videoUrl = $candidates[0]['sources'][0]['url'] ?? '';
 
             if (!empty($videoUrl)) {
                 return [
@@ -170,6 +168,7 @@ class KuaishouSpider
                         'title' => $photo['caption'] ?? '',
                         'cover' => $photo['coverUrls'][0]['url'] ?? '',
                         'url' => $videoUrl,
+                        'video_candidates' => $candidates,
                         'music' => $musicInfo
                     ]
                 ];
@@ -217,12 +216,8 @@ class KuaishouSpider
             }
         }
 
-        $videoUrl = '';
-        if ($contentType === 'long-video') {
-            $videoUrl = $videoData['manifestH265']['json']['adaptationSet'][0]['representation'][0]['backupUrl'][0] ?? '';
-        } else {
-            $videoUrl = $videoData['photoUrl'] ?? '';
-        }
+        $candidates = $this->mediaCandidates($videoData['manifestH265']['json'] ?? [], [['url' => $videoData['photoUrl'] ?? '']]);
+        $videoUrl = $candidates[0]['sources'][0]['url'] ?? '';
 
         if (empty($videoUrl)) {
             return null;
@@ -244,9 +239,33 @@ class KuaishouSpider
                 'title' => $videoData['caption'] ?? '',
                 'cover' => $videoData['coverUrl'] ?? '',
                 'url' => $videoUrl,
+                'video_candidates' => $candidates,
                 // APOLLO STATE 下其他字段可能需要进一步抓包确认，暂时保持基础信息
             ]
         ];
+    }
+
+    /** Preserve each representation and its explicitly equivalent CDN sources. */
+    private function mediaCandidates($manifest, array $main): array
+    {
+        if (is_string($manifest)) $manifest = json_decode($manifest, true);
+        $candidates = [];
+        $main = array_values(array_filter($main, static fn ($source) => is_array($source) && snapMediaUrl($source['url'] ?? null)));
+        if ($main) $candidates[] = ['sources' => $main];
+        foreach (is_array($manifest) ? ($manifest['adaptationSet'] ?? []) : [] as $set) {
+            foreach ($set['representation'] ?? [] as $rep) {
+                $sources = array_merge([['url' => $rep['url'] ?? '']], array_map(static fn ($url) => is_array($url) ? $url : ['url' => $url], $rep['backupUrl'] ?? []));
+                $sources = array_values(array_filter($sources, static fn ($source) => snapMediaUrl($source['url'] ?? null)));
+                if (!$sources) continue;
+                $candidate = ['sources' => $sources];
+                foreach (['width', 'height'] as $key) if (is_numeric($rep[$key] ?? null) && $rep[$key] > 0) $candidate[$key] = (int)$rep[$key];
+                // avgBitrate/maxBitrate do not declare a unit or whether audio is
+                // included. Do not publish them as bps or infer a multiplier.
+                if (is_string($rep['codec'] ?? null)) $candidate['codec'] = $rep['codec'];
+                $candidates[] = $candidate;
+            }
+        }
+        return $candidates;
     }
 
     private function filterMediaData(array $data): array

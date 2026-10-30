@@ -1,0 +1,198 @@
+{
+  "status": "synthetic_contract_fixture",
+  "live_tested": false,
+  "baseline_commit": "9e69b7674d491d3b3a8b71614358b0d29d765496",
+  "expiry_fixture_clock": "2026-10-30T12:00:00Z",
+  "fixtures": [
+    {
+      "file": "examples/01-douyin-quality-and-cdn.json",
+      "platform": "douyin",
+      "scenario": "Two qualities and equivalent CDN sources; explicit item default and large string IDs",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/02-kuaishou-single-file.json",
+      "platform": "kuaishou",
+      "scenario": "Minimal single file: platform/items only, mandatory default, no content/source metadata invented",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/03-bilibili-parts-lazy-unavailable.json",
+      "platform": "bilibili",
+      "scenario": "Independent parts with ready/deferred/unavailable states; upload dimensions are not stream dimensions",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/04-xiaohongshu-original-candidate.json",
+      "platform": "xiaohongshu",
+      "scenario": "Unknown original endpoint does not outrank known 1080p or fabricate 4K",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/05-toutiao-single-file.json",
+      "platform": "toutiao",
+      "scenario": "Author description and distinct play/view counters retained",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/06-weibo-signed-relay.json",
+      "platform": "weibo",
+      "scenario": "Relay explicitly projected by default; no genuine token",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/07-pipixia-image-album.json",
+      "platform": "pipixia",
+      "scenario": "Ordered image items; each has its own default",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/08-pipigx-single-file.json",
+      "platform": "pipigx",
+      "scenario": "Same compact single-file contract for another platform",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/09-zuiyou-image.json",
+      "platform": "zuiyou",
+      "scenario": "Single image file without legacy images/imgurl aliases",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/10-mixed-live-photo-and-bgm.json",
+      "platform": "douyin",
+      "scenario": "Mixed image/pair items with separate background audio; pair has no single-file default",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/11-future-audio.json",
+      "platform": "future_audio",
+      "scenario": "Pure audio file; distinct from background music and mux input",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/12-future-dash-selected-mux.json",
+      "platform": "future_dash",
+      "scenario": "Only selected DASH tracks; default is null/processing_required; no execution implemented",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/13-segments-then-mux.json",
+      "platform": "future_segments",
+      "scenario": "Init and ordered fragments, then mux; no default bare-track download",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/14-hls-adaptive-unknown-quality.json",
+      "platform": "future_hls",
+      "scenario": "Unselected adaptive manifest has no invented fixed dimensions or file default",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/15-missing-media-config.json",
+      "platform": "weibo",
+      "scenario": "Compact failure envelope without required null/empty fields",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/16-1080-file-and-higher-4k-mux.json",
+      "platform": "future_formats",
+      "scenario": "Default is highest complete-file option in this fixture; higher 4K mux is only a processing hint",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/17-only-mux-no-file-default.json",
+      "platform": "future_formats",
+      "scenario": "No complete file; explicit null default, no higher-than-absent-default claim",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/18-4k-expired-a-valid-b.json",
+      "platform": "future_formats",
+      "scenario": "Expired A does not discard 4K when equivalent B remains valid",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/19-complete-silent-video.json",
+      "platform": "future_formats",
+      "scenario": "Complete silent video is a valid default; has_audio=false does not imply missing mux input",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/20-local-variant-id-scope.json",
+      "platform": "bilibili",
+      "scenario": "Repeated local variant IDs are valid; references and URLs stay within their own item",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/21-expired-file-needs-refresh.json",
+      "platform": "future_formats",
+      "scenario": "Expired complete file remains in variants but cannot be default",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/22-known-unavailable-file.json",
+      "platform": "future_formats",
+      "scenario": "Known unavailable source is retained without pretending it is downloadable",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/23-hls-selected-representation.json",
+      "platform": "future_hls",
+      "scenario": "Selected media playlist can have known dimensions but remains processing delivery",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/24-dash-adaptive-manifest.json",
+      "platform": "future_dash",
+      "scenario": "Unselected DASH manifest preserved without pretending current frontend can execute it",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/25-variant-order-does-not-change-default.json",
+      "platform": "future_formats",
+      "scenario": "Reordering the complete variants list does not change backend's default pointer",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/26-expired-mux-needs-refresh.json",
+      "platform": "future_formats",
+      "scenario": "Only mux exists but its inputs expired; reason must not hide expiry as processing_required",
+      "evidence": "synthetic_design",
+      "live_tested": false
+    },
+    {
+      "file": "examples/27-deferred-original-variant.json",
+      "platform": "xiaohongshu",
+      "scenario": "Reserved deferred original variant has no URL or measured metadata and cannot override complete file default",
+      "evidence": "synthetic_implementation",
+      "live_tested": false
+    }
+  ],
+  "design_generator": "Design archive generate_contract.py (not runtime implementation)"
+}

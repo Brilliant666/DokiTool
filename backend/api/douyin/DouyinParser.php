@@ -228,11 +228,11 @@ class DouyinParser
         $musicPlayUrl = is_array($musicPlayNode['url_list'] ?? null) ? ($musicPlayNode['url_list'][0] ?? '') : '';
         $musicCoverUrl = is_array($musicCoverNode['url_list'] ?? null) ? ($musicCoverNode['url_list'][0] ?? '') : '';
 
-        // 契约要求秒：抖音原始 duration 为毫秒，>=1000 视为毫秒归一为秒
+        // The upstream field is always milliseconds, including sub-second clips.
         $duration = isset($detail['video']['duration']) && is_numeric($detail['video']['duration'])
             ? (float)$detail['video']['duration']
             : null;
-        if ($duration !== null && $duration >= 1000) {
+        if ($duration !== null) {
             $duration = round($duration / 1000, 2);
         }
 
@@ -334,6 +334,10 @@ class DouyinParser
                 $originalQuality = isset($originalMetadata['width'], $originalMetadata['height'])
                     ? min($originalMetadata['width'], $originalMetadata['height']) . 'p' : 'unknown';
                 if ($originalMetadata) $originalMetadata['is_original'] = true;
+                // This is the same explicitly requested original route even when
+                // its redirect is renewed or the optional probe has no dimensions.
+                $originalMetadata['private_media_identity'] = 'douyin:original:' . $fallback;
+                $originalMetadata['private_source_identity'] = 'douyin:original-route:' . $fallback;
                 $currentPixels = ($videoInfo['metadata']['width'] ?? 0) * ($videoInfo['metadata']['height'] ?? 0);
                 $originalPixels = ($originalMetadata['width'] ?? 0) * ($originalMetadata['height'] ?? 0);
                 $better = $originalPixels > $currentPixels || ($originalPixels > 0 && $originalPixels === $currentPixels
@@ -355,20 +359,22 @@ class DouyinParser
             $main = $this->ensureVideoMimeType($main);
 
             $backups = [];
-            $seen = [$main];
+            $seen = $main ? [$this->candidateDeliveryKey($main, $videoInfo['metadata']) => true] : [];
             foreach ($videoInfo['backup'] as $candidate) {
                 $item = is_string($candidate) ? ['url' => $candidate] : $candidate;
                 $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $item['url'] ?? '')));
-                if ($converted && !in_array($converted, $seen, true)) {
-                    $item['url'] = $converted;
-                    $backups[] = $item;
-                    $seen[] = $converted;
-                }
+                if (!$converted) continue;
+                $key = $this->candidateDeliveryKey($converted, $item);
+                if (isset($seen[$key])) continue;
+                $item['url'] = $converted;
+                $backups[] = $item;
+                $seen[$key] = true;
             }
 
             $result['url'] = $main;
             $result['size_label'] = $this->formatSizeLabel($result['size']);
             $result['video_backup'] = $backups;
+            $result['private_audio_candidates'] = $this->audioCandidates($detail['video']['bit_rate_audio'] ?? [], $detail['video']['cdn_url_expired'] ?? null);
             $result['video_id'] = $playUri ?: $fallbackVideoId;
         }
 
@@ -553,7 +559,7 @@ class DouyinParser
                 return ($pixelsB <=> $pixelsA) ?: (($mb['bit_rate'] ?? 0) <=> ($ma['bit_rate'] ?? 0));
             });
 
-            foreach ($bitRateList as $rateItem) {
+            foreach ($bitRateList as $representationIndex => $rateItem) {
                 if (!is_array($rateItem)) {
                     continue;
                 }
@@ -577,6 +583,15 @@ class DouyinParser
 
                 $currentBestUrl = $v3Link ?: ($v26Link ? $this->replacePlayHost($v26Link) : $candidates[0]);
                 $itemMetadata = $this->videoMetadata($rateItem);
+                if ($identity = $this->representationIdentity($rateItem)) $itemMetadata['private_media_identity'] = $identity;
+                if (is_numeric($video['cdn_url_expired'] ?? null) && $video['cdn_url_expired'] > 0) $itemMetadata['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$video['cdn_url_expired']);
+                $extra = is_string($rateItem['video_extra'] ?? null) ? json_decode($rateItem['video_extra'], true) : [];
+                if (($rateItem['format'] ?? $extra['format'] ?? '') === 'dash' || !empty($rateItem['is_dash'])) {
+                    $itemMetadata['private_delivery_kind'] = 'video_track';
+                    $itemMetadata['private_audio_id'] = is_string($extra['audio_file_id'] ?? null) ? $extra['audio_file_id'] : '';
+                }
+                $identityUrls = $candidates; sort($identityUrls);
+                $itemMetadata['private_representation_id'] = hash('sha256', json_encode([$itemMetadata, $identityUrls]));
                 $itemQuality = isset($itemMetadata['width'], $itemMetadata['height'])
                     ? min($itemMetadata['width'], $itemMetadata['height']) . 'p'
                     : $this->strv($rateItem['gearName'] ?? $rateItem['gear_name'] ?? 'unknown');
@@ -591,9 +606,10 @@ class DouyinParser
                     if (strpos($candidate, 'v26-web') !== false) {
                         $candidate = $this->replacePlayHost($candidate);
                     }
-                    if ($candidate !== $url) {
-                        $backup[] = array_merge($itemMetadata, ['url' => $candidate, 'quality' => $itemQuality, 'label' => $itemQuality]);
-                    }
+                    // A shared video URL can have several explicit audio pairings.
+                    // Keep each representation here; formatData deduplicates only
+                    // after URL normalization and with its pairing identity intact.
+                    $backup[] = array_merge($itemMetadata, ['url' => $candidate, 'quality' => $itemQuality, 'label' => $itemQuality]);
                 }
             }
         }
@@ -615,6 +631,9 @@ class DouyinParser
             if ($playApi !== '') {
                 $url = str_replace('playwm', 'play', $playApi);
                 $metadata = $this->videoMetadata($video);
+                if ($identity = $this->representationIdentity($video)) $metadata['private_media_identity'] = $identity;
+                if (is_numeric($video['cdn_url_expired'] ?? null) && $video['cdn_url_expired'] > 0) $metadata['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$video['cdn_url_expired']);
+                $metadata['private_representation_id'] = hash('sha256', json_encode($video['play_addr']['url_list'] ?? [$playApi]));
             } elseif ($uri !== '') {
                 // 原画兜底地址：formatData 会用 vid 走 resolveOriginalVideoUrl 做 302 解析，失败回退此地址
                 $url = $this->buildOriginalPlayUrl($uri);
@@ -638,6 +657,13 @@ class DouyinParser
             $gearName = min($metadata['width'], $metadata['height']) . 'p';
         }
         return ['url' => $url, 'backup' => $backup, 'gearName' => $gearName ?: 'unknown', 'metadata' => $metadata];
+    }
+
+    /** A URL identifies one source, not a complete DASH video/audio pairing. */
+    private function candidateDeliveryKey(string $url, array $metadata): string
+    {
+        return json_encode([$url, $metadata['private_media_identity'] ?? $metadata['private_representation_id'] ?? null,
+            $metadata['private_delivery_kind'] ?? 'file', $metadata['private_audio_id'] ?? null], JSON_UNESCAPED_SLASHES);
     }
 
     /** Metadata belongs to this candidate, never copied from a different quality. */
@@ -664,6 +690,43 @@ class DouyinParser
             $metadata['codec'] = (int)$item['is_h265'] === 1 ? 'hevc' : 'h264';
         }
         return $metadata;
+    }
+
+    /** File identifiers come from the upstream representation, not a quality label.
+     * A video URI alone can cover several encodings, so it is insufficient here.
+     */
+    private function representationIdentity(array $item): ?string
+    {
+        $address = $item['play_addr'] ?? $item['playAddr'][0] ?? [];
+        $extra = is_string($item['video_extra'] ?? null) ? json_decode($item['video_extra'], true) : [];
+        $hash = is_string($address['file_hash'] ?? null) ? $address['file_hash'] : '';
+        $fileId = is_string($extra['file_id'] ?? null) ? $extra['file_id'] : '';
+        if ($hash === '' && $fileId === '') return null;
+        return json_encode(['douyin', 'file', $address['uri'] ?? '', $hash, $fileId], JSON_UNESCAPED_SLASHES);
+    }
+
+    /** DASH audio belongs to the matching upstream audio_file_id, not every video. */
+    private function audioCandidates(array $entries, $expiresAt): array
+    {
+        $candidates = [];
+        foreach ($entries as $entry) {
+            $audio = $entry['audio_meta'] ?? [];
+            if (!is_array($audio) || ($audio['media_type'] ?? '') !== 'audio' || !is_string($audio['file_id'] ?? null)) continue;
+            $sources = [];
+            foreach ($audio['url_list'] ?? [] as $url) if (is_string($url) && snapMediaUrl($url)) $sources[] = ['url' => $url];
+            if (!$sources) continue;
+            if (is_numeric($expiresAt) && $expiresAt > 0) foreach ($sources as &$source) $source['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', (int)$expiresAt);
+            unset($source);
+            $candidate = ['private_audio_id' => $audio['file_id'], 'private_media_identity' => 'douyin:audio:' . $audio['file_id'], 'sources' => $sources];
+            $info = is_string($audio['sub_info'] ?? null) ? json_decode($audio['sub_info'], true) : [];
+            if (is_string($info['audio_profile'] ?? null)) $candidate['audio_codec'] = $info['audio_profile'];
+            if (is_numeric($info['audio_sample_rate'] ?? null) && $info['audio_sample_rate'] > 0) $candidate['sample_rate_hz'] = (int)$info['audio_sample_rate'];
+            if (is_numeric($info['audio_channels'] ?? null) && $info['audio_channels'] > 0) $candidate['audio_channels'] = (int)$info['audio_channels'];
+            if (is_numeric($audio['bitrate'] ?? null) && $audio['bitrate'] > 0) $candidate['audio_bitrate_bps'] = (int)$audio['bitrate'];
+            if (is_numeric($audio['size'] ?? null) && $audio['size'] > 0) $candidate['size'] = (int)$audio['size'];
+            $candidates[] = $candidate;
+        }
+        return $candidates;
     }
 
     /**

@@ -1,6 +1,4 @@
-export type PlatformKey =
-  "all" | "douyin" | "kuaishou" | "bilibili" | "xhs" | "toutiao" |
-  "weibo" | "pipixia" | "pipigx" | "zuiyou";
+export type PlatformKey = string;
 export type AppLocale = "zh-CN" | "en";
 
 export interface SecureSessionResponse {
@@ -26,6 +24,7 @@ export interface ParseRequest {
   platform: PlatformKey;
   url: string;
   locale: AppLocale;
+  schema_version?: "1.0";
 }
 
 export interface ParserResult<T = Record<string, unknown>> {

@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "douyin",
+    "content_id": "922337203685477580812345678901234567890",
+    "source_url": "https://source.example.test/douyin/synthetic-001",
+    "items": [
+      {
+        "id": "dy-one",
+        "type": "video",
+        "default": {
+          "variant_id": "dy-1080",
+          "url": "https://media.example.test/dy-a.mp4",
+          "source_id": "cdn-a"
+        },
+        "variants": [
+          {
+            "id": "dy-1080",
+            "metadata": {
+              "width": 1920,
+              "height": 1080,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "id": "cdn-a",
+                  "url": "https://media.example.test/dy-a.mp4"
+                },
+                {
+                  "id": "cdn-b",
+                  "url": "https://media.example.test/dy-b.mp4"
+                }
+              ]
+            }
+          },
+          {
+            "id": "dy-720",
+            "metadata": {
+              "width": 1280,
+              "height": 720,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/dy-720.mp4"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "author": {
+      "id": "922337203685477580812345678901234567890",
+      "name": "合成作者"
+    },
+    "statistics": {
+      "likes": {
+        "value": 0
+      }
+    }
+  }
+}
