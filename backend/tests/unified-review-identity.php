@@ -88,15 +88,16 @@ function reviewWeiboResponse(string $signature): array
     return $response;
 }
 
-function reviewDouyinMuxResponse(bool $firstAudioMissing = false, bool $reverse = false, bool $fileIdentity = true): array
+function reviewDouyinMuxResponse(bool $firstAudioMissing = false, bool $reverse = false, bool $fileIdentity = true, bool $sameUrl = false, bool $duplicate = false): array
 {
     $rates = [];
     foreach (['audio-a', 'audio-b'] as $line => $audioId) $rates[] = [
         'format' => 'dash', 'is_h265' => 1, 'bit_rate' => 4000000,
         'video_extra' => json_encode(($fileIdentity ? ['file_id' => 'shared-video-file'] : []) + ['audio_file_id' => $audioId]),
         'play_addr' => ($fileIdentity ? ['file_hash' => hash('md5', 'shared-video-file')] : []) + ['uri' => 'shared-video-uri', 'width' => 3840, 'height' => 2160,
-            'url_list' => ['https://www.douyin.com/aweme/v1/play/dash/?file_id=shared-video-file&' . ($fileIdentity ? 'line=' . $line : 'sign=' . $audioId)]],
+            'url_list' => ['https://www.douyin.com/aweme/v1/play/dash/?file_id=shared-video-file&' . ($sameUrl ? 'line=shared' : ($fileIdentity ? 'line=' . $line : 'sign=' . $audioId))]],
     ];
+    if ($duplicate) $rates[] = $rates[0];
     if ($reverse) $rates = array_reverse($rates);
     $audio = [];
     foreach ($firstAudioMissing ? ['audio-b', 'unrelated-audio'] : ['audio-a', 'audio-b', 'unrelated-audio'] as $id) $audio[] = [
@@ -227,6 +228,27 @@ $fallbackReverseIds = array_column($fallbackIdentityReversed['data']['items'][0]
 sort($fallbackIds); sort($fallbackReverseIds);
 $check('equivalent signed sources without upstream file hashes retain both matched audio variants', count($fallbackIds) === 2 && $fallbackIds === $fallbackReverseIds);
 
+$sameUrlMux = reviewDouyinMuxResponse(sameUrl: true);
+$sameUrlReversed = reviewDouyinMuxResponse(reverse: true, sameUrl: true);
+$sameUrlMissingFirst = reviewDouyinMuxResponse(firstAudioMissing: true, sameUrl: true);
+$sameUrlDuplicate = reviewDouyinMuxResponse(sameUrl: true, duplicate: true);
+$audioFilesFor = static function (array $response): array {
+    $files = [];
+    foreach ($response['data']['items'][0]['variants'] as $variant) foreach ($variant['delivery']['resources'] ?? [] as $resource) {
+        if ($resource['role'] === 'audio') $files[] = basename(parse_url($resource['delivery']['sources'][0]['url'], PHP_URL_PATH));
+    }
+    sort($files); return $files;
+};
+$idsFor = static function (array $response): array {
+    $ids = array_column($response['data']['items'][0]['variants'], 'id'); sort($ids); return $ids;
+};
+$check('identical video URL with explicit audio A and B retains both complete mux variants', $audioFilesFor($sameUrlMux) === ['audio-a.m4a', 'audio-b.m4a']);
+$check('identical video URL audio pair IDs remain unchanged when representations are reversed', count($idsFor($sameUrlMux)) === 2 && $idsFor($sameUrlMux) === $idsFor($sameUrlReversed));
+$check('identical video URL with missing first audio retains later matched audio B mux', $audioFilesFor($sameUrlMissingFirst) === ['audio-b.m4a'] && ($sameUrlMissingFirst['data']['items'][0]['variants'][0]['delivery']['kind'] ?? '') === 'mux');
+$check('identical video URL never pairs unrelated global audio', !in_array('unrelated-audio.m4a', $audioFilesFor($sameUrlMux), true) && !in_array('unrelated-audio.m4a', $audioFilesFor($sameUrlMissingFirst), true));
+$check('truly duplicate video representation and audio pairing is deduplicated', $audioFilesFor($sameUrlDuplicate) === ['audio-a.m4a', 'audio-b.m4a'] && $idsFor($sameUrlDuplicate) === $idsFor($sameUrlMux));
+$check('same-URL mux alternatives require processing and cannot become bare-track defaults', $sameUrlMux['data']['items'][0]['default'] === null && $sameUrlMux['data']['items'][0]['default_unavailable_reason'] === 'processing_required');
+
 $example = json_decode(file_get_contents(__DIR__ . '/../../docs/schema/unified-v1/examples/16-1080-file-and-higher-4k-mux.json'), true);
 $accepted = true; $reason = null;
 try { snapValidateEnvelope($example); } catch (UnexpectedValueException $error) { $accepted = false; $reason = $error->getMessage(); }
@@ -238,7 +260,8 @@ $check('complete default remains the 1080 file while higher mux is only advertis
 if (($argv[1] ?? '') === '--export-validation') {
     $responses = [$before, $after];
     foreach ($cases as $pair) array_push($responses, $pair['before'], $pair['after']);
-    array_push($responses, $oldDash, $newDash, $selected, $douyinMux, $missingFirstAudio, $reverseMux, $fallbackIdentityMux, $fallbackIdentityReversed);
+    array_push($responses, $oldDash, $newDash, $selected, $douyinMux, $missingFirstAudio, $reverseMux, $fallbackIdentityMux, $fallbackIdentityReversed,
+        $sameUrlMux, $sameUrlReversed, $sameUrlMissingFirst, $sameUrlDuplicate);
     echo json_encode($responses, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL;
     exit;
 }

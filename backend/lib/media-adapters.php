@@ -338,7 +338,8 @@ function snapAdaptMultiVideo(string $platform, array $raw, string $url): array
     $items = [];
     foreach ($raw['private_videos'] as $index => $video) {
         $variants = snapFileVariants([$video]); if (!$variants) continue;
-        $id = 'video-' . ($index + 1);
+        $upstreamId = is_array($video) ? snapText($video['private_video_id'] ?? null) : null;
+        $id = 'video-' . ($upstreamId !== null ? substr(hash('sha256', $upstreamId), 0, 24) : $index + 1);
         $items[] = ['id' => $id, 'type' => 'video', 'default' => null, 'variants' => $variants, 'resolve_url' => snapResolveUrl($url, $id)];
     }
     if (!$items) return $data;

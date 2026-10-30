@@ -1503,4 +1503,52 @@ if (process.env.DOKITOOL_MEDIA_INTEGRATION === '1') {
     assert.equal(selection.currentTarget.value.url, url);
     assert.ok(fetched.length > 0 && fetched.every(value => value === url));
   });
+
+  const readZuiyouResolveEnvelopes = async () => {
+    const exported = process.env.DOKITOOL_ZUIYOU_FIXTURE
+      ? await readFile(process.env.DOKITOOL_ZUIYOU_FIXTURE, 'utf8')
+      : execFileSync(process.env.DOKITOOL_PHP_BINARY || 'php', [fileURLToPath(new URL('../../backend/tests/unified-review-platforms.php', import.meta.url)), '--export-zuiyou-resolve'], { encoding: 'utf8' });
+    return JSON.parse(exported.replace(/^\uFEFF/, ''));
+  };
+  for (const missingSelected of [false, true]) test(`PR8 integration: actual Zuiyou resolve ${missingSelected ? 'rejects a missing selected item' : 'retains the selected item after an earlier entry disappears'}`, async () => {
+    const envelopes = await readZuiyouResolveEnvelopes();
+    const before = mediaContract.validateMediaEnvelope(envelopes.before);
+    const selectedUrl = 'https://media.example.test/zuiyou-second.mp4';
+    const original = before.items.find(item => item.default?.url === selectedUrl);
+    assert.ok(original, 'fixture contains the selected second media resource');
+    const { instance, store, selection } = harness(before);
+    selection.selectItem(original.id);
+    const choice = { variant_id: original.default.variant_id, source_id: original.default.source_id };
+    selection.choose(choice);
+    const domainBefore = JSON.stringify(store.resultData);
+    const resolver = parser.useVideoParser({ videoStore: store, locale: ref('zh-CN'), showToast() {} });
+    const mediaFetch = globalThis.fetch, resolveRequests = [];
+    globalThis.fetch = async (url, options) => {
+      if (new URL(url, 'https://snap.example.test').pathname === '/api/resolve') {
+        resolveRequests.push(url);
+        // This is the actual adapter's OK envelope. The real frontend resolver
+        // must identify or reject the requested item; no simulated gateway 404.
+        return Response.json(envelopes[missingSelected ? 'missing_selected' : 'missing_first']);
+      }
+      return mediaFetch(url, options);
+    };
+    if (missingSelected) {
+      await assert.rejects(resolver.resolveItem(original), /解析响应缺少所请求条目/);
+      assert.equal(JSON.stringify(store.resultData), domainBefore);
+      assert.deepEqual(selection.currentSelection.value, choice);
+      assert.deepEqual(fetched, [], 'a rejected resolve cannot request another media resource');
+    } else {
+      const resolved = await resolver.resolveItem(original);
+      assert.equal(resolved.default.url, selectedUrl, 'the original opaque item ID still identifies the selected media');
+      assert.equal(JSON.stringify(store.resultData), domainBefore, 'resolve remains pure until the UI applies its result');
+      store.replaceItem(resolved);
+      assert.deepEqual(selection.currentSelection.value, choice);
+      assert.equal(selection.currentVideoUrl.value, selectedUrl);
+      await instance.downloadMainVideo(); await settled(store.downloads[0]);
+      assert.equal(store.downloads[0].status, 'completed', store.downloads[0].error);
+      assert.ok(fetched.length > 0 && fetched.every(url => url === selectedUrl), 'download uses the same explicitly selected media');
+    }
+    assert.equal(resolveRequests.length, 1);
+    assert.equal(new URL(resolveRequests[0], 'https://snap.example.test').searchParams.get('item_id'), original.id);
+  });
 }

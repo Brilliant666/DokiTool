@@ -359,15 +359,16 @@ class DouyinParser
             $main = $this->ensureVideoMimeType($main);
 
             $backups = [];
-            $seen = [$main];
+            $seen = $main ? [$this->candidateDeliveryKey($main, $videoInfo['metadata']) => true] : [];
             foreach ($videoInfo['backup'] as $candidate) {
                 $item = is_string($candidate) ? ['url' => $candidate] : $candidate;
                 $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $item['url'] ?? '')));
-                if ($converted && !in_array($converted, $seen, true)) {
-                    $item['url'] = $converted;
-                    $backups[] = $item;
-                    $seen[] = $converted;
-                }
+                if (!$converted) continue;
+                $key = $this->candidateDeliveryKey($converted, $item);
+                if (isset($seen[$key])) continue;
+                $item['url'] = $converted;
+                $backups[] = $item;
+                $seen[$key] = true;
             }
 
             $result['url'] = $main;
@@ -605,9 +606,10 @@ class DouyinParser
                     if (strpos($candidate, 'v26-web') !== false) {
                         $candidate = $this->replacePlayHost($candidate);
                     }
-                    if ($candidate !== $url) {
-                        $backup[] = array_merge($itemMetadata, ['url' => $candidate, 'quality' => $itemQuality, 'label' => $itemQuality]);
-                    }
+                    // A shared video URL can have several explicit audio pairings.
+                    // Keep each representation here; formatData deduplicates only
+                    // after URL normalization and with its pairing identity intact.
+                    $backup[] = array_merge($itemMetadata, ['url' => $candidate, 'quality' => $itemQuality, 'label' => $itemQuality]);
                 }
             }
         }
@@ -655,6 +657,13 @@ class DouyinParser
             $gearName = min($metadata['width'], $metadata['height']) . 'p';
         }
         return ['url' => $url, 'backup' => $backup, 'gearName' => $gearName ?: 'unknown', 'metadata' => $metadata];
+    }
+
+    /** A URL identifies one source, not a complete DASH video/audio pairing. */
+    private function candidateDeliveryKey(string $url, array $metadata): string
+    {
+        return json_encode([$url, $metadata['private_media_identity'] ?? $metadata['private_representation_id'] ?? null,
+            $metadata['private_delivery_kind'] ?? 'file', $metadata['private_audio_id'] ?? null], JSON_UNESCAPED_SLASHES);
     }
 
     /** Metadata belongs to this candidate, never copied from a different quality. */

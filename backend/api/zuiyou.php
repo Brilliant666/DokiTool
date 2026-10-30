@@ -175,6 +175,10 @@ function zuiyouResponse(array $data): array
         if ((is_int($id) || is_string($id)) && array_key_exists($id, $videos)) $orderedVideos[$id] = $videos[$id];
     }
     $videos = $orderedVideos + $videos;
+    foreach ($videos as $id => &$video) {
+        if (is_array($video)) $video['private_video_id'] = (string)$id;
+    }
+    unset($video);
     $first = $images[0] ?? [];
     $url = '';
     foreach ($videos as $video) {

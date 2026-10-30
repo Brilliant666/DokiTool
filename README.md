@@ -101,6 +101,8 @@ Windows 的 `--php` 可使用 PHP 可执行文件的完整路径。`validate.py`
 
 `npm test` 仍是独立前端测试；`npm run test:media-integration` 另验证实际 PHP 输出进入前端下载 composable 后的续签、默认快照与显式选择。后者需要 PHP：优先读取 `DOKITOOL_PHP_BINARY` 环境变量，其次使用仓库已有的本地 PHP，再尝试 PATH 中的 `php`。上游输入为合成夹具，不请求真实媒体平台；平台与续签输出的独立 Schema 验证命令见 [schema README](docs/schema/unified-v1/README.md#实现与验证)。
 
+该集成也覆盖最右真实抽取与适配输出进入前端 resolve：前项缺失不改变存活视频身份，目标缺失时不借用相邻条目。后端回归覆盖抖音同视频 URL 的不同明确音轨配对，仍仅识别 mux 能力，不执行合流。
+
 自动化检查涵盖前端行为、PHP 网关契约、解析器与媒体传输回归、CLI 场景和独立 HTTP 夹具。前端测试覆盖元数据、混合静图与实况、分 P、选源、ZIP 取消重试，以及 SW 排队、刷新、取消竞态、任务面板和历史清理。仓库发布与线上服务发布分别进行，本仓库不会自动部署或定时覆盖上游。
 
 PR #7 的历史下载验收使用本地生产构建与 Edge：两条超过六分钟的受控跨域文件下载经历刷新和 Worker 更新等待后完整保存；第三项排队超过五分钟，随后以原任务 ID 完成；更新自然激活后再次下载成功。另验证了新客户端搭配旧 Worker 的小文件下载。五个实际保存文件的大小与 SHA-256 均匹配源文件，详细结果见 [下载验收记录](docs/DOWNLOADS.md#state-and-admission-consolidation-2026-10-30)。

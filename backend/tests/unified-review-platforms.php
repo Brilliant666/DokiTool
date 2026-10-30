@@ -52,6 +52,35 @@ reviewPlatformCheck(5, 'parser main video comes from first imgs entry', $zuiyouR
 reviewPlatformCheck(5, 'unified items preserve imgs video order', $orderedUrls === array_values($videoUrls), $orderedUrls);
 reviewPlatformCheck(5, 'default item preserves parser main video', ($defaultItem['default']['url'] ?? null) === $zuiyouRaw['data']['url'], $defaultItem['default']['url'] ?? null);
 reviewPlatformCheck(5, 'all three distinct videos survive adaptation', count(array_unique($orderedUrls)) === 3, count(array_unique($orderedUrls)));
+reviewPlatformCheck(5, 'parser retains upstream video-map IDs in content order', array_column($zuiyouRaw['data']['private_videos'], 'private_video_id') === ['42', '11', '78'], array_column($zuiyouRaw['data']['private_videos'], 'private_video_id'));
+
+// Retain upstream identities when an earlier videos-map entry disappears.
+// An empty URL still occupies its old array slot, so it is a separate control.
+$zuiyouResolve = ['before' => $envelopes[0]];
+$missingFirst = $post; unset($missingFirst['videos'][42]);
+$missingSelected = $post; unset($missingSelected['videos'][11]);
+$emptyFirstUrl = $post; $emptyFirstUrl['videos'][42]['url'] = '';
+$idsByUrl = static function (array $items): array {
+    $ids = [];
+    foreach ($items as $item) if (isset($item['default']['url'])) $ids[$item['default']['url']] = $item['id'];
+    return $ids;
+};
+$initialIds = $idsByUrl($zuiyou['items']);
+foreach (['missing_first' => $missingFirst, 'missing_selected' => $missingSelected, 'empty_first_url' => $emptyFirstUrl] as $name => $changedPost) {
+    $changedRaw = zuiyouResponse(['data' => ['post' => $changedPost]]);
+    $changed = reviewPlatformOutput(5, 'zuiyou', $changedRaw, 'https://www.izuiyou.com/detail/123456');
+    $zuiyouResolve[$name] = $envelopes[array_key_last($envelopes)];
+    $changedIds = $idsByUrl($changed['items']);
+    foreach ($changedIds as $mediaUrl => $itemId) {
+        reviewPlatformCheck(5, $name . ' keeps the surviving upstream video identity', $itemId === $initialIds[$mediaUrl],
+            ['url' => $mediaUrl, 'before' => $initialIds[$mediaUrl], 'after' => $itemId]);
+    }
+    $missingUrl = $name === 'missing_selected' ? $videoUrls[11] : $videoUrls[42];
+    reviewPlatformCheck(5, $name . ' cannot reuse the absent item ID for a neighbor', !in_array($initialIds[$missingUrl], $changedIds, true), array_values($changedIds));
+    $expectedUrls = $name === 'missing_selected' ? [$videoUrls[42], $videoUrls[78]] : [$videoUrls[11], $videoUrls[78]];
+    reviewPlatformCheck(5, $name . ' keeps content order and every surviving video', array_keys($changedIds) === $expectedUrls, array_keys($changedIds));
+    reviewPlatformCheck(5, $name . ' keeps first surviving video as default', $changed['default_item_id'] === $changed['items'][0]['id'], $changed['default_item_id']);
+}
 
 $gaps = $post;
 $gaps['imgs'] = [[], ['id' => ['invalid']], ['id' => 999], ['id' => 78], ['id' => 78], ['id' => 42]];
@@ -122,6 +151,7 @@ foreach ($statisticsCases as $name => [$upstream, $expected]) {
 $failed = array_filter($checks, static fn (array $check) => !$check['passed']);
 $report = ['suite' => 'unified-review-platforms', 'evidence' => 'Offline upstream fixtures through actual extractor and public adapter; not live platform acceptance',
     'passed' => count($checks) - count($failed), 'total' => count($checks), 'checks' => $checks];
-echo json_encode(in_array('--export', $argv, true) ? $envelopes : $report,
+$output = in_array('--export-zuiyou-resolve', $argv, true) ? $zuiyouResolve : (in_array('--export', $argv, true) ? $envelopes : $report);
+echo json_encode($output,
     JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 exit($failed ? 1 : 0);
