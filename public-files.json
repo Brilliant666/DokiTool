@@ -113,6 +113,7 @@
     "frontend/src/downloads/file.ts",
     "frontend/src/downloads/manager.ts",
     "frontend/src/downloads/native.ts",
+    "frontend/src/downloads/session.ts",
     "frontend/src/downloads/streaming.ts",
     "frontend/src/downloads/types.ts",
     "frontend/src/main.ts",

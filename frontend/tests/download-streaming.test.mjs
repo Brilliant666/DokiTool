@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { transformWithEsbuild } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { build as bundle } from 'esbuild';
 
 const origin = 'https://snap.example.test';
 const build = 'downloads-20261030.2';
@@ -14,12 +14,9 @@ const state = (status = 'downloading', patch = {}) => ({
 const flush = async () => { for (let index = 0; index < 40; index++) await Promise.resolve(); };
 
 async function harness(t, respond, options = {}) {
-  const types = await transformWithEsbuild(await readFile(new URL('../src/downloads/types.ts', import.meta.url), 'utf8'), 'types.ts', { loader: 'ts', format: 'esm' });
-  const typesUrl = 'data:text/javascript;base64,' + Buffer.from(types.code).toString('base64');
-  const bridge = await transformWithEsbuild(await readFile(new URL('../src/downloads/bridge.ts', import.meta.url), 'utf8'), 'bridge.ts', { loader: 'ts', format: 'esm' });
-  const bridgeUrl = 'data:text/javascript;base64,' + Buffer.from(bridge.code + `\n// ${Math.random()}`).toString('base64');
-  const client = await transformWithEsbuild(await readFile(new URL('../src/downloads/streaming.ts', import.meta.url), 'utf8'), 'streaming.ts', { loader: 'ts', format: 'esm' });
-  const code = client.code.replace('"./types"', JSON.stringify(typesUrl)).replace('"./bridge"', JSON.stringify(bridgeUrl));
+  // Bundle the real module graph so session/bridge refactors cannot silently use stale mocks.
+  const { outputFiles } = await bundle({ entryPoints: [fileURLToPath(new URL('../src/downloads/streaming.ts', import.meta.url))], bundle: true, write: false, platform: 'browser', format: 'esm' });
+  const code = outputFiles[0].text;
   const api = await import('data:text/javascript;base64,' + Buffer.from(code + `\n// ${Math.random()}`).toString('base64'));
   const originals = new Map(), storage = new Map(), messages = [], frames = [], timers = new Map(), stateListeners = new Set();
   let listener, nextTimer = 0, updates = 0, registrations = 0, now = 1_000_000;
@@ -35,7 +32,7 @@ async function harness(t, respond, options = {}) {
     removeEventListener(type, handler) { if (type === 'statechange') stateListeners.delete(handler); },
     postMessage(message, [port]) {
       messages.push(message);
-      const reply = respond ? respond(message) : message.action === 'ping' ? { protocol: 1, workerBuild: build } : undefined;
+      const reply = respond ? respond(message, port) : message.action === 'ping' ? { protocol: 1, workerBuild: build } : undefined;
       if (reply !== undefined) port.postMessage(reply);
     },
   };
@@ -51,8 +48,9 @@ async function harness(t, respond, options = {}) {
   setGlobal('sessionStorage', { getItem: name => storage.get(name), setItem: (name, value) => storage.set(name, value) });
   setGlobal('MessageChannel', class {
     constructor() {
-      this.port1 = { onmessage: null, close() {} };
-      this.port2 = { postMessage: data => queueMicrotask(() => this.port1.onmessage?.({ data })) };
+      let closed = false;
+      this.port1 = { onmessage: null, close() { closed = true; } };
+      this.port2 = { postMessage: data => queueMicrotask(() => { if (!closed) this.port1.onmessage?.({ data }); }) };
     }
   });
   const loadBridge = (frame, { controller = registration.active, marker = true, href = new URL(frame.src, origin).href } = {}) => {
@@ -79,7 +77,7 @@ async function harness(t, respond, options = {}) {
   for (const name of ['setTimeout', 'setInterval']) setGlobal(name, (callback, delay) => { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; });
   for (const name of ['clearTimeout', 'clearInterval']) setGlobal(name, id => timers.delete(id));
   return {
-    api, worker, registration, messages, frames, storage, timers, loadBridge,
+    api, worker, registration, messages, frames, storage, timers, loadBridge, setGlobal,
     get bridges() { return frames.filter(frame => frame.src === '/downloads/bridge.html'); },
     get attachments() { return frames.filter(frame => frame.src?.startsWith('/downloads/file/')); },
     get updates() { return updates; }, advance: ms => { now += ms; },
@@ -140,7 +138,7 @@ test('unknown START remains pending rather than reporting a false interruption',
   await flush();
   [...h.timers.values()].find(timer => timer.delay === 8000).callback();
   await assert.rejects(task, error => error.name === 'StreamingStateUnknownError' && !error.safeToFallback);
-  assert.equal(observed.at(-1).status, 'preparing'); assert.equal(observed.at(-1).observation, 'unknown');
+  assert.equal(observed.at(-1).status, 'queued'); assert.equal(observed.at(-1).observation, 'unknown');
   assert.equal(observed.at(-1).elapsed, 10); assert.equal(h.api.hasStreamingTask(request.id), true);
   h.tick(4000);
   assert.equal(h.bridges[0].removed, undefined, 'an uncertain START may already own a running transfer');
@@ -283,7 +281,7 @@ for (const restoring of [false, true]) {
     const pending = restoring ? h.api.reconnectStreaming(() => {})
       : h.api.downloadStreaming(request, new AbortController().signal, () => {});
     const rejected = restoring ? null
-      : assert.rejects(pending, error => error.name === 'StreamingUnavailableError' && error.safeToFallback);
+      : assert.rejects(pending, error => error.name !== 'StreamingUnavailableError' && !error.safeToFallback);
     await flush();
     assert.equal(h.frames.length, 0); assert.equal(h.messages.length, 0); assert.equal(h.stateListeners, 1);
 
@@ -316,11 +314,11 @@ test('START and update checks wait for a controlled bridge, rather than a mere i
   h.update(state('completed')); await task;
 });
 
-test('bridge failure is eligible for fallback only before START has been sent', async t => {
+test('bridge loading failure remains an operational failure and never permits Blob fallback', async t => {
   const h = await harness(t, undefined, { autoLoadBridge: false });
   const task = h.api.downloadStreaming(request, new AbortController().signal, () => {});
   await flush(); h.bridges[0].dispatch('error');
-  await assert.rejects(task, error => error.name === 'StreamingUnavailableError' && error.safeToFallback);
+  await assert.rejects(task, error => error.name !== 'StreamingUnavailableError' && !error.safeToFallback);
   assert.equal(h.messages.some(message => message.action === 'start'), false);
   assert.equal(h.api.hasStreamingTask(request.id), false);
   h.tick(4000);
@@ -348,6 +346,7 @@ test('finishing one of two downloads does not release the other download bridge'
   const second = h.api.downloadStreaming(other, new AbortController().signal, () => {});
   await flush();
   assert.equal(h.bridges.length, 1); assert.equal(h.attachments.length, 2);
+  assert.equal(h.messages.filter(message => message.action === 'ping').length, 1, 'concurrent starts share one capability handshake');
   h.update(state('completed')); await first; h.tick(4000);
   assert.equal(h.bridges[0].removed, undefined);
   assert.equal(h.api.hasStreamingTask(other.id), true);
@@ -498,4 +497,302 @@ test('a pending saved record cannot be forgotten before restoration confirms it 
   await assert.rejects(h.api.forgetStreaming(request.id), /先确认下载已停止/);
   assert.deepEqual(JSON.parse(h.storage.get('dokitool-downloads-v1')), [record]);
   assert.equal(h.frames.length, 0); assert.equal(h.messages.length, 0);
+});
+
+test('only a genuinely unsupported browser exposes the explicit Blob fallback error', async t => {
+  const h = await harness(t);
+  h.setGlobal('isSecureContext', false);
+  await assert.rejects(h.api.downloadStreaming(request, new AbortController().signal, () => {}), error => error.name === 'StreamingUnavailableError' && error.safeToFallback === true);
+  assert.equal(h.frames.length, 0); assert.equal(h.messages.length, 0);
+  assert.equal(h.api.hasStreamingTask(request.id), false);
+});
+
+for (const failure of ['missing bridge document', 'bridge timeout', 'protocol mismatch']) {
+  test(`${failure} is reported without claiming unsupported-browser fallback`, async t => {
+    const h = await harness(t, message => message.action === 'ping' ? { protocol: 2, workerBuild: build } : undefined, { autoLoadBridge: false });
+    const task = h.api.downloadStreaming(request, new AbortController().signal, () => {});
+    const rejected = assert.rejects(task, error => error.name !== 'StreamingUnavailableError' && !error.safeToFallback);
+    await flush();
+    if (failure === 'missing bridge document') h.loadBridge(h.bridges[0], { marker: false });
+    else if (failure === 'bridge timeout') h.tick(8000);
+    else h.loadBridge(h.bridges[0]);
+    await rejected;
+    assert.equal(h.messages.some(message => message.action === 'start'), false);
+    assert.equal(h.attachments.length, 0);
+    assert.equal(h.api.hasStreamingTask(request.id), false);
+  });
+}
+
+const admissionPing = { protocol: 1, workerBuild: 'downloads-admission', capabilities: { admission: true } };
+const admittedState = (delivery, revision, patch = {}) => state(delivery === 'claimed' ? 'downloading' : 'queued', {
+  delivery, revision, loaded: 0, workerBuild: admissionPing.workerBuild, ...patch,
+});
+
+test('admission waits without an attachment and opens exactly once when the Worker reports ready', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'start' ? { snapshot: admittedState('waiting', 1) } : undefined);
+  const observed = [];
+  const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
+  await flush();
+  const start = h.messages.find(message => message.action === 'start');
+  assert.equal(start.admission, true);
+  assert.equal(h.api.hasStreamingTask(request.id), true);
+  assert.equal(h.attachments.length, 0, 'a queued admission must not create a long-lived attachment fetch');
+  assert.equal(observed.at(-1).delivery, 'waiting');
+
+  h.update(admittedState('ready', 2)); await flush();
+  assert.equal(h.attachments.length, 1);
+  assert.equal(h.attachments[0].src, `/downloads/file/${request.id}/${start.token}`);
+  h.update(admittedState('ready', 2));
+  h.update(admittedState('claimed', 3, { loaded: 1024 }));
+  h.update(admittedState('ready', 2)); await flush();
+  assert.equal(h.attachments.length, 1);
+  assert.equal(observed.at(-1).delivery, 'claimed');
+  assert.equal(observed.at(-1).loaded, 1024);
+  h.update(admittedState('claimed', 4, { status: 'completed', loaded: 100 * 1024 ** 2 }));
+  assert.equal((await task).status, 'completed');
+  assert.equal(h.messages.filter(message => message.action === 'start').length, 1);
+});
+
+test('a legacy Worker without admission capability keeps its original downloadUrl flow', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? { protocol: 1, workerBuild: 'downloads-20261030.3' }
+    : message.action === 'start' ? { snapshot: state(), downloadUrl: `/downloads/file/${request.id}/${message.token}` } : undefined);
+  const task = h.api.downloadStreaming(request, new AbortController().signal, () => {});
+  await flush();
+  assert.notEqual(h.messages.find(message => message.action === 'start').admission, true);
+  assert.equal(h.attachments.length, 1);
+  h.update(state('completed')); await task;
+});
+
+for (const delivery of ['waiting', 'ready', 'claimed']) {
+  test(`refresh recovery of admission ${delivery} never sends another START`, async t => {
+    const h = await harness(t, message => message.action === 'ping' ? admissionPing
+      : message.action === 'query' ? { snapshots: [admittedState(delivery, 4)] } : undefined);
+    const { url, ...last } = admittedState(delivery, 3);
+    h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+    const [restored] = await h.api.reconnectStreaming(() => {});
+    assert.equal(restored.id, request.id); assert.equal(restored.delivery, delivery);
+    assert.equal(h.messages.some(message => message.action === 'start'), false);
+    assert.equal(h.attachments.length, delivery === 'ready' ? 1 : 0);
+    if (delivery === 'ready') assert.equal(h.attachments[0].src, `/downloads/file/${request.id}/${'a'.repeat(32)}`);
+    h.update(admittedState('claimed', 5, { status: 'completed', loaded: 100 * 1024 ** 2 }));
+  });
+}
+
+test('a lost admission START acknowledgement remains unknown and later readiness never duplicates START', async t => {
+  let startPort;
+  const h = await harness(t, (message, port) => {
+    if (message.action === 'ping') return admissionPing;
+    if (message.action === 'start') { startPort = port; return undefined; }
+    if (message.action === 'query') return { snapshots: [admittedState('ready', 2)] };
+  });
+  const observed = [];
+  const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
+  const rejected = assert.rejects(task, error => error.name === 'StreamingStateUnknownError' && !error.safeToFallback);
+  await flush(); h.tick(8000); await rejected;
+  assert.equal(observed.at(-1).observation, 'unknown');
+  assert.equal(h.attachments.length, 0); assert.equal(h.api.hasStreamingTask(request.id), true);
+  await h.poll();
+  assert.equal(h.attachments.length, 1); assert.equal(observed.at(-1).delivery, 'ready');
+  startPort.postMessage({ snapshot: admittedState('waiting', 1) }); await flush();
+  assert.equal(observed.at(-1).delivery, 'ready'); assert.equal(h.attachments.length, 1);
+  assert.equal(h.messages.filter(message => message.action === 'start').length, 1);
+  h.update(admittedState('claimed', 3, { status: 'completed', loaded: 100 * 1024 ** 2 }));
+});
+
+test('revisions reject delayed query results and terminal state absorbs later snapshots', async t => {
+  let queryPort;
+  const h = await harness(t, (message, port) => {
+    if (message.action === 'ping') return admissionPing;
+    if (message.action === 'start') return { snapshot: admittedState('ready', 1) };
+    if (message.action === 'query') { queryPort = port; return undefined; }
+  });
+  const observed = [];
+  const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
+  await flush();
+  h.update(admittedState('claimed', 3, { loaded: 20 * 1024 ** 2 }));
+  const poll = h.poll(); await flush();
+  h.update(admittedState('claimed', 4, { loaded: 30 * 1024 ** 2 }));
+  queryPort.postMessage({ snapshots: [admittedState('claimed', 2, { loaded: 10 * 1024 ** 2 })] }); await poll; await flush();
+  assert.equal(observed.at(-1).revision, 4); assert.equal(observed.at(-1).loaded, 30 * 1024 ** 2);
+  h.update(admittedState('claimed', 5, { status: 'completed', loaded: 100 * 1024 ** 2 })); await task;
+  h.update(admittedState('claimed', 6, { loaded: 40 * 1024 ** 2 }));
+  h.update(admittedState('claimed', 7, { status: 'failed', error: 'late stale failure' }));
+  assert.equal(observed.at(-1).status, 'completed');
+  assert.equal(observed.at(-1).loaded, 100 * 1024 ** 2);
+  assert.equal(h.api.hasStreamingTask(request.id), false);
+});
+
+test('legacy snapshots without revisions cannot move bytes or lifecycle stages backwards', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? { protocol: 1, workerBuild: build }
+    : message.action === 'start' ? { snapshot: state(), downloadUrl: `/downloads/file/${request.id}/${message.token}` } : undefined);
+  const observed = [];
+  const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
+  await flush();
+  h.update(state('downloading', { loaded: 30 * 1024 ** 2 }));
+  h.update(state('downloading', { loaded: 5 * 1024 ** 2 }));
+  h.update(state('preparing', { loaded: 30 * 1024 ** 2 }));
+  assert.equal(observed.at(-1).loaded, 30 * 1024 ** 2);
+  assert.equal(observed.at(-1).status, 'downloading');
+  h.update(state('completed', { loaded: 100 * 1024 ** 2 })); await task;
+  h.update(state('downloading', { loaded: 100 * 1024 ** 2 }));
+  assert.equal(observed.at(-1).status, 'completed');
+});
+
+test('clearing restored terminal records can send token-authenticated forget to the active Worker', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'forget' ? { forgotten: true } : undefined);
+  const { url, ...result } = admittedState('claimed', 5, { status: 'completed', loaded: 100 * 1024 ** 2 });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), result }]));
+  await h.api.reconnectStreaming(() => {});
+  assert.equal(h.messages.length, 0, 'restoring a terminal summary alone does not contact the Worker');
+  await h.api.forgetStreaming(request.id);
+  const forgotten = h.messages.find(message => message.action === 'forget');
+  assert.ok(forgotten, 'clear must release retained terminal entries instead of only hiding local cards');
+  assert.equal(forgotten.id, request.id); assert.equal(forgotten.token, 'a'.repeat(32));
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+  assert.equal(h.frames.length, 0, 'terminal-history cleanup must not retain a new bridge');
+  assert.equal(h.updates, 0); assert.equal(h.registrations, 0);
+  assert.deepEqual(JSON.parse(h.storage.get('dokitool-downloads-v1')), []);
+});
+
+test('an explicit START refusal fails cleanly instead of becoming an uncertain live task', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'start' ? { error: '下载任务过多，请清理后重试' } : undefined);
+  const observed = [];
+  await assert.rejects(h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot)), /下载任务过多/);
+  assert.equal(observed.at(-1).status, 'failed'); assert.equal(observed.at(-1).observation, undefined);
+  assert.equal(h.api.hasStreamingTask(request.id), false); assert.equal(h.attachments.length, 0);
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+});
+
+test('cancelling an admitted waiting task never opens an attachment or restarts delivery', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'start' ? { snapshot: admittedState('waiting', 1) }
+      : message.action === 'cancel' ? { snapshot: admittedState('waiting', 2, { status: 'cancelled' }) } : undefined);
+  const task = h.api.downloadStreaming(request, new AbortController().signal, () => {});
+  const cancelled = assert.rejects(task, { name: 'AbortError' });
+  await flush(); await h.api.cancelStreaming(request.id); await cancelled;
+  h.update(admittedState('ready', 3)); await flush();
+  assert.equal(h.attachments.length, 0); assert.equal(h.api.hasStreamingTask(request.id), false);
+  assert.equal(h.messages.filter(message => message.action === 'start').length, 1);
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+});
+
+test('one old pending download survives a hundred newer terminal records and refresh only queries the pending task', async t => {
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'query' ? { snapshots: [admittedState('claimed', 3, { loaded: 20 * 1024 ** 2 })] } : undefined);
+  const { url, ...last } = admittedState('claimed', 2, { loaded: 10 * 1024 ** 2 });
+  const oldPending = { id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now() - 25 * 60 * 60_000, last };
+  const completed = Array.from({ length: 100 }, (_, index) => {
+    const id = `completed${String(index).padStart(16, '0')}`;
+    const { url: _url, ...result } = admittedState('claimed', 5, { id, status: 'completed', loaded: 100 * 1024 ** 2 });
+    return { id, token: 'b'.repeat(32), filename: `已完成${index}.mp4`, savedAt: Date.now(), result };
+  });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([oldPending, ...completed]));
+  const restored = await h.api.reconnectStreaming(() => {});
+  assert.equal(restored.find(snapshot => snapshot.id === request.id)?.status, 'downloading');
+  assert.equal(h.api.hasStreamingTask(request.id), true);
+  const queries = h.messages.filter(message => message.action === 'query');
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].tasks, [{ id: request.id, token: oldPending.token }]);
+  assert.equal(h.messages.filter(message => message.action === 'ping').length, 1);
+  assert.equal(h.bridges.length, 1); assert.equal(h.bridges[0].removed, undefined);
+  assert.equal(h.attachments.length, 0);
+  assert.ok(JSON.parse(h.storage.get('dokitool-downloads-v1')).some(key => key.id === request.id), 'a checkpoint write must not evict the pending record');
+  h.update(admittedState('claimed', 4, { status: 'completed', loaded: 100 * 1024 ** 2 }));
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+});
+
+test('ten restored pending tasks share one handshake and one grouped query', async t => {
+  const records = Array.from({ length: 10 }, (_, index) => ({
+    id: `pending${String(index).padStart(16, '0')}`, token: `${index}`.repeat(32), filename: `等待${index}.mp4`,
+  }));
+  const h = await harness(t, message => message.action === 'ping' ? admissionPing
+    : message.action === 'query' ? { snapshots: message.tasks.map(({ id }) => admittedState('waiting', 2, { id })) } : undefined);
+  h.storage.set('dokitool-downloads-v1', JSON.stringify(records.map(key => ({ ...key, savedAt: Date.now() }))));
+  const restored = await h.api.reconnectStreaming(() => {});
+  assert.equal(restored.length, 10);
+  assert.equal(h.messages.filter(message => message.action === 'ping').length, 1);
+  const queries = h.messages.filter(message => message.action === 'query');
+  assert.equal(queries.length, 1); assert.equal(queries[0].tasks.length, 10);
+  assert.equal(h.bridges.length, 1); assert.equal(h.attachments.length, 0);
+  assert.equal(h.messages.some(message => message.action === 'start'), false);
+  records.forEach(({ id }) => h.update(admittedState('waiting', 3, { id, status: 'cancelled' })));
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+});
+
+test('a ready push cannot claim an admitted attachment while cancellation awaits acknowledgement', async t => {
+  let cancelPort;
+  const h = await harness(t, (message, port) => {
+    if (message.action === 'ping') return admissionPing;
+    if (message.action === 'start') return { snapshot: admittedState('waiting', 1) };
+    if (message.action === 'cancel') { cancelPort = port; return undefined; }
+  });
+  const observed = [];
+  const task = h.api.downloadStreaming(request, new AbortController().signal, snapshot => observed.push(snapshot));
+  const cancelled = assert.rejects(task, { name: 'AbortError' });
+  await flush();
+  const cancelling = h.api.cancelStreaming(request.id);
+  const alsoCancelling = h.api.cancelStreaming(request.id);
+  await flush();
+  assert.equal(h.messages.filter(message => message.action === 'cancel').length, 1, 'one task shares an in-flight cancellation request');
+  h.update(admittedState('ready', 2)); await flush();
+  assert.equal(h.attachments.length, 0);
+  assert.notEqual(observed.at(-1).status, 'cancelled', 'intent does not establish a confirmed terminal outcome');
+  assert.equal(h.api.hasStreamingTask(request.id), true);
+  assert.equal(JSON.parse(h.storage.get('dokitool-downloads-v1'))[0].cancelRequested, true);
+  h.tick(4000); assert.equal(h.bridges[0].removed, undefined);
+  cancelPort.postMessage({ snapshot: admittedState('waiting', 3, { status: 'cancelled' }) });
+  await Promise.all([cancelling, alsoCancelling, cancelled]);
+  assert.equal(observed.at(-1).status, 'cancelled'); assert.equal(h.attachments.length, 0);
+});
+
+test('AbortSignal cancellation suppresses ready delivery before its Worker reply arrives', async t => {
+  let cancelPort;
+  const h = await harness(t, (message, port) => {
+    if (message.action === 'ping') return admissionPing;
+    if (message.action === 'start') return { snapshot: admittedState('waiting', 1) };
+    if (message.action === 'cancel') { cancelPort = port; return undefined; }
+  });
+  const controller = new AbortController(), observed = [];
+  const task = h.api.downloadStreaming(request, controller.signal, snapshot => observed.push(snapshot));
+  const cancelled = assert.rejects(task, { name: 'AbortError' });
+  await flush(); controller.abort();
+  h.update(admittedState('ready', 2)); await flush();
+  assert.equal(h.attachments.length, 0); assert.equal(h.api.hasStreamingTask(request.id), true);
+  assert.notEqual(observed.at(-1).status, 'cancelled');
+  assert.equal(h.messages.filter(message => message.action === 'cancel').length, 1);
+  assert.equal(JSON.parse(h.storage.get('dokitool-downloads-v1'))[0].cancelRequested, true);
+  cancelPort.postMessage({ snapshot: admittedState('waiting', 3, { status: 'cancelled' }) });
+  await cancelled;
+  assert.equal(h.attachments.length, 0); assert.equal(observed.at(-1).status, 'cancelled');
+});
+
+test('refresh preserves unconfirmed cancellation intent and reissues cancel without claiming a ready attachment', async t => {
+  let cancelPort;
+  const h = await harness(t, (message, port) => {
+    if (message.action === 'ping') return admissionPing;
+    if (message.action === 'query') return { snapshots: [admittedState('ready', 2)] };
+    if (message.action === 'cancel') { cancelPort = port; return undefined; }
+  });
+  const { url, ...last } = admittedState('waiting', 1);
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last, cancelRequested: true }]));
+  const observed = [];
+  const restoration = h.api.reconnectStreaming(snapshot => observed.push(snapshot));
+  await flush();
+  assert.equal(h.attachments.length, 0);
+  assert.equal(h.messages.some(message => message.action === 'start'), false);
+  const cancellations = h.messages.filter(message => message.action === 'cancel');
+  assert.equal(cancellations.length, 1);
+  assert.equal(cancellations[0].id, request.id); assert.equal(cancellations[0].token, 'a'.repeat(32));
+  assert.equal(observed.at(-1).observation, 'unknown', 'a ready query cannot confirm the outstanding cancellation');
+  assert.notEqual(observed.at(-1).status, 'cancelled');
+  assert.equal(h.api.hasStreamingTask(request.id), true);
+  h.update(admittedState('ready', 3)); await flush();
+  assert.equal(h.attachments.length, 0); assert.equal(observed.at(-1).observation, 'unknown', 'a later ready push cannot clear cancellation uncertainty');
+  cancelPort.postMessage({ snapshot: admittedState('waiting', 4, { status: 'cancelled' }) });
+  await restoration; await flush();
+  assert.equal(observed.at(-1).status, 'cancelled'); assert.equal(observed.at(-1).observation, undefined);
+  assert.equal(h.api.hasStreamingTask(request.id), false); assert.equal(h.attachments.length, 0);
 });

@@ -11,7 +11,7 @@ const id = number => `task000000000000${number}`;
 const bytes = [new Uint8Array([0, 0, 0, 8]), new Uint8Array([102, 116, 121, 112])];
 
 function harness(fetcher) {
-  const events = new Map(), timers = new Map(), updates = [], lifetime = [];
+  const events = new Map(), timers = new Map(), updates = [], lifetime = [], clientLookups = [], deferredReplies = [];
   let nextTimer = 0;
   let now = 1_000_000;
   const clients = new Map([
@@ -20,17 +20,18 @@ function harness(fetcher) {
     ['foreign', { id: 'foreign', url: 'https://foreign.test/', postMessage() {} }],
   ]);
   const context = vm.createContext({
-    self: { location: new URL(origin), clients: { get: async key => clients.get(key) }, addEventListener: (key, handler) => events.set(key, handler) },
+    self: { location: new URL(origin), clients: { get: async key => { clientLookups.push(key); return clients.get(key); } }, addEventListener: (key, handler) => events.set(key, handler) },
     fetch: fetcher, URL, Response, ReadableStream, AbortController, DOMException, TextDecoder,
     Date: class extends Date { static now() { return now; } },
     setTimeout(callback, delay) { const handle = ++nextTimer; timers.set(handle, { callback, delay }); return handle; },
     clearTimeout: handle => timers.delete(handle),
   });
   vm.runInContext(source, context);
-  const send = (message, client = 'page') => new Promise(resolve => {
-    events.get('message')({ data: { protocol: 1, ...message }, source: { id: client }, ports: [{ postMessage: resolve }], waitUntil: promise => lifetime.push(promise) });
+  const send = (message, client = 'page', deferReply = false) => new Promise(resolve => {
+    events.get('message')({ data: { protocol: 1, ...message }, source: { id: client }, ports: [{ postMessage: value => deferReply ? deferredReplies.push(() => resolve(value)) : resolve(value) }], waitUntil: promise => lifetime.push(promise) });
   });
   const start = async (number, routes = [], extra = {}) => send({ action: 'start', token, request: { id: id(number), filename: '作品_P1.mp4', url: 'https://cdn.test/primary.mp4', routes, ...extra } });
+  const admit = async number => send({ action: 'start', admission: true, token, request: { id: id(number), filename: '作品_P1.mp4', url: 'https://cdn.test/primary.mp4' } });
   const download = async (number, suppliedToken = token, signal) => {
     let response;
     events.get('fetch')({ request: new Request(`${origin}/downloads/file/${id(number)}/${suppliedToken}`, { signal }), respondWith: value => { response = value; }, waitUntil: promise => lifetime.push(promise) });
@@ -38,7 +39,10 @@ function harness(fetcher) {
   };
   const query = async (number, client = 'page') => (await send({ action: 'query', tasks: [{ id: id(number), token }] }, client)).snapshots[0];
   const cancel = number => send({ action: 'cancel', id: id(number), token });
-  return { start, send, download, query, cancel, timers, updates, eventsSettled: () => Promise.all(lifetime), advance: ms => { now += ms; }, async close() {
+  return { start, admit, send, download, query, cancel, timers, updates, clientLookups,
+    get transferTimers() { return [...timers.values()].filter(timer => timer.delay < 600_000); },
+    closeClient: key => clients.delete(key), releaseReplies: () => deferredReplies.splice(0).forEach(reply => reply()),
+    eventsSettled: () => Promise.all(lifetime), advance: ms => { now += ms; }, async close() {
     for (let number = 1; number <= 5; number++) await cancel(number);
     await Promise.all(lifetime);
   } };
@@ -90,7 +94,7 @@ test('requires a same-origin page and ownership token, including after refresh',
   assert.match((await h.send({ action: 'ping' }, 'foreign')).error, /校验/);
   await h.start(1);
   assert.equal((await h.download(1, 'b'.repeat(32))).status, 404);
-  assert.match((await h.send({ action: 'cancel', id: id(1), token: 'b'.repeat(32) })).error, /失效/);
+  assert.match((await h.send({ action: 'cancel', id: id(1), token: 'b'.repeat(32) })).error, /无访问权限/);
   assert.equal((await h.query(1, 'reloaded')).status, 'queued');
   const cancelled = await h.send({ action: 'cancel', id: id(1), token }, 'reloaded');
   assert.equal(cancelled.snapshot.status, 'cancelled');
@@ -146,7 +150,7 @@ test('aborted attachment requests release occupied slots even without a stream c
   await assert.rejects(first.arrayBuffer(), /取消/);
   await assert.rejects(second.arrayBuffer(), /取消/);
   await third.body.cancel();
-  assert.equal(h.timers.size, 0);
+  assert.equal(h.transferTimers.length, 0);
 });
 
 test('a queued or already-aborted attachment never starts an upstream request', async t => {
@@ -222,7 +226,7 @@ test('queue expiry fails only the waiting task without fetching it or blocking l
   assert.equal((await (await h.download(4)).arrayBuffer()).byteLength, 8);
   assert.equal(fetched, 3, 'the expired task must not re-enter the released slot');
   assert.equal((await second.arrayBuffer()).byteLength, 8);
-  assert.equal(h.timers.size, 0);
+  assert.equal(h.transferTimers.length, 0);
 });
 
 test('one response deadline covers all preparation routes and aborts without another retry', { timeout: 1500 }, async t => {
@@ -255,7 +259,7 @@ test('one response deadline covers all preparation routes and aborts without ano
   assert.equal(failed.elapsed, 120);
   assert.ok(attempts.every(attempt => attempt.signal.aborted));
   assert.equal(attempts.length, 3, 'expiry must not repeat a source or silently start another route');
-  assert.equal(h.timers.size, 0);
+  assert.equal(h.transferTimers.length, 0);
   await h.start(2, [], { url: 'https://cdn.test/next.mp4' });
   assert.equal((await (await h.download(2)).arrayBuffer()).byteLength, 8);
   assert.equal((await h.query(2)).status, 'completed', 'failed preparation releases its slot');
@@ -322,7 +326,8 @@ test('finished elapsed time and average speed remain stable across later queries
 test('worker reports its build and separates total elapsed time from transfer speed', async t => {
   const h = harness(async () => media()); t.after(() => h.close());
   const ping = await h.send({ action: 'ping' });
-  assert.equal(ping.workerBuild, 'downloads-20261030.3');
+  assert.equal(ping.workerBuild, 'downloads-20261030.4');
+  assert.equal(ping.capabilities.admission, true);
   await h.start(1, [], { startedAt: 995_000 });
   assert.equal((await h.query(1)).elapsed, 5);
   assert.equal((await h.query(1)).transferElapsed, 0);
@@ -360,13 +365,167 @@ test('short delivery bursts are smoothed without delaying reads and idle speed b
   await reader.read();
 });
 
+test('admission is negotiated while legacy clients retain their attachment URL', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  const ping = await h.send({ action: 'ping' });
+  assert.equal(ping.protocol, 1); assert.equal(ping.capabilities.admission, true);
+  const modern = await h.admit(1), legacy = await h.start(2);
+  assert.equal(modern.downloadUrl, undefined); assert.equal(modern.snapshot.delivery, 'ready');
+  assert.match(legacy.downloadUrl, /\/downloads\/file\//); assert.equal(legacy.snapshot.delivery, undefined);
+  assert.equal(fetched, 0, 'admission reserves capacity but never fetches source bytes');
+  const first = await h.download(1), second = await h.download(2);
+  assert.equal((await h.query(1)).delivery, 'claimed'); assert.equal(fetched, 2);
+  await first.arrayBuffer(); await second.arrayBuffer();
+});
+
+test('admission can wait beyond five minutes without opening an attachment or starting a media GET', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  await h.admit(1); await h.admit(2);
+  const first = await h.download(1), second = await h.download(2);
+  const waiting = await h.admit(3);
+  assert.equal(waiting.snapshot.delivery, 'waiting'); assert.equal(waiting.downloadUrl, undefined);
+  assert.equal((await h.download(3)).status, 409, 'a premature attachment cannot claim an unadmitted task');
+  assert.equal(h.timers.size, 0, 'only admitted, unclaimed tasks have a claim deadline');
+  await h.eventsSettled();
+  h.advance(6 * 60_000);
+  assert.equal((await h.query(3)).delivery, 'waiting'); assert.equal(fetched, 2);
+  await first.arrayBuffer();
+  assert.equal((await h.query(3)).delivery, 'ready'); assert.equal(fetched, 2);
+  assert.equal([...h.timers.values()].filter(timer => timer.delay === 60_000).length, 1);
+  const third = await h.download(3);
+  assert.equal(fetched, 3); assert.equal((await h.query(3)).delivery, 'claimed');
+  await third.arrayBuffer(); await second.arrayBuffer();
+});
+
+test('cancelling waiting and ready admissions releases capacity without fetching media', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  await h.admit(1); await h.admit(2); await h.admit(3);
+  assert.equal((await h.cancel(3)).snapshot.status, 'cancelled');
+  assert.equal((await h.cancel(1)).snapshot.status, 'cancelled');
+  assert.equal((await h.admit(4)).snapshot.delivery, 'ready');
+  assert.equal((await h.query(3)).status, 'cancelled');
+  assert.equal((await h.download(3)).status, 404);
+  assert.equal(fetched, 0);
+});
+
+test('an admitted task abandoned before claim expires and admits the next waiter', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  await h.admit(1); await h.admit(2); await h.admit(3);
+  const deadline = [...h.timers.values()].find(timer => timer.delay === 60_000);
+  h.advance(60_000); deadline.callback();
+  const abandoned = await h.query(1);
+  assert.equal(abandoned.status, 'failed'); assert.match(abandoned.error, /浏览器未接收/);
+  assert.equal((await h.query(3)).delivery, 'ready'); assert.equal(fetched, 0);
+  assert.equal((await h.download(1)).status, 404);
+});
+
+test('ready publication may precede START acknowledgement and carries an earlier revision', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  const acknowledgement = h.send({ action: 'start', admission: true, token,
+    request: { id: id(1), filename: '作品.mp4', url: 'https://cdn.test/primary.mp4' } }, 'page', true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.updates.length, 1); assert.equal(h.updates[0].delivery, 'ready');
+  assert.equal(fetched, 0);
+  h.releaseReplies();
+  const reply = await acknowledgement;
+  assert.equal(reply.snapshot.delivery, 'ready'); assert.ok(reply.snapshot.revision > h.updates[0].revision);
+  assert.equal(reply.downloadUrl, undefined);
+});
+
+test('cancellation before the START acknowledgement leaves a newer terminal snapshot and no media request', async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  const acknowledgement = h.send({ action: 'start', admission: true, token,
+    request: { id: id(1), filename: '作品.mp4', url: 'https://cdn.test/primary.mp4' } }, 'page', true);
+  await new Promise(resolve => setImmediate(resolve));
+  const cancelled = (await h.cancel(1)).snapshot;
+  h.releaseReplies();
+  const oldReply = await acknowledgement;
+  assert.equal(cancelled.status, 'cancelled'); assert.ok(cancelled.revision > oldReply.snapshot.revision);
+  assert.deepEqual(await h.query(1), cancelled);
+  assert.equal((await h.download(1)).status, 404); assert.equal(fetched, 0);
+  assert.equal((await h.admit(2)).snapshot.delivery, 'ready', 'cancellation released the reserved slot');
+});
+
+test('live revisions advance and terminal history keeps the exact final revision and timings', async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  const start = await h.admit(1), queued = await h.query(1);
+  assert.ok(queued.revision > start.snapshot.revision);
+  const response = await h.download(1), active = await h.query(1);
+  assert.ok(active.revision > queued.revision);
+  h.advance(2000); await response.arrayBuffer();
+  const finished = await h.query(1);
+  assert.equal(finished.status, 'completed'); assert.ok(finished.revision > active.revision);
+  h.advance(9000);
+  const later = await h.query(1);
+  assert.deepEqual(later, finished);
+  assert.deepEqual((await h.cancel(1)).snapshot, finished);
+  assert.deepEqual((await h.admit(1)).snapshot, finished);
+});
+
+test('terminal history does not consume pending capacity, keeps only 100 records and expires automatically', async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  for (let number = 1; number <= 101; number++) {
+    assert.equal((await h.start(number)).error, undefined);
+    assert.equal((await h.cancel(number)).snapshot.status, 'cancelled');
+  }
+  assert.equal(await h.query(1), undefined, 'the oldest terminal record is evicted');
+  assert.equal((await h.query(2)).status, 'cancelled');
+  assert.equal((await h.query(101)).status, 'cancelled');
+  assert.equal((await h.admit(102)).snapshot.delivery, 'ready', '100 historical records do not occupy active capacity');
+  await h.cancel(102);
+  assert.equal(h.timers.size, 1, 'history shares one expiration timer');
+  h.advance(600_000);
+  [...h.timers.values()][0].callback();
+  assert.equal(h.timers.size, 0, 'expiration requires no subsequent page query');
+  assert.equal(await h.query(102), undefined);
+});
+
+test('pending capacity is bounded independently from history and forget requires ownership and a terminal task', async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  for (let number = 1; number <= 100; number++) assert.equal((await h.admit(number)).error, undefined);
+  assert.match((await h.admit(101)).error, /任务过多/);
+  assert.match((await h.send({ action: 'forget', id: id(1) })).error, /无效/);
+  assert.match((await h.send({ action: 'forget', id: id(1), token: 'b'.repeat(32) })).error, /无访问权限/);
+  assert.match((await h.send({ action: 'forget', id: id(1), token })).error, /先停止下载/);
+  assert.equal((await h.query(1)).delivery, 'ready');
+  await h.cancel(1);
+  assert.match((await h.send({ action: 'forget', id: id(1), token: 'b'.repeat(32) })).error, /无访问权限/);
+  assert.equal((await h.send({ action: 'forget', id: id(1), token })).forgotten, true);
+  assert.equal(await h.query(1), undefined);
+  assert.equal((await h.admit(101)).error, undefined);
+});
+
+test('progress removes subscribers whose browsing context has disappeared', async t => {
+  const h = harness(async () => media([bytes[0], bytes[1], bytes[0]], 12)); t.after(() => h.close());
+  await h.admit(1);
+  const reader = (await h.download(1)).body.getReader();
+  await h.query(1, 'reloaded'); h.closeClient('page');
+  h.clientLookups.length = 0;
+  h.advance(301); await reader.read(); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(h.clientLookups.includes('page'));
+  h.clientLookups.length = 0;
+  h.advance(301); await reader.read(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.clientLookups.includes('page'), false);
+  assert.ok(h.clientLookups.includes('reloaded'));
+  await reader.cancel();
+});
+
 async function clientHarness(t, respond) {
   const types = await transformWithEsbuild(await readFile(new URL('../src/downloads/types.ts', import.meta.url), 'utf8'), 'types.ts', { loader: 'ts', format: 'esm' });
   const typesUrl = 'data:text/javascript;base64,' + Buffer.from(types.code).toString('base64');
   const bridge = await transformWithEsbuild(await readFile(new URL('../src/downloads/bridge.ts', import.meta.url), 'utf8'), 'bridge.ts', { loader: 'ts', format: 'esm' });
   const bridgeUrl = 'data:text/javascript;base64,' + Buffer.from(bridge.code + `\n// ${Math.random()}`).toString('base64');
+  const session = await transformWithEsbuild(await readFile(new URL('../src/downloads/session.ts', import.meta.url), 'utf8'), 'session.ts', { loader: 'ts', format: 'esm' });
+  const sessionCode = session.code.replace('"./types"', JSON.stringify(typesUrl)).replace('"./bridge"', JSON.stringify(bridgeUrl));
+  const sessionUrl = 'data:text/javascript;base64,' + Buffer.from(sessionCode + `\n// ${Math.random()}`).toString('base64');
   const client = await transformWithEsbuild(await readFile(new URL('../src/downloads/streaming.ts', import.meta.url), 'utf8'), 'streaming.ts', { loader: 'ts', format: 'esm' });
-  const code = client.code.replace('"./types"', JSON.stringify(typesUrl)).replace('"./bridge"', JSON.stringify(bridgeUrl));
+  const code = client.code.replace('"./types"', JSON.stringify(typesUrl)).replace('"./bridge"', JSON.stringify(bridgeUrl)).replace('"./session"', JSON.stringify(sessionUrl));
   const api = await import('data:text/javascript;base64,' + Buffer.from(code + `\n// ${Math.random()}`).toString('base64'));
   const originals = new Map(), storage = new Map(), messages = [], frames = [], timers = new Map();
   let listener, nextTimer = 0, registered = 0;
@@ -463,12 +622,14 @@ test('refresh queries an existing task, does not start a download, and can cance
   } : message.action === 'cancel' ? { snapshot: state('cancelled') } : undefined);
   h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: id(1), token, filename: request.filename, savedAt: Date.now() }]));
   const observed = [];
-  const restored = await h.api.reconnectStreaming(snapshot => observed.push(snapshot.status));
+  const restored = await h.api.reconnectStreaming(snapshot => observed.push(snapshot));
   assert.equal(restored[0].status, 'downloading');
   assert.equal(h.attachments.length, 0); assert.equal(h.registered, 0);
   assert.ok(!h.messages.some(message => message.action === 'start'));
   await h.api.cancelStreaming(id(1));
-  assert.deepEqual(observed, ['downloading', 'cancelled']);
+  assert.deepEqual(observed.map(snapshot => snapshot.status), ['downloading', 'downloading', 'cancelled']);
+  assert.equal(observed[1].observation, 'unknown', 'cancel intent remains unconfirmed until the Worker replies');
+  assert.equal(observed[2].observation, undefined);
 });
 
 test('missing worker task restores interruption, rather than restarting or claiming completion', async t => {
@@ -482,13 +643,19 @@ test('missing worker task restores interruption, rather than restarting or claim
 });
 
 test('cancel acknowledgement timeout does not claim the worker stopped', async t => {
-  const h = await clientHarness(t);
+  const h = await clientHarness(t, message => message.action === 'ping' ? { protocol: 1 }
+    : message.action === 'query' ? { snapshots: [state('downloading')] } : undefined);
   h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: id(1), token, filename: request.filename, savedAt: Date.now() }]));
+  const observed = [];
+  await h.api.reconnectStreaming(snapshot => observed.push(snapshot));
   const cancellation = h.api.cancelStreaming(id(1));
+  const rejected = assert.rejects(cancellation, /状态未知/);
   await flush();
   const timeout = [...h.timers.values()].find(timer => timer.delay === 8000);
   assert.ok(timeout); timeout.callback();
-  await assert.rejects(cancellation, /状态未知/);
+  await rejected;
+  assert.equal(observed.at(-1).status, 'downloading'); assert.equal(observed.at(-1).observation, 'unknown');
+  assert.equal(h.api.hasStreamingTask(id(1)), true);
 });
 
 test('reconnect query failure still exposes an unknown card and keeps observing', async t => {
@@ -530,14 +697,14 @@ test('a transient query timeout does not reject or detach a running stream', asy
   assert.equal(observed.at(-1), 'completed');
 });
 
-test('registration lookup is bounded and has not STARTed a worker task', async t => {
+test('registration lookup timeout is bounded but does not silently permit Blob fallback', async t => {
   const h = await clientHarness(t);
   h.serviceWorker.getRegistration = () => new Promise(() => {});
   const task = h.api.downloadStreaming(request, new AbortController().signal, () => {});
   await flush();
   assert.equal(h.api.hasStreamingTask(request.id), false);
   [...h.timers.values()].find(timer => timer.delay === 8000).callback();
-  await assert.rejects(task, error => error.safeToFallback === true);
+  await assert.rejects(task, error => /查询或注册超时/.test(error.message) && error.safeToFallback !== true);
   assert.equal(h.messages.length, 0);
 });
 

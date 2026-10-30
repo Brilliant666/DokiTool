@@ -76,6 +76,18 @@ test('CORS, source failures and lost START acknowledgements never start Blob', a
   }
 });
 
+for (const message of ['下载连接页面无效（404）', '下载连接页面加载超时', '下载服务版本不兼容', '下载服务注册失败']) {
+  test(`an operational SW failure cannot silently choose Blob: ${message}`, async () => {
+    const failure = new Error(message), observed = [];
+    const { manager, calls } = harness({ downloadStreaming: async () => { throw failure; } });
+    await assert.rejects(manager.run(request(), new AbortController().signal, snapshot => observed.push(snapshot)), error => error === failure);
+    assert.deepEqual(calls, ['probe']);
+    assert.equal(observed.at(-1).status, 'failed');
+    assert.equal(observed.at(-1).error, message);
+    assert.equal(observed.some(snapshot => snapshot.transport === 'browser_blob'), false);
+  });
+}
+
 test('two preparations run, cancelling a queued task never probes or transfers it', async () => {
   const probed = [], release = [];
   const { manager } = harness({ probeNative: input => { probed.push(input.id); return new Promise(resolve => release.push(resolve)); } });
