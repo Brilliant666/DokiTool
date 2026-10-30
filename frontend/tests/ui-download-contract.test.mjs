@@ -568,6 +568,143 @@ async function mockStreamingCancellation(t, cancel) {
   t.after(() => { delete globalThis.__uiDownloadStreaming; });
 }
 
+function retryRaceHarness(t) {
+  const context = harness(base), acknowledgements = [], deliveries = [];
+  // Match Pinia's real update behavior: captured task objects become stale.
+  context.store.updateDownload = (id, changes) => {
+    const index = context.store.downloads.findIndex(task => task.id === id);
+    if (index >= 0) context.store.downloads[index] = { ...context.store.downloads[index], ...changes };
+  };
+  const id = context.store.addDownload({ filename: 'retry.mp4', url: base.url, status: 'failed',
+    transport: 'browser_streaming', deliveryId: 'old-task', abortController: null });
+  globalThis.__uiDownloadStreaming = { forgetStreaming: taskId => new Promise(resolve => {
+    acknowledgements.push({ taskId, resolve });
+  }) };
+  globalThis.__uiDownloadManager = { run(request, _signal, observe) {
+    const snapshot = { id: request.id, filename: request.filename, url: request.url, transport: 'browser_streaming',
+      status: 'downloading', loaded: 0, total: 4, speed: 0, elapsed: 0, averageSpeed: 0 };
+    observe(snapshot);
+    return new Promise(resolve => deliveries.push({ request, finish() {
+      const completed = { ...snapshot, status: 'completed', loaded: 4 };
+      observe(completed); resolve(completed);
+    } }));
+  } };
+  t.after(() => {
+    deliveries.forEach(delivery => delivery.finish());
+    delete globalThis.__uiDownloadStreaming; delete globalThis.__uiDownloadManager;
+  });
+  return { ...context, id, acknowledgements, deliveries };
+}
+
+test('double retry clicks share one pending acknowledgement and start only one new delivery', async (t) => {
+  const { instance, id, acknowledgements, deliveries } = retryRaceHarness(t);
+  const first = instance.handleRetryDownload(id);
+  await waitUntil(() => acknowledgements.length === 1);
+  const second = instance.handleRetryDownload(id);
+  await new Promise(resolve => setImmediate(resolve));
+  acknowledgements[0].resolve();
+  await waitUntil(() => deliveries.length === 1);
+  acknowledgements.slice(1).forEach(ack => ack.resolve());
+  deliveries.forEach(delivery => delivery.finish());
+  await Promise.all([first, second]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(acknowledgements.length, 1);
+  assert.equal(deliveries.length, 1);
+});
+
+test('clearing while retry awaits acknowledgement cannot remove the new delivery card', async (t) => {
+  const { instance, store, id, acknowledgements, deliveries } = retryRaceHarness(t);
+  const retry = instance.handleRetryDownload(id);
+  await waitUntil(() => acknowledgements.length === 1);
+  const clear = instance.handleClearCompleted('all');
+  await new Promise(resolve => setImmediate(resolve));
+  acknowledgements[0].resolve();
+  await waitUntil(() => deliveries.length === 1);
+  acknowledgements.slice(1).forEach(ack => ack.resolve());
+  await clear;
+  assert.equal(store.downloads.length, 1);
+  assert.equal(store.downloads[0].deliveryId, deliveries[0].request.id);
+  assert.equal(store.downloads[0].status, 'downloading');
+  deliveries.forEach(delivery => delivery.finish());
+  await retry;
+});
+
+test('retrying while clear awaits acknowledgement cannot start a delivery for a removed card', async (t) => {
+  const { instance, store, id, acknowledgements, deliveries } = retryRaceHarness(t);
+  const clear = instance.handleClearCompleted(id);
+  await waitUntil(() => acknowledgements.length === 1);
+  const retry = instance.handleRetryDownload(id);
+  await new Promise(resolve => setImmediate(resolve));
+  acknowledgements.slice(1).forEach(ack => ack.resolve());
+  await new Promise(resolve => setImmediate(resolve));
+  acknowledgements[0].resolve();
+  await Promise.all([clear, retry]);
+  assert.equal(store.downloads.length, 0);
+  assert.equal(deliveries.length, 0);
+});
+
+test('retry stays exclusive while same-source recovery checks await the streaming module', async (t) => {
+  const { instance, store, id, acknowledgements, deliveries } = retryRaceHarness(t);
+  store.updateDownload(id, { nativeAvailable: true });
+  store.addDownload({ filename: 'older.mp4', url: base.url, status: 'interrupted', deliveryId: 'older-task' });
+  const concurrent = [];
+  globalThis.__uiDownloadStreaming.hasStreamingTask = () => {
+    if (!concurrent.length) {
+      concurrent.push(instance.handleRetryDownload(id), instance.handleClearCompleted(id));
+      instance.handleBrowserDownload(id);
+    }
+    return false;
+  };
+  let retrySettled = false;
+  const retry = instance.handleRetryDownload(id).then(() => { retrySettled = true; });
+  await waitUntil(() => acknowledgements.length === 1);
+  acknowledgements[0].resolve();
+  await waitUntil(() => deliveries.length === 1);
+  await new Promise(resolve => setImmediate(resolve));
+  const confirmationCount = acknowledgements.length;
+  const finishedBeforeDelivery = retrySettled;
+  acknowledgements.slice(1).forEach(ack => ack.resolve());
+  deliveries.forEach(delivery => delivery.finish());
+  await Promise.all([retry, ...concurrent]);
+  assert.equal(finishedBeforeDelivery, false, 'retry must own its asynchronous delivery until it settles');
+  assert.equal(confirmationCount, 1, 'retry must stay locked before downloadFile assigns the new attempt');
+  assert.equal(clicked.length, 0, 'source recovery must not hand off a second download while retry owns this card');
+  assert.equal(store.downloads.some(task => task.id === id), true);
+});
+
+test('clear all reserves legacy segment cards before awaiting the first Worker acknowledgement', async (t) => {
+  const { instance, store, acknowledgements } = retryRaceHarness(t);
+  const id = store.addDownload({ filename: 'segments.mp4', status: 'failed', abortController: null,
+    segments: ['https://media.test/segment-1.mp4', 'https://media.test/segment-2.mp4'] });
+  let requests = 0;
+  globalThis.fetch = async () => { requests++; throw new Error('segment unavailable'); };
+  const clear = instance.handleClearCompleted('all');
+  await waitUntil(() => acknowledgements.length === 1);
+  await instance.handleRetryDownload(id);
+  const legacy = store.downloads.find(task => task.id === id);
+  assert.equal(legacy.status, 'failed'); assert.equal(legacy.abortController, null);
+  assert.equal(legacy.deliveryId, undefined); assert.equal(legacy.transport, undefined);
+  acknowledgements[0].resolve(); await clear;
+  assert.equal(requests, 0, 'a pending clear must reserve later cards before legacy retries can reuse their identity');
+  assert.equal(store.downloads.length, 0);
+});
+
+for (const action of ['handleRetryDownload', 'handleClearCompleted']) {
+  test(`${action} ignores a late acknowledgement after the card changes attempt`, async (t) => {
+    const { instance, store, id, acknowledgements, deliveries } = retryRaceHarness(t);
+    const pending = instance[action](id);
+    await waitUntil(() => acknowledgements.length === 1);
+    const controller = new AbortController();
+    store.updateDownload(id, { deliveryId: 'new-task', abortController: controller, status: 'downloading' });
+    acknowledgements[0].resolve(); await pending;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(store.downloads.length, 1);
+    assert.equal(store.downloads[0].deliveryId, 'new-task');
+    assert.equal(store.downloads[0].abortController, controller);
+    assert.equal(deliveries.length, 0);
+  });
+}
+
 test('a completed Worker acknowledgement wins over a pending page cancellation', async (t) => {
   const { instance, store } = harness(base);
   const controller = new AbortController();

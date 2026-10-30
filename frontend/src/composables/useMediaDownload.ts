@@ -1,6 +1,7 @@
 import { type Ref } from "vue";
 import type { DownloadSnapshot, SourceProbe } from "../downloads/types";
 import type {
+  DownloadTask,
   LivePhoto,
   MediaVideo,
   MusicResource,
@@ -73,6 +74,7 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
 
   const archiveRetries = new Map<number, () => Promise<void>>();
   const videoRetries = new Map<number, () => Promise<boolean>>();
+  const pendingTaskActions = new Set<number>();
   const sourceContexts = new Map<number, {
     routes: string[];
     resultVersion: number;
@@ -81,6 +83,12 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   }>();
   const taskFor = (id: number) => videoStore.downloads.find((task) => task.id === id);
   const ownsTask = (id: number, controller: AbortController) => taskFor(id)?.abortController === controller;
+  const matchesSettledAttempt = (snapshot: DownloadTask) => {
+    const current = taskFor(snapshot.id);
+    return current && !current.observation && current.deliveryId === snapshot.deliveryId
+      && current.abortController === snapshot.abortController && current.status === snapshot.status
+      && current.transport === snapshot.transport;
+  };
   const checkAbort = (signal: AbortSignal) => {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   };
@@ -729,33 +737,46 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
   }
 
   async function handleRetryDownload(id: number): Promise<void> {
-    const task = videoStore.downloads.find((download) => download.id === id);
-    if (!task || task.observation || ["queued", "preparing", "downloading"].includes(task.status)) return;
-    if (task.deliveryId && task.transport === "browser_streaming") {
-      try {
-        const { forgetStreaming } = await import("../downloads/streaming");
-        await forgetStreaming(task.deliveryId);
-        deliveryTasks.delete(task.deliveryId);
-      } catch (error) { showToast(error instanceof Error ? error.message : "原任务状态未知，请先检查浏览器下载列表", "warning"); return; }
+    const current = taskFor(id);
+    if (!current || current.observation || pendingTaskActions.has(id) || ["queued", "preparing", "downloading"].includes(current.status)) return;
+    // Retry and clear share the old attempt's acknowledgement; only one may act.
+    const task = { ...current };
+    pendingTaskActions.add(id);
+    try {
+      if (task.deliveryId && task.transport === "browser_streaming") {
+        try {
+          const { forgetStreaming } = await import("../downloads/streaming");
+          if (!matchesSettledAttempt(task)) return;
+          await forgetStreaming(task.deliveryId);
+        } catch (error) {
+          if (matchesSettledAttempt(task)) showToast(error instanceof Error ? error.message : "原任务状态未知，请先检查浏览器下载列表", "warning");
+          return;
+        }
+      }
+      if (!matchesSettledAttempt(task)) return;
+      if (task.deliveryId) deliveryTasks.delete(task.deliveryId);
+      const retryArchive = archiveRetries.get(id);
+      if (retryArchive) { await retryArchive(); return; }
+      const retryVideo = videoRetries.get(id);
+      if (retryVideo) { await retryVideo(); return; }
+      // 分片任务重试：重走合并下载，避免退化成只下首片
+      const rawSegments = task.segments;
+      if (Array.isArray(rawSegments) && rawSegments.length > 1) {
+        const segments = rawSegments.map((s) =>
+          typeof s === "string" ? s : (s as HlsSegment),
+        );
+        await downloadSegments(segments, task.filename, id);
+        return;
+      }
+      if (task.url) await downloadFile(task.url, task.filename, id);
+    } finally {
+      pendingTaskActions.delete(id);
     }
-    const retryArchive = archiveRetries.get(id);
-    if (retryArchive) { void retryArchive(); return; }
-    const retryVideo = videoRetries.get(id);
-    if (retryVideo) { void retryVideo(); return; }
-    // 分片任务重试：重走合并下载，避免退化成只下首片
-    const rawSegments = task.segments;
-    if (Array.isArray(rawSegments) && rawSegments.length > 1) {
-      const segments = rawSegments.map((s) =>
-        typeof s === "string" ? s : (s as HlsSegment),
-      );
-      void downloadSegments(segments, task.filename, id);
-      return;
-    }
-    if (task.url) void downloadFile(task.url, task.filename, id);
   }
 
   /** Called synchronously by a real user click. Browser-owned progress is unknowable here. */
   function handleBrowserDownload(id: number): void {
+    if (pendingTaskActions.has(id)) return;
     const task = taskFor(id);
     if (!task?.nativeAvailable || !task.url || !/^(?:https?:\/\/|\/(?!\/))/i.test(task.url) || looksLikeHlsManifest(task.url)) return;
     // Opening a source is a recovery action. A stale click must not cancel a live transfer.
@@ -771,17 +792,31 @@ export function useMediaDownload(options: UseMediaDownloadOptions) {
 
   async function handleClearCompleted(id: number | "all"): Promise<void> {
     const settled = ["completed", "cancelled", "failed", "handed-off", "interrupted"];
-    const tasks = videoStore.downloads.filter(task => !task.observation && settled.includes(task.status) && (id === "all" || task.id === id));
-    for (const task of tasks) {
-      if (task.deliveryId && task.transport === "browser_streaming") {
-        try {
-          const { forgetStreaming } = await import("../downloads/streaming");
-          await forgetStreaming(task.deliveryId);
-        } catch (error) { showToast(error instanceof Error ? error.message : "原任务状态未知，暂不能清除", "warning"); continue; }
+    const tasks = videoStore.downloads.filter(task => !task.observation && !pendingTaskActions.has(task.id)
+      && settled.includes(task.status) && (id === "all" || task.id === id))
+      .map(task => ({ ...task }));
+    // Reserve the whole batch before waiting: legacy ZIP/segment retries have no delivery ID.
+    tasks.forEach(task => pendingTaskActions.add(task.id));
+    try {
+      for (const task of tasks) {
+        if (!matchesSettledAttempt(task)) continue;
+        if (task.deliveryId && task.transport === "browser_streaming") {
+          try {
+            const { forgetStreaming } = await import("../downloads/streaming");
+            if (!matchesSettledAttempt(task)) continue;
+            await forgetStreaming(task.deliveryId);
+          } catch (error) {
+            if (matchesSettledAttempt(task)) showToast(error instanceof Error ? error.message : "原任务状态未知，暂不能清除", "warning");
+            continue;
+          }
+        }
+        if (!matchesSettledAttempt(task)) continue;
+        if (task.deliveryId) deliveryTasks.delete(task.deliveryId);
+        archiveRetries.delete(task.id); videoRetries.delete(task.id); sourceContexts.delete(task.id);
+        videoStore.removeDownload(task.id);
       }
-      if (task.deliveryId) deliveryTasks.delete(task.deliveryId);
-      archiveRetries.delete(task.id); videoRetries.delete(task.id); sourceContexts.delete(task.id);
-      videoStore.removeDownload(task.id);
+    } finally {
+      tasks.forEach(task => pendingTaskActions.delete(task.id));
     }
   }
 

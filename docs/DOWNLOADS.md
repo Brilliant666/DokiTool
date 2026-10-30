@@ -304,6 +304,27 @@ concurrency, buffering, Range behavior and the confirmed UI remain unchanged.
   of the in-app browser's missing file. Final saving remains unverified.
 
 The reproduced long-response lifetime defect and queue boundary are fixed and
-verified at the stream layer. PR #6 remains draft, unmerged and undeployed until
-actual saving, download-manager Stop, refresh recovery on this final version,
-active Worker upgrades and mobile/browser-lifecycle acceptance are resolved.
+verified at the stream layer. At this implementation checkpoint, PR #6 remained
+draft, unmerged and undeployed. The owner subsequently authorized review, merge
+and production deployment with these limits disclosed. Actual saving,
+download-manager Stop, refresh recovery on this final version, active Worker
+upgrades and mobile/browser-lifecycle acceptance remain unverified; deployment
+does not turn them into passing results.
+
+### Release review, 2026-10-30
+
+The final code review identified an asynchronous retry/clear race. A delayed
+Worker acknowledgement could launch duplicate retries or remove a newer attempt
+reusing the same download card. Retry and clear now share per-card ownership;
+clearing all settled cards claims the whole batch before awaiting any reply.
+Captured attempt fields are checked again after asynchronous operations, and the
+retry retains ownership until its new call settles. This also covers legacy ZIP
+and segmented downloads without a Worker delivery ID. These changes preserve
+the layout, transport selection and backend API.
+
+Seven new regression cases reproduced the races before the fix. The final
+candidate passes all 164 frontend tests, type checking, the production build,
+four prerender checks and initial-load budgets. These race tests use the same
+object-replacement update behavior as the Pinia store. The streaming Worker is
+unchanged from the long-response validation above; file-saving and browser
+lifecycle limits remain as documented.
