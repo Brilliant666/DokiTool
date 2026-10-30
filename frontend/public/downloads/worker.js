@@ -1,8 +1,11 @@
 /* Download-only service worker. It never caches or intercepts the application/API. */
 const PROTOCOL = 1;
-const BUILD = "downloads-20261030.2";
+const BUILD = "downloads-20261030.3";
 const MAX_ACTIVE = 2;
 const IDLE_MS = 45_000;
+// Bound queueing plus source preparation below browser extended-event limits.
+// This deadline ends when attachment headers are ready, never during delivery.
+const RESPONSE_MS = 120_000;
 const STALLED_MS = 15_000;
 const SPEED_WINDOW_MS = 2000;
 const CLAIM_MS = 60_000;
@@ -65,6 +68,7 @@ function drain() {
 function settle(task, status, error) {
   if (terminal(task.state.status)) return;
   clearTimeout(task.claimTimer);
+  clearTimeout(task.responseTimer);
   task.state.status = status;
   task.state.error = error;
   task.finishedAt = Date.now();
@@ -85,7 +89,6 @@ function settle(task, status, error) {
   task.rejectSlot?.(abortError());
   if (task.hasSlot) { task.hasSlot = false; active--; }
   publish(task, true);
-  task.resolveSettled();
   drain();
 }
 
@@ -251,14 +254,13 @@ self.addEventListener("message", event => {
             startedAt, publishedAt: now,
             state: { id: request.id, transport: "browser_streaming", status: "queued", filename: cleanFilename(request.filename), url: routes[0], loaded: 0, total: 0, speed: 0, elapsed: 0, averageSpeed: 0 },
           };
-          task.settled = new Promise(resolve => { task.resolveSettled = resolve; });
           task.claimTimer = setTimeout(() => settle(task, "failed", "浏览器未接收下载，请重试或手动打开源链接"), CLAIM_MS);
           tasks.set(request.id, task);
         }
         task.subscribers.add(client.id);
         port.postMessage({ snapshot: snapshot(task), downloadUrl: `/downloads/file/${request.id}/${task.token}` });
-        // The navigation can outlive its originating page. Its lifetime is tied to the transfer.
-        await task.settled;
+        // Acknowledge setup only. Keeping this event open for the whole download
+        // triggers Chromium's extended-event deadline even while bytes flow.
         return;
       }
       if (message.action === "query") {
@@ -290,14 +292,18 @@ self.addEventListener("fetch", event => {
   }
   task.claimed = true;
   clearTimeout(task.claimTimer);
+  task.responseTimer = setTimeout(() => settle(task, "failed", task.state.status === "queued"
+    ? "等待下载空位超过 2 分钟，请在其他下载结束后重试"
+    : "下载准备超过 2 分钟（含排队），请稍后重试"), RESPONSE_MS);
   const signal = event.request.signal;
   const abort = () => settle(task, "cancelled");
   task.detachRequestAbort = () => signal.removeEventListener("abort", abort);
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
-  event.waitUntil(task.settled);
+  // Once returned, the response stream owns delivery. Do not bind the complete
+  // transfer to waitUntil: long downloads must outlive the setup event.
   event.respondWith(attachment(task).catch(error => {
     settle(task, task.controller.signal.aborted ? "cancelled" : "failed", error.message);
     return new Response("Download failed", { status: 502, headers: { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" } });
-  }));
+  }).finally(() => { clearTimeout(task.responseTimer); }));
 });

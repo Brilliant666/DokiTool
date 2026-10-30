@@ -37,6 +37,15 @@ limits transfers across tabs to two, and Blob has its stricter memory queue.
 Native transfers leave application control and cannot count toward an observable
 browser-wide concurrency budget.
 
+Worker `downloads-20261030.3` limits attachment response preparation to 120 seconds
+in total, including the cross-tab slot queue and all source attempts. Expiry fails
+that task explicitly, aborts its request and releases its slot; it never starts a
+second transport. A third cross-tab task may therefore require manual retry after
+the current transfers finish. The page manager's queue before START is unaffected.
+This deadline is cleared when attachment headers are ready and does not limit the
+duration of a streaming body. START messages finish after acknowledgement; neither
+message nor fetch events wait for the whole file through `waitUntil`.
+
 ## Ownership, recovery and failure
 
 - Every attempt receives a distinct task ID. The Worker requires a random ownership
@@ -254,7 +263,47 @@ not resolve this separate queued-fetch deadline. Closing pages, mobile lock
 screens and Safari remain outside this result. This SW finding cannot explain
 interruptions from a player's native download command, which bypasses this SW.
 
-PR #6 remains draft, unmerged and undeployed. The approximately five-minute
-interruption is a confirmed acceptance blocker; final saving and browser-specific
-behaviors above remain unverified. Production code and backend APIs were not
-changed during this investigation.
+At this investigation checkpoint, PR #6 stayed draft, unmerged and undeployed.
+The approximately five-minute interruption was a confirmed acceptance blocker;
+final saving and browser-specific behaviors above remained unverified. This
+investigation changed documentation only; the subsequent implementation is below.
+
+### Lifetime correction, 2026-10-30
+
+Worker `downloads-20261030.3` removes both whole-transfer event waits and the
+unused settled promise. A single 120-second deadline bounds the attachment's
+cross-tab queue plus all source preparation attempts. Returning the response
+clears this deadline. Expiry reports failure, aborts the source and releases its
+slot without changing transports or affecting other transfers. Streaming
+concurrency, buffering, Range behavior and the confirmed UI remain unchanged.
+
+- 157 frontend tests pass, including three new lifetime/deadline cases. Type
+  checking, production build, four prerender checks and initial-load budgets pass.
+  An independent review found no blocking implementation issue. A final wording
+  correction clarifies that source preparation includes time already queued;
+  all 29 Worker/client tests pass again after that correction.
+- The actual `.3` candidate in the in-app browser completed the paced 32 MiB
+  response in 356.3621 seconds, receiving all 33,554,432 bytes. Its source log
+  independently records a complete response. This crosses the former failure
+  point while another task times out in the queue and a second stream is cancelled.
+  The run preceded only the final preparation-error wording correction; that
+  correction changes no transfer or lifetime logic. This is response-stream
+  acceptance, not a saved-file hash check.
+- In-app browser, two active responses occupying both slots: a third cross-tab
+  attachment failed after 120.0195 seconds with zero bytes and no source GET.
+  Both existing streams continued. Cancelling the second stream closed its source
+  connection; a deliberate retry of the third task then received its complete
+  3,001-byte fixture. This is page/response cancellation, not a download-manager
+  Stop test. No automatic retry or transport fallback occurred.
+- A separate 3,001-byte static attachment baseline bypasses all DokiTool download
+  modules. In the in-app browser, the local server wrote the complete response,
+  but no matching file appeared in the specified Downloads directory. Chrome's
+  direct link visibly returned `ERR_BLOCKED_BY_CLIENT`. No browser permission or
+  security setting was changed. This confirms a Chrome client block for that
+  baseline, without identifying the responsible component or proving the cause
+  of the in-app browser's missing file. Final saving remains unverified.
+
+The reproduced long-response lifetime defect and queue boundary are fixed and
+verified at the stream layer. PR #6 remains draft, unmerged and undeployed until
+actual saving, download-manager Stop, refresh recovery on this final version,
+active Worker upgrades and mobile/browser-lifecycle acceptance are resolved.

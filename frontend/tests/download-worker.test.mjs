@@ -38,7 +38,7 @@ function harness(fetcher) {
   };
   const query = async (number, client = 'page') => (await send({ action: 'query', tasks: [{ id: id(number), token }] }, client)).snapshots[0];
   const cancel = number => send({ action: 'cancel', id: id(number), token });
-  return { start, send, download, query, cancel, timers, updates, advance: ms => { now += ms; }, async close() {
+  return { start, send, download, query, cancel, timers, updates, eventsSettled: () => Promise.all(lifetime), advance: ms => { now += ms; }, async close() {
     for (let number = 1; number <= 5; number++) await cancel(number);
     await Promise.all(lifetime);
   } };
@@ -67,6 +67,22 @@ test('streams with backpressure, UTF-8 filename and truthful completion', async 
   assert.equal((await reader.read()).done, true);
   assert.equal((await h.query(1)).status, 'completed');
   assert.equal((await h.query(1)).loaded, 8);
+});
+
+test('setup events settle before a stream that remains active for six minutes', { timeout: 1500 }, async t => {
+  const h = harness(async () => media()); t.after(() => h.close());
+  await h.start(1);
+  await h.eventsSettled();
+  assert.equal((await h.query(1)).status, 'queued');
+  const response = await h.download(1);
+  await h.eventsSettled();
+  assert.equal(h.timers.size, 0, 'no setup deadline may remain on the active response');
+  h.advance(6 * 60_000);
+  assert.equal((await h.query(1)).status, 'downloading');
+  assert.equal((await response.arrayBuffer()).byteLength, 8);
+  const finished = await h.query(1);
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.transferElapsed, 360);
 });
 
 test('requires a same-origin page and ownership token, including after refresh', async t => {
@@ -184,6 +200,67 @@ test('at most two complete-file transfers run, queued tasks are cancellable', as
   await third.body.cancel(); await second.body.cancel();
 });
 
+test('queue expiry fails only the waiting task without fetching it or blocking later work', { timeout: 1500 }, async t => {
+  let fetched = 0;
+  const h = harness(async () => { fetched++; return media(); }); t.after(() => h.close());
+  await h.start(1); await h.start(2); await h.start(3);
+  const first = await h.download(1), second = await h.download(2);
+  const waiting = h.download(3);
+  await new Promise(resolve => setImmediate(resolve));
+  const deadline = [...h.timers.values()].find(timer => timer.delay === 120_000);
+  assert.ok(deadline);
+  h.advance(120_000); deadline.callback();
+  assert.equal((await waiting).status, 502);
+  const expired = await h.query(3);
+  assert.equal(expired.status, 'failed');
+  assert.match(expired.error, /等待下载空位超过 2 分钟/);
+  assert.equal(fetched, 2, 'an expired queued attachment must never fetch its source');
+  assert.equal((await h.query(1)).status, 'downloading');
+  assert.equal((await h.query(2)).status, 'downloading');
+  assert.equal((await first.arrayBuffer()).byteLength, 8);
+  await h.start(4);
+  assert.equal((await (await h.download(4)).arrayBuffer()).byteLength, 8);
+  assert.equal(fetched, 3, 'the expired task must not re-enter the released slot');
+  assert.equal((await second.arrayBuffer()).byteLength, 8);
+  assert.equal(h.timers.size, 0);
+});
+
+test('one response deadline covers all preparation routes and aborts without another retry', { timeout: 1500 }, async t => {
+  const attempts = [];
+  const h = harness(async (url, options) => {
+    attempts.push({ url, signal: options.signal });
+    return url.endsWith('/next.mp4') ? media() : new Promise(() => {});
+  }); t.after(() => h.close());
+  await h.start(1, ['https://cdn.test/backup.mp4', 'https://cdn.test/last.mp4']);
+  const preparing = h.download(1);
+  await new Promise(resolve => setImmediate(resolve));
+  const deadline = [...h.timers.values()].find(timer => timer.delay === 120_000);
+  assert.ok(deadline);
+  // Two source attempts time out individually; their retries must not reset the
+  // overall header deadline to another two minutes.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    h.advance(45_000);
+    const idle = [...h.timers.values()].find(timer => timer.delay === 45_000);
+    assert.ok(idle); idle.callback();
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(attempts.length, 3);
+  assert.ok(attempts[0].signal.aborted && attempts[1].signal.aborted);
+  assert.equal([...h.timers.values()].find(timer => timer.delay === 120_000), deadline);
+  h.advance(30_000); deadline.callback();
+  assert.equal((await preparing).status, 502);
+  const failed = await h.query(1);
+  assert.equal(failed.status, 'failed', 'deadline expiry is not user cancellation');
+  assert.match(failed.error, /下载准备超过 2 分钟（含排队）/);
+  assert.equal(failed.elapsed, 120);
+  assert.ok(attempts.every(attempt => attempt.signal.aborted));
+  assert.equal(attempts.length, 3, 'expiry must not repeat a source or silently start another route');
+  assert.equal(h.timers.size, 0);
+  await h.start(2, [], { url: 'https://cdn.test/next.mp4' });
+  assert.equal((await (await h.download(2)).arrayBuffer()).byteLength, 8);
+  assert.equal((await h.query(2)).status, 'completed', 'failed preparation releases its slot');
+});
+
 test('only pending upstream reads time out; a failed stream never starts another route', async t => {
   let read = 0, fetched = 0;
   const h = harness(async () => {
@@ -245,7 +322,7 @@ test('finished elapsed time and average speed remain stable across later queries
 test('worker reports its build and separates total elapsed time from transfer speed', async t => {
   const h = harness(async () => media()); t.after(() => h.close());
   const ping = await h.send({ action: 'ping' });
-  assert.equal(ping.workerBuild, 'downloads-20261030.2');
+  assert.equal(ping.workerBuild, 'downloads-20261030.3');
   await h.start(1, [], { startedAt: 995_000 });
   assert.equal((await h.query(1)).elapsed, 5);
   assert.equal((await h.query(1)).transferElapsed, 0);
