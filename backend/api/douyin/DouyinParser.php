@@ -360,12 +360,12 @@ class DouyinParser
             $main = $this->ensureVideoMimeType($main);
 
             $backups = [];
-            $seen = $main ? [$this->candidateDeliveryKey($main, $videoInfo['metadata']) => true] : [];
+            $seen = $main ? [$this->candidateObservationKey($main, $videoInfo['metadata']) => true] : [];
             foreach ($videoInfo['backup'] as $candidate) {
                 $item = is_string($candidate) ? ['url' => $candidate] : $candidate;
                 $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $item['url'] ?? '')));
                 if (!$converted) continue;
-                $key = $this->candidateDeliveryKey($converted, $item);
+                $key = $this->candidateObservationKey($converted, $item);
                 if (isset($seen[$key])) continue;
                 $item['url'] = $converted;
                 $backups[] = $item;
@@ -665,6 +665,18 @@ class DouyinParser
     {
         return json_encode([$url, $metadata['private_media_identity'] ?? $metadata['private_representation_id'] ?? null,
             $metadata['private_delivery_kind'] ?? 'file', $metadata['private_audio_id'] ?? null], JSON_UNESCAPED_SLASHES);
+    }
+
+    /** Deduplicate observations, not media facts. Different observations of the
+     * same source/pairing must reach the adapter's shared metadata aggregation.
+     * This key is local to formatting and never becomes a variant/source ID.
+     */
+    private function candidateObservationKey(string $url, array $metadata): string
+    {
+        $delivery = $this->candidateDeliveryKey($url, $metadata);
+        unset($metadata['url'], $metadata['quality'], $metadata['label'], $metadata['private_representation_id']);
+        ksort($metadata, SORT_STRING);
+        return json_encode([$delivery, $metadata], JSON_UNESCAPED_SLASHES);
     }
 
     /** Metadata belongs to this candidate, never copied from a different quality. */

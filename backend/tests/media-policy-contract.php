@@ -44,6 +44,56 @@ policyCheck('source expiry and availability do not change the language-protected
     && array_column($languageViews['valid']['variants'], 'id') === array_column($languageViews['unavailable']['variants'], 'id')
     && $languageViews['valid']['default'] === $languageViews['expired']['default']
     && $languageViews['valid']['default'] === $languageViews['unavailable']['default']);
+$locatedLanguageViews = [];
+foreach (['valid', 'expired'] as $state) {
+    foreach (['variant', 'resource'] as $location) {
+        $facts = ['audio_language' => 'en', 'audio_language_role' => 'main'];
+        $main = policyMux(['width' => 1920, 'height' => 1080], $location === 'resource' ? $facts : [], $location === 'variant' ? $facts : []);
+        $main['id'] = 'main-en';
+        if ($state === 'expired') foreach ($main['delivery']['resources'] as &$resource) $resource['delivery']['sources'][0]['expires_at'] = '2000-01-01T00:00:00Z';
+        unset($resource);
+        $variants = [$file, $main, policyMux(audio: ['audio_language' => 'ja'])];
+        $view = $locatedLanguageViews[$state][$location] = policyView($variants);
+        $diagnostic = policyView($variants, true);
+        policyCheck($state . ' main language on ' . $location . ' protects the associated Japanese mux',
+            in_array('separated', array_column($view['variants'], 'id'), true) && count($diagnostic['variants']) === 3);
+        policyCheck($state . ' main language on ' . $location . ' preserves the complete default', $view['default'] === $diagnostic['default']);
+    }
+    policyCheck($state . ' language facts at variant or resource yield the same public inventory',
+        array_column($locatedLanguageViews[$state]['variant']['variants'], 'id') === array_column($locatedLanguageViews[$state]['resource']['variants'], 'id'));
+}
+$conflictLanguageViews = [];
+foreach (['variant', 'resource'] as $location) {
+    $facts = ['audio_language_role' => 'main', 'field_conflicts' => ['audio_language' => [
+        ['value' => 'en', 'evidence' => 'upstream'], ['value' => 'fr', 'evidence' => 'probe'],
+    ]]];
+    $main = policyMux(['width' => 1920, 'height' => 1080], $location === 'resource' ? $facts : [], $location === 'variant' ? $facts : []);
+    $main['id'] = 'conflicting-main';
+    $conflictLanguageViews[$location] = policyView([$file, $main, policyMux(audio: ['audio_language' => 'ja'])]);
+    policyCheck('conflicting language evidence on ' . $location . ' remains conservative in public and debug',
+        count($conflictLanguageViews[$location]['variants']) === 3
+        && count(policyView([$file, $main, policyMux(audio: ['audio_language' => 'ja'])], true)['variants']) === 3);
+}
+policyCheck('conflicting parent and resource language facts protect the same inventory',
+    array_column($conflictLanguageViews['variant']['variants'], 'id') === array_column($conflictLanguageViews['resource']['variants'], 'id'));
+foreach ([false, true] as $reverse) {
+    $mainFacts = ['audio_language' => 'en', 'audio_language_role' => 'main'];
+    $alternateFacts = ['audio_language' => 'fr', 'audio_language_role' => 'alternate'];
+    $main = policyMux(['width' => 1920, 'height' => 1080], $reverse ? $mainFacts : $alternateFacts, $reverse ? $alternateFacts : $mainFacts);
+    $main['id'] = 'cross-layer-main';
+    policyCheck('cross-layer conflicts retain main language evidence regardless of layer order ' . (int)$reverse,
+        count(policyView([$file, $main, policyMux(audio: ['audio_language' => 'ja'])])['variants']) === 3);
+}
+$multi = policyMux(audio: ['audio_language' => 'ja'], metadata: ['audio_language' => 'en', 'audio_language_role' => 'main']);
+$otherAudio = $multi['delivery']['resources'][1]; $otherAudio['id'] = 'other-audio';
+$otherAudio['metadata']['audio_language'] = 'de';
+$multi['delivery']['resources'][] = $otherAudio;
+policyCheck('unassignable parent audio facts conservatively retain the multiple-track mux', count(policyView([$file, $multi])['variants']) === 2);
+$multi['delivery']['resources'][2]['metadata']['audio_language'] = 'en';
+$multi['delivery']['resources'][2]['metadata']['audio_language_role'] = 'main';
+$multi['id'] = 'multiple-audio';
+policyCheck('explicitly associated main audio still protects a different language in a multiple-track work',
+    count(policyView([$file, $multi, policyMux(audio: ['audio_language' => 'ja'])])['variants']) === 3);
 policyCheck('expired complete file cannot remove a processing version', count(policyView([policyFile(source: ['expires_at' => gmdate('c', time() - 60)]), $mux])['variants']) === 2);
 policyCheck('explicitly silent file cannot replace a complete audio-video combination', count(policyView([policyFile(metadata: ['has_audio' => false]), $mux])['variants']) === 2);
 policyCheck('mux-only work remains processing-required with a null complete default', policyView([$mux])['default_unavailable_reason'] === 'processing_required');

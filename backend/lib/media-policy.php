@@ -21,6 +21,35 @@ function snapPolicyMetadata(array $variant, array $resource, array $fields): arr
     return [$merged, $conflict];
 }
 
+/** Retain all confirmed possibilities; a conflicting observation is not absence. */
+function snapPolicyFactValues(array $metadata, string $field): array
+{
+    $values = array_column($metadata['field_conflicts'][$field] ?? [], 'value');
+    if (isset($metadata[$field])) $values[] = $metadata[$field];
+    return array_values(array_unique($values));
+}
+
+/** Evidence collection and coverage share the same actual audio association. */
+function snapPolicyAudioMetadata(array $variant): array
+{
+    $resources = array_values(array_filter($variant['delivery']['resources'] ?? [], static fn ($resource) => $resource['role'] === 'audio'));
+    $parent = $variant['metadata'] ?? [];
+    $fields = ['audio_language', 'audio_language_role', 'audio_channels'];
+    $ambiguous = count($resources) > 1 && (bool)array_intersect($fields, array_merge(array_keys($parent), array_keys($parent['field_conflicts'] ?? [])));
+    // A shared summary cannot assign one language/role to several distinct tracks.
+    if ($ambiguous) $parent = [];
+    $tracks = []; $conflict = $ambiguous;
+    foreach ($resources as $resource) {
+        $facts = $resource['metadata'] ?? [];
+        [$metadata, $inconsistent] = snapPolicyMetadata($parent, $facts, $fields);
+        $tracks[] = ['metadata' => $metadata,
+            'languages' => array_unique(array_merge(snapPolicyFactValues($parent, 'audio_language'), snapPolicyFactValues($facts, 'audio_language'))),
+            'roles' => array_unique(array_merge(snapPolicyFactValues($parent, 'audio_language_role'), snapPolicyFactValues($facts, 'audio_language_role')))];
+        $conflict = $conflict || $inconsistent;
+    }
+    return [$tracks, $conflict];
+}
+
 /** No candidate is removed unless one currently usable complete file covers it. */
 function snapFilterItemVariants(array $item, int $now): array
 {
@@ -32,31 +61,21 @@ function snapFilterItemVariants(array $item, int $now): array
     $mainLanguages = [];
     // Delivery expiry removes replacement eligibility, not confirmed media facts.
     foreach ($completeFiles as $file) {
-        $metadata = $file['metadata'] ?? [];
-        if (isset($metadata['audio_language'])) $mainLanguages[] = strtolower($metadata['audio_language']);
-        foreach ($metadata['field_conflicts']['audio_language'] ?? [] as $fact) $mainLanguages[] = strtolower($fact['value']);
+        foreach (snapPolicyFactValues($file['metadata'] ?? [], 'audio_language') as $language) $mainLanguages[] = strtolower($language);
     }
-    foreach ($item['variants'] as $variant) foreach ($variant['delivery']['resources'] ?? [] as $resource) {
-        $metadata = $resource['metadata'] ?? [];
-        $main = ($metadata['audio_language_role'] ?? '') === 'main'
-            || in_array('main', array_column($metadata['field_conflicts']['audio_language_role'] ?? [], 'value'), true);
-        if ($resource['role'] !== 'audio' || !$main) continue;
-        if (isset($metadata['audio_language'])) $mainLanguages[] = strtolower($metadata['audio_language']);
-        foreach ($metadata['field_conflicts']['audio_language'] ?? [] as $fact) $mainLanguages[] = strtolower($fact['value']);
+    foreach ($item['variants'] as $variant) {
+        [$tracks] = snapPolicyAudioMetadata($variant);
+        foreach ($tracks as $track) if (in_array('main', $track['roles'], true)) {
+            foreach ($track['languages'] as $language) $mainLanguages[] = strtolower($language);
+        }
     }
     $item['variants'] = array_values(array_filter($item['variants'], static function ($mux) use ($files, $mainLanguages) {
         if (($mux['state'] ?? 'ready') !== 'ready' || $mux['delivery']['kind'] !== 'mux') return true;
         $videoResources = array_values(array_filter($mux['delivery']['resources'], static fn ($resource) => $resource['role'] === 'video'));
-        $audioResources = array_values(array_filter($mux['delivery']['resources'], static fn ($resource) => $resource['role'] === 'audio'));
-        if (count($videoResources) !== 1 || !$audioResources) return true;
+        [$audio, $audioConflict] = snapPolicyAudioMetadata($mux);
+        if (count($videoResources) !== 1 || !$audio) return true;
         [$video, $conflict] = snapPolicyMetadata($mux['metadata'] ?? [], $videoResources[0]['metadata'] ?? [], ['width', 'height', 'fps', 'hdr_type']);
-        $audio = []; $audioFields = ['audio_language', 'audio_language_role', 'audio_channels'];
-        foreach ($audioResources as $resource) {
-            if (count($audioResources) > 1 && array_intersect($audioFields, array_keys($mux['metadata'] ?? []))) return true;
-            [$metadata, $audioConflict] = snapPolicyMetadata($mux['metadata'] ?? [], $resource['metadata'] ?? [], $audioFields);
-            $conflict = $conflict || $audioConflict; $audio[] = $metadata;
-        }
-        if ($conflict) return true;
+        if ($conflict || $audioConflict) return true;
         foreach ($files as $file) {
             // Conflicting facts cannot establish that this file covers a mux.
             if (array_intersect(['width', 'height', 'fps', 'hdr_type', 'audio_language', 'audio_language_role', 'audio_channels', 'has_audio'], array_keys($file['metadata']['field_conflicts'] ?? []))) continue;
@@ -68,7 +87,8 @@ function snapFilterItemVariants(array $item, int $now): array
             $hdr = $video['hdr_type'] ?? null;
             if ($hdr !== null && $hdr !== 'sdr' && ($hdr === 'hdr_unknown' || ($complete['hdr_type'] ?? null) !== $hdr)) continue;
             $covered = true;
-            foreach ($audio as $track) {
+            foreach ($audio as $entry) {
+                $track = $entry['metadata'];
                 if (($track['audio_channels'] ?? 0) > 2 && ($complete['audio_channels'] ?? 0) < $track['audio_channels']) { $covered = false; break; }
                 $language = isset($track['audio_language']) ? strtolower($track['audio_language']) : null;
                 $differentLanguage = $language !== null && (($track['audio_language_role'] ?? '') === 'alternate'

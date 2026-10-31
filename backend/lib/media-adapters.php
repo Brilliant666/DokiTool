@@ -164,6 +164,26 @@ function snapMergeMetadata(array $existing, array $additional): array
     return $merged;
 }
 
+/** Individually legal observations can contradict across fields after merging.
+ * Keep the identity visible, but do not invent audio or publish an invalid file.
+ */
+function snapDeferAudioContradiction(array $variant): array
+{
+    if (($variant['state'] ?? 'ready') !== 'ready') return $variant;
+    $metadataLayers = [$variant['metadata'] ?? []];
+    foreach ($variant['delivery']['resources'] ?? [] as $resource) $metadataLayers[] = $resource['metadata'] ?? [];
+    foreach ($metadataLayers as $metadata) {
+        $fields = array_merge(array_keys($metadata), array_keys($metadata['field_conflicts'] ?? []));
+        if (($metadata['has_audio'] ?? null) === false
+            && array_intersect($fields, ['audio_codec', 'audio_language', 'audio_language_role', 'audio_channels', 'sample_rate_hz', 'audio_bitrate_bps'])) {
+            return ['id' => $variant['id'], 'state' => 'deferred', 'reason' => [
+                'code' => 'CONFLICTING_MEDIA_FACTS', 'message' => '同一媒体的音轨信息互相矛盾，无法确认可交付版本，暂不可下载',
+            ]] + array_intersect_key($variant, array_flip(['label', 'provenance']));
+        }
+    }
+    return $variant;
+}
+
 /** Only an upstream representation identity can join flattened CDN alternatives.
  * Similar geometry/codec/bitrate does not establish byte-equivalent media.
  */
@@ -233,14 +253,18 @@ function snapFileVariants(array $candidates): array
             continue;
         }
         foreach ($audioOptions as $audio) {
+            $combined = $variant; $combined['id'] .= '-' . $audio['id'];
+            if (($audio['state'] ?? 'ready') === 'deferred') {
+                $complete[] = ['id' => $combined['id'], 'state' => 'deferred', 'reason' => $audio['reason']];
+                continue;
+            }
             $resource = ['id' => 'audio', 'role' => 'audio', 'delivery' => $audio['delivery']];
             if (isset($audio['metadata'])) $resource['metadata'] = $audio['metadata'];
-            $combined = $variant; $combined['id'] .= '-' . $audio['id'];
             $combined['delivery'] = ['kind' => 'mux', 'resources' => [$video, $resource], 'output' => ['container' => 'mp4', 'extension' => 'mp4', 'mime_type' => 'video/mp4']];
             $complete[] = $combined;
         }
     }
-    return $complete;
+    return array_map('snapDeferAudioContradiction', $complete);
 }
 
 function snapResolveUrl(string $url, string $itemId): string
