@@ -173,6 +173,25 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   their existing pipelines. ZIP and segmented downloads are not claimed to be
   streaming or refresh-resumable by this change.
 
+### Cancellation diagnostics
+
+Worker build `downloads-20261031.2` preserves a fixed cancellation cause in the
+existing terminal snapshot `error` field. The first terminal event wins:
+
+| Detail | Observed event |
+| --- | --- |
+| 页面请求取消下载 | The Worker received the page's cancel request. |
+| 浏览器停止接收下载数据 | The attachment response stream was cancelled by its consumer. |
+| 浏览器中止下载请求 | The attachment request's abort signal fired. |
+
+These messages identify an event, not the underlying browser policy or the user's
+intent. Raw cancellation reasons, task tokens and signed URLs are not recorded.
+The manager and download card preserve the confirmed cause, including after
+refresh recovery; older records without a cause remain unchanged. Unconfirmed
+cancellation still remains unknown. This diagnostic change does not change
+timeouts, source selection, fallbacks, cancellation semantics or Worker activation.
+It does not by itself establish that the production download failure is fixed.
+
 ## Download panel
 
 The summary bar expands a bounded, internally scrolling task list. Active and

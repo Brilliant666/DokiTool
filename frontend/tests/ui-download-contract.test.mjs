@@ -513,6 +513,38 @@ test('a late unknown-start error cannot erase the observed active transfer progr
   assert.equal(store.downloads[0].loaded, 1024); assert.equal(store.downloads[0].total, 4096);
 });
 
+test('a confirmed cancellation diagnostic survives the page download catch', async t => {
+  const { instance, store } = harness(base);
+  const reason = 'worker confirmed cancellation';
+  globalThis.__uiDownloadManager = { async run(request, _signal, observe) {
+    observe({ id: request.id, transport: 'browser_streaming', status: 'cancelled', url: base.url, filename: request.filename,
+      loaded: 1024, total: 4096, elapsed: 6, speed: 0, averageSpeed: 256, error: reason });
+    throw new DOMException('Aborted', 'AbortError');
+  } };
+  t.after(() => { delete globalThis.__uiDownloadManager; });
+  const id = store.addDownload({ filename: 'sample.mp4', url: base.url });
+  await instance.downloadFile(base.url, 'sample.mp4', id);
+  assert.equal(store.downloads[0].status, 'cancelled');
+  assert.equal(store.downloads[0].error, reason);
+  assert.equal(store.downloads[0].observation, undefined);
+  assert.equal(store.downloads[0].abortController, null);
+});
+
+test('local cancellation cannot reuse an earlier failure as a confirmed cancellation diagnostic', async t => {
+  const { instance, store } = harness(base);
+  globalThis.__uiDownloadManager = { async run(request, _signal, observe) {
+    observe({ id: request.id, transport: 'browser_streaming', status: 'downloading', url: base.url, filename: request.filename,
+      loaded: 1024, total: 4096, elapsed: 6, speed: 256, averageSpeed: 256, error: 'earlier failure' });
+    store.cancelDownload(id);
+    throw new DOMException('Aborted', 'AbortError');
+  } };
+  t.after(() => { delete globalThis.__uiDownloadManager; });
+  const id = store.addDownload({ filename: 'sample.mp4', url: base.url });
+  await instance.downloadFile(base.url, 'sample.mp4', id);
+  assert.equal(store.downloads[0].status, 'cancelled');
+  assert.equal(store.downloads[0].error, null);
+});
+
 test('confirmed loss of a Worker task wins over a late cancellation error', async (t) => {
   const { instance, store } = harness(base);
   const id = store.addDownload({ filename: 'sample.mp4', url: base.url, status: 'downloading', transport: 'browser_streaming',

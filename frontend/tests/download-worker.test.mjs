@@ -221,6 +221,51 @@ test('a browser cancel releases the worker-owned transfer', async t => {
   assert.equal((await h.download(1)).status, 404, 'the attachment URL cannot start a duplicate transfer');
 });
 
+for (const [entry, expected] of [
+  ['rpc', '页面请求取消下载'],
+  ['stream', '浏览器停止接收下载数据'],
+  ['request', '浏览器中止下载请求'],
+]) {
+  test(`${entry} cancellation keeps its first fixed reason through later signals and durable recovery`, async t => {
+    const db = fakeIndexedDB();
+    const h = harness(async () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(bytes[0]); },
+    }), { headers: { 'content-type': 'video/mp4', 'content-length': '8' } }), db);
+    t.after(() => h.close());
+    await h.start(1);
+    const controller = new AbortController();
+    const reader = (await h.download(1, token, controller.signal)).body.getReader();
+    await reader.read();
+    const pending = reader.read().then(value => ({ value }), error => ({ error }));
+    await new Promise(resolve => setImmediate(resolve));
+    const privateReason = 'PRIVATE_CANCEL_REASON https://cdn.test/private?token=secret';
+    if (entry === 'rpc') await h.cancel(1);
+    else if (entry === 'stream') await reader.cancel(privateReason);
+    else controller.abort(privateReason);
+    const first = await h.query(1);
+    assert.equal(first.status, 'cancelled');
+    assert.equal(first.error, expected);
+    assert.equal(first.loaded, 4);
+    const readResult = await pending;
+    if (entry === 'stream') assert.equal(readResult.value.done, true);
+    else assert.equal(readResult.error.name, 'AbortError');
+
+    // Upstream read rejection, request abort and repeated page cancellation must
+    // preserve the original terminal snapshot, not replace its diagnostic.
+    controller.abort(privateReason);
+    assert.deepEqual((await h.cancel(1)).snapshot, first);
+    assert.deepEqual(await h.query(1, 'reloaded'), first);
+    assert.equal(db.records.get(id(1)).snapshot.error, expected);
+    assert.ok(!JSON.stringify(db.records.get(id(1))).includes('PRIVATE_CANCEL_REASON'));
+    const restarted = harness(async () => { throw new Error('recovery must not fetch media'); }, db);
+    t.after(() => restarted.close());
+    const restored = await restarted.query(1);
+    assert.equal(restored.status, 'cancelled');
+    assert.equal(restored.error, expected);
+    assert.equal(restored.revision, first.revision);
+  });
+}
+
 test('aborted attachment requests release occupied slots even without a stream cancel callback', async t => {
   const upstreamSignals = [];
   const h = harness(async (_url, options) => { upstreamSignals.push(options.signal); return media(); }); t.after(() => h.close());
@@ -418,7 +463,7 @@ test('finished elapsed time and average speed remain stable across later queries
 test('worker reports its build and separates total elapsed time from transfer speed', async t => {
   const h = harness(async () => media()); t.after(() => h.close());
   const ping = await h.send({ action: 'ping' });
-  assert.equal(ping.workerBuild, 'downloads-20261031.1');
+  assert.equal(ping.workerBuild, 'downloads-20261031.2');
   assert.equal(ping.capabilities.admission, true);
   await h.start(1, [], { startedAt: 995_000 });
   assert.equal((await h.query(1)).elapsed, 5);

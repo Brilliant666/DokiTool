@@ -175,7 +175,8 @@ onBeforeUnmount(stopCollapseTimer)
               title="打开源文件，由浏览器处理；本站不再显示该次下载速度">
               打开源链接
             </button>
-            <div v-if="['failed', 'interrupted'].includes(item.status) && item.error" class="text-xs text-red-500 mt-1">
+            <div v-if="['failed', 'interrupted', 'cancelled'].includes(item.status) && item.error" class="text-xs mt-1"
+              :class="item.status === 'cancelled' ? 'text-slate-500 dark:text-slate-400' : 'text-red-500'">
               {{ item.error }}
             </div>
           </details>

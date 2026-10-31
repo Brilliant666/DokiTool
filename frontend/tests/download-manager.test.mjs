@@ -125,3 +125,26 @@ test('unconfirmed cancellation retains unknown state rather than claiming cancel
   assert.equal(states.at(-1), 'interrupted');
   assert.ok(!calls.includes('blob'));
 });
+
+test('a confirmed transport cancellation retains its diagnostic after AbortError', async () => {
+  const states = [], reason = 'worker confirmed cancellation';
+  const { manager } = harness({ downloadStreaming: async (input, _signal, observe) => {
+    observe({ ...done(input), status: 'cancelled', error: reason });
+    throw new DOMException('Aborted', 'AbortError');
+  } });
+  await assert.rejects(manager.run(request(), new AbortController().signal, state => states.push(state)), { name: 'AbortError' });
+  assert.equal(states.at(-1).status, 'cancelled');
+  assert.equal(states.at(-1).error, reason);
+});
+
+test('cancellation never borrows a failure or an uncertain snapshot diagnostic', async () => {
+  for (const previous of [{ status: 'failed' }, { status: 'downloading' }, { status: 'cancelled', observation: 'unknown' }]) {
+    const states = [];
+    const { manager } = harness({ downloadStreaming: async (input, _signal, observe) => {
+      observe({ ...done(input), ...previous, error: 'not a confirmed cancellation reason' });
+      throw new DOMException('Aborted', 'AbortError');
+    } });
+    await assert.rejects(manager.run(request(), new AbortController().signal, state => states.push(state)), { name: 'AbortError' });
+    assert.equal(states.at(-1).error, undefined);
+  }
+});

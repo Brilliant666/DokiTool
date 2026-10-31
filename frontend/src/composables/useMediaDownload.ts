@@ -383,6 +383,7 @@ export function useMediaDownload({
       0,
       3,
     );
+    let cancellationReason: string | undefined;
     try {
       const { downloadManager } = await import("../downloads/manager");
       checkAbort(controller.signal);
@@ -393,8 +394,12 @@ export function useMediaDownload({
           if (
             taskFor(downloadId)?.deliveryId === deliveryId &&
             taskFor(downloadId)?.status !== "handed-off"
-          )
+          ) {
+            // Use this attempt's confirmed delivery, never a previous task error.
+            cancellationReason = snapshot.status === "cancelled" && !snapshot.observation
+              ? snapshot.error : undefined;
             applyDelivery(snapshot);
+          }
         },
       );
       if (!ownsTask(downloadId, controller)) return;
@@ -450,7 +455,7 @@ export function useMediaDownload({
         statusText: cancelled ? "已取消" : "下载失败",
         speed: 0,
         error: cancelled
-          ? null
+          ? cancellationReason ?? null
           : error instanceof Error
             ? error.message
             : "下载失败",

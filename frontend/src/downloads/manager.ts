@@ -71,8 +71,10 @@ export function createDownloadManager(implementations: Transports = transports) 
     } catch (error) {
       if (error instanceof Error && error.name === "StreamingStateUnknownError") throw error;
       const cancelled = signal.aborted || error instanceof Error && error.name === "AbortError";
+      // Only the transport's confirmed terminal snapshot owns a cancellation reason.
+      const cancellationReason = snapshot.status === "cancelled" && !snapshot.observation ? snapshot.error : undefined;
       publish({ ...snapshot, speed: 0, status: cancelled ? "cancelled" : "failed",
-        error: cancelled ? undefined : error instanceof Error ? error.message : "下载失败" });
+        error: cancelled ? cancellationReason : error instanceof Error ? error.message : "下载失败" });
       throw error;
     } finally { release?.(); }
   }
