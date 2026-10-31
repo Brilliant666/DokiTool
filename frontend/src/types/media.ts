@@ -30,6 +30,8 @@ export interface MediaMetadata {
   mime_type?: string;
   evidence?: "upstream" | "probe" | "mixed" | "unknown";
   field_evidence?: Record<string, "upstream" | "probe">;
+  /** No scalar fact is authoritative while this media identity has conflicting observations. */
+  field_conflicts?: Record<string, { value: number | string | boolean; evidence: "upstream" | "probe" }[]>;
 }
 export interface FileDelivery {
   kind: "file";

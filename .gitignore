@@ -101,6 +101,7 @@
 !/backend/tests/contract.php
 !/backend/tests/douyin-media-contract.php
 !/backend/tests/http-smoke.php
+!/backend/tests/media-merge-contract.php
 !/backend/tests/media-policy-contract.php
 !/backend/tests/media-policy-fixtures.php
 !/backend/tests/media-policy-http-router.php

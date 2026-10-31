@@ -126,6 +126,44 @@ function snapCandidateMetadata(array $raw): array
     return $metadata;
 }
 
+/** A proven media identity shares facts, not input order. Missing facts can be
+ * filled, but contradictory observations must remain visible and non-authoritative.
+ */
+function snapMergeMetadata(array $existing, array $additional): array
+{
+    $observations = [];
+    foreach ([$existing, $additional] as $metadata) {
+        foreach ($metadata as $field => $value) {
+            if (in_array($field, ['evidence', 'field_evidence', 'field_conflicts'], true)) continue;
+            $evidence = $metadata['field_evidence'][$field] ?? $metadata['evidence'] ?? 'upstream';
+            $observations[$field][] = ['value' => $value, 'evidence' => $evidence];
+        }
+        foreach ($metadata['field_conflicts'] ?? [] as $field => $facts) $observations[$field] = array_merge($observations[$field] ?? [], $facts);
+    }
+    ksort($observations, SORT_STRING);
+    $merged = []; $conflicts = []; $fieldEvidence = [];
+    foreach ($observations as $field => $facts) {
+        $unique = [];
+        foreach ($facts as $fact) {
+            $key = json_encode($fact['value'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            // Agreement with a probe strengthens the same fact. It never erases
+            // a different upstream observation about this identity.
+            if (!isset($unique[$key]) || $fact['evidence'] === 'probe') $unique[$key] = $fact;
+        }
+        ksort($unique, SORT_STRING);
+        if (count($unique) > 1) { $conflicts[$field] = array_values($unique); continue; }
+        $fact = reset($unique); $merged[$field] = $fact['value'];
+        $fieldEvidence[$field] = $fact['evidence'];
+    }
+    if ($conflicts) $merged['field_conflicts'] = $conflicts;
+    if ($fieldEvidence) {
+        $evidence = array_values(array_unique($fieldEvidence));
+        $merged['evidence'] = count($evidence) === 1 ? $evidence[0] : 'mixed';
+        if (count($evidence) > 1) $merged['field_evidence'] = $fieldEvidence;
+    }
+    return $merged;
+}
+
 /** Only an upstream representation identity can join flattened CDN alternatives.
  * Similar geometry/codec/bitrate does not establish byte-equivalent media.
  */
@@ -154,6 +192,8 @@ function snapFileVariants(array $candidates): array
         if ($signature !== null && isset($keys[$signature])) {
             $n = $keys[$signature];
             $variants[$n]['delivery']['sources'] = snapMergeSources($variants[$n]['delivery']['sources'], $sources);
+            $merged = snapMergeMetadata($variants[$n]['metadata'] ?? [], $metadata);
+            if ($merged) $variants[$n]['metadata'] = $merged;
             // Each entry was already matched to its explicit audio_file_id by
             // the platform adapter; merge those options, never global audio.
             if ($track) $trackAudio[$n] = array_merge($trackAudio[$n], $candidate['private_audio_candidates'] ?? []);
@@ -174,7 +214,11 @@ function snapFileVariants(array $candidates): array
         $sourceIds = array_column($variant['delivery']['sources'], 'id'); sort($sourceIds, SORT_STRING);
         $identity = [$variant['delivery']['kind'], array_key_exists($index, $trackAudio), $stableIdentities[$index] ?? $sourceIds];
         $id = $variant['id'] = 'v-' . substr(hash('sha256', json_encode($identity)), 0, 24);
-        if (isset($identified[$id])) $identified[$id]['delivery']['sources'] = snapMergeSources($identified[$id]['delivery']['sources'], $variant['delivery']['sources']);
+        if (isset($identified[$id])) {
+            $identified[$id]['delivery']['sources'] = snapMergeSources($identified[$id]['delivery']['sources'], $variant['delivery']['sources']);
+            $merged = snapMergeMetadata($identified[$id]['metadata'] ?? [], $variant['metadata'] ?? []);
+            if ($merged) $identified[$id]['metadata'] = $merged;
+        }
         else $identified[$id] = $variant;
         if (array_key_exists($index, $trackAudio)) $audioByVariant[$id] = array_merge($audioByVariant[$id] ?? [], $trackAudio[$index]);
     }

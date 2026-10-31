@@ -31,6 +31,19 @@ policyCheck('normal public response removes a same-resolution unprotected mux', 
 policyCheck('debug public response retains all normalized representations', count($debug['variants']) === 2);
 policyCheck('surviving default and source identities are unchanged between views', $normal['default'] === $debug['default']);
 policyCheck('ordinary stereo with unknown complete-file channels does not create protection', count(policyView([$file, policyMux([], ['audio_channels' => 2])])['variants']) === 1);
+$languageViews = [];
+foreach (['valid' => [], 'expired' => ['expires_at' => gmdate('c', time() - 60)], 'unavailable' => ['availability' => 'unavailable']] as $state => $source) {
+    $variants = [policyFile('4k-unknown-language'), policyFile('1080-main-en', ['width' => 1920, 'height' => 1080, 'audio_language' => 'en', 'audio_language_role' => 'main'], $source), policyMux(audio: ['audio_language' => 'ja'])];
+    $languageViews[$state] = policyView($variants);
+    $full = policyView($variants, true);
+    policyCheck('confirmed main language still protects Japanese mux when its source is ' . $state,
+        count($languageViews[$state]['variants']) === 3 && $languageViews[$state]['variants'] === $full['variants']);
+}
+policyCheck('source expiry and availability do not change the language-protected inventory or selected file',
+    array_column($languageViews['valid']['variants'], 'id') === array_column($languageViews['expired']['variants'], 'id')
+    && array_column($languageViews['valid']['variants'], 'id') === array_column($languageViews['unavailable']['variants'], 'id')
+    && $languageViews['valid']['default'] === $languageViews['expired']['default']
+    && $languageViews['valid']['default'] === $languageViews['unavailable']['default']);
 policyCheck('expired complete file cannot remove a processing version', count(policyView([policyFile(source: ['expires_at' => gmdate('c', time() - 60)]), $mux])['variants']) === 2);
 policyCheck('explicitly silent file cannot replace a complete audio-video combination', count(policyView([policyFile(metadata: ['has_audio' => false]), $mux])['variants']) === 2);
 policyCheck('mux-only work remains processing-required with a null complete default', policyView([$mux])['default_unavailable_reason'] === 'processing_required');
@@ -64,6 +77,23 @@ $conflictResult = policyView([$file, $conflicting]);
 policyCheck('conflicting summary and resource geometry is retained without false higher claim', count($conflictResult['variants']) === 2 && empty($conflictResult['higher_quality_variants']));
 policyCheck('conflicting frame-rate evidence conservatively retains mux', count(policyView([$file, policyMux(['fps' => 60], metadata: ['fps' => 30])])['variants']) === 2);
 policyCheck('conflicting language evidence conservatively retains mux', count(policyView([$file, policyMux([], ['audio_language' => 'ja'], ['audio_language' => 'en'])])['variants']) === 2);
+$fpsConflict = ['field_conflicts' => ['fps' => [['value' => 30, 'evidence' => 'upstream'], ['value' => 60, 'evidence' => 'upstream']]]];
+policyCheck('aggregated conflicting FPS preserves the mux and confirmed file default',
+    count(policyView([$file, policyMux($fpsConflict)])['variants']) === 2
+    && policyView([$file, policyMux($fpsConflict)])['default'] === $normal['default']);
+policyCheck('aggregated conflicting complete-file FPS cannot prove coverage',
+    count(policyView([policyFile(metadata: $fpsConflict), policyMux(['fps' => 60])])['variants']) === 2);
+$languageConflict = ['audio_language_role' => 'main', 'field_conflicts' => ['audio_language' => [
+    ['value' => 'en', 'evidence' => 'upstream'], ['value' => 'fr', 'evidence' => 'probe'],
+]]];
+policyCheck('expired conflicting file language facts still protect a different language',
+    count(policyView([$file, policyFile('language-facts', $languageConflict, ['expires_at' => gmdate('c', time() - 60)]), policyMux(audio: ['audio_language' => 'ja'])])['variants']) === 3);
+$mainRoleConflict = policyMux(audio: ['audio_language' => 'en', 'field_conflicts' => ['audio_language_role' => [
+    ['value' => 'alternate', 'evidence' => 'upstream'], ['value' => 'main', 'evidence' => 'upstream'],
+]]]);
+$mainRoleConflict['id'] = 'main-role-conflict';
+policyCheck('a recorded main-role observation still supplies language evidence when roles conflict',
+    count(policyView([$file, $mainRoleConflict, policyMux(audio: ['audio_language' => 'ja'])])['variants']) === 3);
 $pending = ['id' => 'pending', 'state' => 'deferred', 'reason' => ['code' => 'PENDING', 'message' => 'Not resolved']];
 policyCheck('deferred versions are outside the filtering scope', count(policyView([$file, $pending])['variants']) === 2);
 $manifest = ['id' => 'adaptive', 'delivery' => ['kind' => 'dash', 'scope' => 'adaptive', 'sources' => [['url' => 'https://media.example/manifest.mpd']]]];

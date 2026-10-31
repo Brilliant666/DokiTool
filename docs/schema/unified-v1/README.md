@@ -52,11 +52,17 @@ variant/source ID 标识媒体版本和来源线路，URL、签名与到期时�
 
 未知字段不触发保护，触发后未知不能证明覆盖。codec、码率、文件大小、采样率、CDN、原始入口标签都不额外保护。variant 与关联 resource 的尺寸、fps、HDR、语言/角色、声道证据冲突时保留 mux；冲突尺寸也不参与默认/更高空间画质比较。每层字段仍单独校验角色与证据。多个实际音轨资源保留各自能力，不把替代编码误当同时必须合成的音轨。
 
+可承担下载替代的文件与可信语言事实分别收集。完整文件的来源过期或不可用后不再参与覆盖，但已确认的语言事实仍然有效；未知语言文件不能因此覆盖已受保护的其他语言版本。
+
 音频 item、live-photo pair、deferred、分 P 条目、adaptive HLS/DASH 均不在该过滤范围。原有完整文件和显式选择身份不被重排或重建；删除目标不能借新默认替代。保留的不同 FPS/HDR/语言版本并不自动进入 `higher_quality_variants`，后者只表达已知更高空间尺寸。前端按当前交付能力折叠暂不支持版本，不再次筛选或选择默认。
 
 ### 技术字段与生产适配
 
 `hdr_type` 为 `sdr/hdr10/hdr10_plus/hlg/dolby_vision/hdr_unknown`，未知省略；`audio_language_role` 为 `main/alternate`，必须伴随非空 `audio_language`。这些字段与 fps/声道一起要求 upstream/probe 证据；mixed 必须逐技术字段提供证据，不能声称 unknown 又携带已确认能力。
+
+同一媒体身份聚合时，后续可信字段可补齐先前缺失值。明确矛盾使用可选的 `metadata.field_conflicts` 保存：字段名对应至少两个不同值的 `{ value, evidence }` 数组，顺序稳定；该字段不再同时声明单值。每个值须符合原字段类型并带 `upstream/probe` 证据，资源角色约束仍适用。语言角色也可伴随语言冲突集合，表示语言事实已知但不一致。两层身份合并共用同一规则，普通视图与 debug 都保留依据；涉及空间尺寸或四项保护能力的冲突不能证明覆盖，冲突尺寸不参与确定的默认/更高画质比较。这不是新增能力白名单或前端排序规则。
+
+`mixed` 的 `field_evidence` 除必须覆盖全部技术字段外，也可记录实际存在的 `container/extension/mime_type` 来源，以便后续再次聚合时保留其证据。空白语言无效；30 与 30.0 是同一个数值观测，不能伪造为冲突。
 
 抖音读取当前表示的明确 fps、HDR、video_extra/sub_info，音频字段只来自明确 audio_file_id 匹配的 audio_meta/sub_info；未知标识不猜含义。B 站读取所选 DASH video 的 frameRate（支持分数）、明确 HDR 字段或已定义的 HDR 125/Dolby Vision 126 质量 ID；语言与声道来自实际 audio 表示。语言只接受明确语言标签并规范大小写/下划线，不用音轨 ID、编码或非默认身份代替语言证据。两平台都先保留真实配对，再进入同一个 `media-policy.php`。
 
@@ -90,7 +96,8 @@ python scripts/validate-unified-schema.py .local/platform-review-output.json .lo
 # 实际抖音/B站适配器的普通/诊断视图，以及来源资格与能力保护反例
 php backend/tests/media-policy-contract.php
 php backend/tests/media-policy-contract.php --export > .local/media-policy-output.json
-python scripts/validate-unified-schema.py .local/media-policy-output.json --output .local/media-policy-schema.json
+php backend/tests/media-merge-contract.php --export > .local/media-merge-output.json
+python scripts/validate-unified-schema.py .local/media-policy-output.json .local/media-merge-output.json --output .local/media-policy-schema.json
 
 # 已单独启动两个 loopback 服务后，测试真实公开 HTTP 路径
 # mock: php -S 127.0.0.1:19287 backend/tests/media-policy-http-router.php

@@ -148,7 +148,13 @@ async function ownerFor(task: TaskRecord): Promise<WorkerSession | null> {
   const owner = await workerSession(false);
   if (owner) {
     task.owner = owner;
-    if (task.snapshot.workerInstance && owner.instance && task.snapshot.workerInstance !== owner.instance) ownerGone(task);
+    const { workerInstance, workerBuild } = task.snapshot;
+    const instanceChanged = workerInstance && owner.instance && workerInstance !== owner.instance;
+    // Pre-instance summaries can prove retirement only through a known build
+    // changing in the verified active-worker handshake, never through a query miss.
+    const legacyBuildChanged = !workerInstance && workerBuild && workerBuild !== "legacy"
+      && owner.build !== "legacy" && workerBuild !== owner.build;
+    if (instanceChanged || legacyBuildChanged) ownerGone(task);
   }
   return owner;
 }

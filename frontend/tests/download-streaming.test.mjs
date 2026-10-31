@@ -15,7 +15,16 @@ const flush = async () => { for (let index = 0; index < 40; index++) await Promi
 
 async function harness(t, respond, options = {}) {
   // Bundle the real module graph so session/bridge refactors cannot silently use stale mocks.
-  const { outputFiles } = await bundle({ entryPoints: [fileURLToPath(new URL('../src/downloads/streaming.ts', import.meta.url))], bundle: true, write: false, platform: 'browser', format: 'esm' });
+  const entry = options.withStore ? { stdin: {
+    contents: `export * from './src/downloads/streaming';
+      export { useMediaDownload } from './src/composables/useMediaDownload';
+      export { useVideoSelection } from './src/composables/useVideoSelection';
+      export { useVideoStore } from './src/stores/video';
+      export { createPinia } from 'pinia';`,
+    resolveDir: fileURLToPath(new URL('../', import.meta.url)),
+  }, define: { 'import.meta.env': '{}', __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false' } }
+    : { entryPoints: [fileURLToPath(new URL('../src/downloads/streaming.ts', import.meta.url))] };
+  const { outputFiles } = await bundle({ ...entry, bundle: true, write: false, platform: 'browser', format: 'esm' });
   const code = outputFiles[0].text;
   const api = await import('data:text/javascript;base64,' + Buffer.from(code + `\n// ${Math.random()}`).toString('base64'));
   const originals = new Map(), storage = new Map(), messages = [], frames = [], timers = new Map(), stateListeners = new Set();
@@ -583,6 +592,104 @@ test('same-build restart reports old active ownership gone without adopting a ne
   h.advance(60_001); await h.poll(); assert.equal(observed.at(-1).recoveryExpired, true);
   assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
 });
+
+for (const alreadyExpired of [false, true]) {
+  test(`legacy build-only recovery releases a replaced owner${alreadyExpired ? ' after a saved deadline' : ''} without inventing a result`, async t => {
+    const h = await harness(t, message => message.action === 'ping'
+      ? { protocol: 1, workerBuild: 'downloads-20261031.1', workerInstance: 'current-instance' }
+      : message.action === 'forget' ? { forgotten: true }
+        : { snapshots: [], unavailable: [{ id: request.id, ownerGone: false }] });
+    const { url, ...last } = state('downloading', { workerBuild: 'downloads-20261030.4' });
+    h.storage.set('dokitool-downloads-v1', JSON.stringify([{
+      id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last,
+      ...(alreadyExpired ? { recoveryDeadline: Date.now() - 1 } : {}),
+    }]));
+    const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+    assert.equal(observed.at(-1).status, 'downloading');
+    assert.equal(observed.at(-1).observation, 'unknown');
+    assert.equal(observed.at(-1).ownerGone, true, 'a verified replacement build cannot own the legacy in-memory transfer');
+    assert.equal(h.api.hasStreamingTask(request.id), false);
+    h.tick(4000); assert.equal(h.bridges[0].removed, true);
+    if (!alreadyExpired) { h.advance(60_001); await h.poll(); }
+    assert.equal(observed.at(-1).recoveryExpired, true);
+    assert.match(observed.at(-1).error, /无法确认下载结果/);
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+    assert.equal(h.messages.some(message => message.action === 'query'), !alreadyExpired);
+    await h.api.forgetStreaming(request.id);
+    assert.deepEqual(JSON.parse(h.storage.get('dokitool-downloads-v1')), []);
+    assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+    assert.equal(h.attachments.length, 0);
+  });
+}
+
+test('legacy build replacement still queries for a trusted terminal instead of stopping at ownerGone', async t => {
+  let found = false;
+  const h = await harness(t, message => message.action === 'ping'
+    ? { protocol: 1, workerBuild: 'downloads-20261031.1', workerInstance: 'current-instance' }
+    : { snapshots: found ? [state('completed', { workerBuild: 'downloads-20261030.4', revision: 2 })] : [] });
+  const { url, ...last } = state('downloading', { workerBuild: 'downloads-20261030.4', revision: 1 });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+  const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+  assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
+  assert.equal(observed.at(-1).ownerGone, true);
+  h.tick(4000); assert.equal(h.bridges[0].removed, true);
+  h.advance(60_001); await h.poll();
+  found = true; await h.api.queryStreaming(request.id);
+  assert.equal(observed.at(-1).status, 'completed');
+  assert.equal(observed.at(-1).observation, undefined);
+  assert.equal(observed.at(-1).ownerGone, undefined);
+  assert.equal(h.messages.filter(message => message.action === 'query').length, 2);
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+  assert.equal(h.attachments.length, 0);
+});
+
+for (const alreadyRestored of [false, true]) test(`legacy build-only recovery clears through the real composable, Pinia store and streaming module${alreadyRestored ? ' after refreshing an expired record' : ''}`, async t => {
+  const h = await harness(t, message => message.action === 'ping'
+    ? { protocol: 1, workerBuild: 'downloads-20261031.1', workerInstance: 'current-instance' }
+    : message.action === 'forget' ? { forgotten: true } : { snapshots: [] }, { withStore: true });
+  const { url, ...last } = state('downloading', { workerBuild: 'downloads-20261030.4' });
+  h.storage.set('dokitool-downloads-v1', JSON.stringify([{
+    id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last,
+    ...(alreadyRestored ? { recoveryDeadline: Date.now() - 1, ownerGone: true } : {}),
+  }]));
+  const store = h.api.useVideoStore(h.api.createPinia());
+  const toasts = [];
+  const ui = h.api.useMediaDownload({ videoStore: store, selection: h.api.useVideoSelection({ videoStore: store }), resolveItem: async item => item, showToast: (...args) => toasts.push(args) });
+  await ui.restoreDownloads();
+  assert.equal(store.downloads.length, 1);
+  assert.equal(store.downloads[0].ownerGone, true);
+  if (!alreadyRestored) { h.advance(60_001); await h.poll(); h.tick(4000); }
+  assert.equal(store.downloads[0].recoveryExpired, true);
+  await ui.handleClearCompleted(alreadyRestored ? 'all' : store.downloads[0].id);
+  assert.deepEqual(toasts, []);
+  assert.equal(h.messages.filter(message => message.action === 'forget').length, 1);
+  assert.equal(store.downloads.length, 0);
+  assert.deepEqual(JSON.parse(h.storage.get('dokitool-downloads-v1')), []);
+  assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+});
+
+for (const [savedBuild, activeBuild] of [
+  ['downloads-20261030.4', 'downloads-20261030.4'],
+  [undefined, 'downloads-20261031.1'],
+  ['legacy', 'downloads-20261031.1'],
+  ['downloads-20261030.4', undefined],
+]) {
+  test(`legacy query misses do not prove retirement when build evidence is ${savedBuild} / ${activeBuild}`, async t => {
+    const h = await harness(t, message => message.action === 'ping'
+      ? { protocol: 1, workerBuild: activeBuild, workerInstance: 'current-instance' } : { snapshots: [] });
+    const { url, ...last } = state('downloading', { workerBuild: savedBuild });
+    h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(), last }]));
+    const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+    h.advance(60_001); await h.poll(); h.tick(4000);
+    assert.equal(observed.at(-1).recoveryExpired, true);
+    assert.equal(observed.at(-1).observation, 'unknown');
+    assert.equal(observed.at(-1).ownerGone, undefined);
+    assert.equal(h.api.hasStreamingTask(request.id), true);
+    assert.notEqual(h.bridges[0].removed, true);
+    await assert.rejects(h.api.forgetStreaming(request.id), /先确认下载已停止/);
+    assert.equal(h.messages.some(message => ['start', 'cancel', 'forget'].includes(message.action)), false);
+  });
+}
 
 test('uncertainty accepts the same execution authoritative failure and rejects older or conflicting terminals', async t => {
   const instance = 'original-instance';

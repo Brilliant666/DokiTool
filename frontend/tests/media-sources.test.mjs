@@ -259,6 +259,33 @@ test('candidate policy UI: failed explicit source stays failed until a user sele
   } finally { view.app.unmount(); }
 });
 
+test('merged identity conflicts retain evidence without changing server or explicit selection', () => {
+  const observations = (...values) => values.map(value => ({ value, evidence: 'upstream' }));
+  const file = variant('file', ['file']), mux = muxVariant();
+  mux.metadata = { field_conflicts: { fps: observations(30, 60), hdr_type: observations('sdr', 'hdr10') } };
+  mux.delivery.resources[0].metadata = structuredClone(mux.metadata);
+  mux.delivery.resources[1].metadata = { audio_language_role: 'main', evidence: 'upstream', field_conflicts: { audio_language: observations('en', 'fr') } };
+  const envelope = { schema_version: '1.0', code: 'OK', data: data(item([file, mux])) }, before = structuredClone(envelope);
+  assert.equal(contract.validateMediaEnvelope(envelope), envelope.data);
+  assert.deepEqual(envelope, before);
+  for (const bad of [
+    { fps: observations(60, 60) }, { fps: observations('30', '60') }, { fps: observations(30) },
+    { fps: [{ value: 30, evidence: 'unknown' }, { value: 60, evidence: 'upstream' }] },
+    { hdr_type: observations('sdr', 'HEVC') }, { private_url: observations('a', 'b') },
+    { audio_language: observations('   ', 'en') },
+    { fps: [{ value: 30, evidence: 'upstream' }, { value: 30.0, evidence: 'probe' }] },
+  ]) {
+    const changed = structuredClone(before); changed.data.items[0].variants[1].metadata.field_conflicts = bad;
+    assert.throws(() => contract.validateMediaEnvelope(changed), /媒体合同无效/);
+  }
+  let changed = structuredClone(before); changed.data.items[0].variants[1].metadata.fps = 60;
+  assert.throws(() => contract.validateMediaEnvelope(changed), /确定值/);
+  changed = structuredClone(before); changed.data.items[0].variants[1].delivery.resources[1].metadata.field_conflicts.fps = observations(30, 60);
+  assert.throws(() => contract.validateMediaEnvelope(changed), /音频资源/);
+  changed = structuredClone(before); changed.data.items[0].variants[1].delivery.resources[0].metadata.field_conflicts.has_audio = observations(false, true);
+  assert.throws(() => contract.validateMediaEnvelope(changed), /无音频资源/);
+});
+
 test('candidate policy capabilities: adaptive HLS remains unsupported even inside a live pair', () => {
   const adaptive = { kind: 'hls', scope: 'adaptive', sources: [{ url: 'https://media.example.test/adaptive.m3u8' }] };
   const pair = { id: 'pair', delivery: { kind: 'pair', resources: [

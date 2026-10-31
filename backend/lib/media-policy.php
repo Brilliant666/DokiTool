@@ -10,7 +10,9 @@ function snapSameFrameRate(float $a, float $b): bool
 /** Only the policy's geometry and four protected capabilities affect coverage. */
 function snapPolicyMetadata(array $variant, array $resource, array $fields): array
 {
-    $merged = array_replace($resource, $variant); $conflict = false;
+    $merged = array_replace($resource, $variant);
+    $conflict = (bool)array_intersect($fields, array_keys($variant['field_conflicts'] ?? []));
+    $conflict = $conflict || (bool)array_intersect($fields, array_keys($resource['field_conflicts'] ?? []));
     foreach ($fields as $field) {
         if (!isset($variant[$field], $resource[$field])) continue;
         $equal = $field === 'fps' ? snapSameFrameRate((float)$variant[$field], (float)$resource[$field]) : $variant[$field] === $resource[$field];
@@ -23,15 +25,24 @@ function snapPolicyMetadata(array $variant, array $resource, array $fields): arr
 function snapFilterItemVariants(array $item, int $now): array
 {
     if (($item['state'] ?? 'ready') !== 'ready' || $item['type'] !== 'video') return $item;
-    $files = array_values(array_filter($item['variants'], static fn ($variant) => ($variant['state'] ?? 'ready') === 'ready'
-        && $variant['delivery']['kind'] === 'file' && ($variant['metadata']['has_audio'] ?? null) !== false
-        && snapDeliveryUsable($variant['delivery'], $now)));
+    $completeFiles = array_values(array_filter($item['variants'], static fn ($variant) => ($variant['state'] ?? 'ready') === 'ready'
+        && $variant['delivery']['kind'] === 'file' && ($variant['metadata']['has_audio'] ?? null) !== false));
+    $files = array_values(array_filter($completeFiles, static fn ($variant) => snapDeliveryUsable($variant['delivery'], $now)));
     if (!$files) return $item;
     $mainLanguages = [];
-    foreach ($files as $file) if (isset($file['metadata']['audio_language'])) $mainLanguages[] = strtolower($file['metadata']['audio_language']);
+    // Delivery expiry removes replacement eligibility, not confirmed media facts.
+    foreach ($completeFiles as $file) {
+        $metadata = $file['metadata'] ?? [];
+        if (isset($metadata['audio_language'])) $mainLanguages[] = strtolower($metadata['audio_language']);
+        foreach ($metadata['field_conflicts']['audio_language'] ?? [] as $fact) $mainLanguages[] = strtolower($fact['value']);
+    }
     foreach ($item['variants'] as $variant) foreach ($variant['delivery']['resources'] ?? [] as $resource) {
         $metadata = $resource['metadata'] ?? [];
-        if ($resource['role'] === 'audio' && ($metadata['audio_language_role'] ?? '') === 'main' && isset($metadata['audio_language'])) $mainLanguages[] = strtolower($metadata['audio_language']);
+        $main = ($metadata['audio_language_role'] ?? '') === 'main'
+            || in_array('main', array_column($metadata['field_conflicts']['audio_language_role'] ?? [], 'value'), true);
+        if ($resource['role'] !== 'audio' || !$main) continue;
+        if (isset($metadata['audio_language'])) $mainLanguages[] = strtolower($metadata['audio_language']);
+        foreach ($metadata['field_conflicts']['audio_language'] ?? [] as $fact) $mainLanguages[] = strtolower($fact['value']);
     }
     $item['variants'] = array_values(array_filter($item['variants'], static function ($mux) use ($files, $mainLanguages) {
         if (($mux['state'] ?? 'ready') !== 'ready' || $mux['delivery']['kind'] !== 'mux') return true;
@@ -47,6 +58,8 @@ function snapFilterItemVariants(array $item, int $now): array
         }
         if ($conflict) return true;
         foreach ($files as $file) {
+            // Conflicting facts cannot establish that this file covers a mux.
+            if (array_intersect(['width', 'height', 'fps', 'hdr_type', 'audio_language', 'audio_language_role', 'audio_channels', 'has_audio'], array_keys($file['metadata']['field_conflicts'] ?? []))) continue;
             if (!in_array(snapQualityCompare($file, ['metadata' => $video]), [0, 1], true)) continue;
             $complete = $file['metadata'] ?? [];
             $fps = $video['fps'] ?? null;

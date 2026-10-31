@@ -627,6 +627,28 @@
           "title": "Evidence",
           "type": "string"
         },
+        "field_conflicts": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Contradictory trusted observations for one media identity. The same field must be absent from scalar metadata; these observations cannot prove capability coverage.",
+          "propertyNames": {
+            "enum": ["width", "height", "duration_ms", "fps", "hdr_type", "bitrate_bps", "video_bitrate_bps", "audio_bitrate_bps", "has_audio", "video_codec", "audio_codec", "audio_language", "audio_language_role", "audio_channels", "sample_rate_hz", "container", "extension", "mime_type"]
+          },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "evidence"],
+              "properties": {
+                "value": {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "boolean"}]},
+                "evidence": {"type": "string", "enum": ["probe", "upstream"]}
+              }
+            }
+          }
+        },
         "field_evidence": {
           "additionalProperties": {
             "enum": [

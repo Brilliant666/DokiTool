@@ -108,10 +108,11 @@ def dimensions(variant):
         video = next((r.get('metadata', {}) for r in variant['delivery']['resources'] if r['role'] == 'video'), {})
         merged = {**video, **m}
         for field in ('width', 'height'):
-            if field in video and field in m and video[field] != m[field]:
+            if (field in video.get('field_conflicts', {}) or field in m.get('field_conflicts', {})
+                    or (field in video and field in m and video[field] != m[field])):
                 merged.pop(field, None)
         m = merged
-    if 'width' in m and 'height' in m:
+    if 'width' in m and 'height' in m and not {'width', 'height'}.intersection(m.get('field_conflicts', {})):
         return sorted((m['width'], m['height']))
     return None
 
@@ -125,22 +126,46 @@ def higher(left, right):
 
 
 def metadata_valid(metadata, role=None):
-    if 'audio_language_role' in metadata:
-        require(bool(metadata.get('audio_language', '').strip()), 'language role requires an explicit language')
+    conflicts = metadata.get('field_conflicts', {})
+    definitions = SCHEMA['$defs']['MediaMetadata']['properties']
+    for field, facts in conflicts.items():
+        require(field in definitions and field not in {'evidence', 'field_evidence', 'field_conflicts'}, 'unknown metadata conflict field')
+        require(field not in metadata, 'conflicting metadata cannot claim a scalar fact')
+        values = set()
+        for fact in facts:
+            require(not list(Draft202012Validator(definitions[field]).iter_errors(fact['value'])), 'conflict value does not match field type')
+            if field == 'audio_language':
+                require(bool(fact['value'].strip()), 'language observation must not be blank')
+            if field == 'has_audio' and role in {'image', 'subtitle', 'video'}:
+                require(fact['value'] is False, 'resource role conflicts with embedded audio')
+            if field == 'mime_type' and role in {'image', 'audio'}:
+                require(fact['value'].startswith(role + '/'), 'MIME conflicts with media role')
+            # JSON numbers 30 and 30.0 express the same observation, including
+            # when their evidence differs. Match PHP and browser equality.
+            value = fact['value']
+            category = 'boolean' if isinstance(value, bool) else 'number' if isinstance(value, (int, float)) else 'string'
+            values.add((category, value))
+        require(len(values) == len(facts) and len(values) >= 2, 'conflicts need distinct values')
+    present = set(metadata).union(conflicts)
+    if 'audio_language' in metadata:
+        require(bool(metadata['audio_language'].strip()), 'language must not be blank')
+    if 'audio_language_role' in present:
+        require('audio_language' in present, 'language role requires an explicit language')
     known = TECHNICAL.intersection(metadata)
     evidence = metadata.get('evidence', 'unknown')
     require(not known or evidence in {'probe', 'upstream', 'mixed'}, 'technical fields require evidence')
     fields = metadata.get('field_evidence', {})
     if evidence == 'mixed':
-        require(set(fields) == known, 'mixed evidence must cover exactly known technical fields')
+        known_format = {'container', 'extension', 'mime_type'}.intersection(metadata)
+        require(known <= set(fields) <= known.union(known_format), 'mixed evidence must cover known technical fields and only present format fields')
     else:
         require(not fields, 'field evidence only belongs to mixed metadata')
     if metadata.get('has_audio') is False:
-        require(not AUDIO.intersection(metadata), 'silent media cannot have audio fields')
+        require(not AUDIO.intersection(present), 'silent media cannot have audio fields')
     if role in {'image', 'subtitle', 'video'}:
-        require(metadata.get('has_audio') is not True and not AUDIO.intersection(metadata), 'resource role conflicts with embedded audio')
+        require(metadata.get('has_audio') is not True and not AUDIO.intersection(present), 'resource role conflicts with embedded audio')
     if role == 'audio':
-        require(not VIDEO.intersection(metadata), 'audio resource has video metadata')
+        require(not VIDEO.intersection(present), 'audio resource has video metadata')
     mime = metadata.get('mime_type', '')
     if role in {'image', 'audio'} and mime:
         require(mime.startswith(role + '/'), 'MIME conflicts with media role')

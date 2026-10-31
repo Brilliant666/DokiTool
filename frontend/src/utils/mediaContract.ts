@@ -187,10 +187,43 @@ function validateSources(value: unknown): asserts value is Source[] {
     "来源 ID",
   );
 }
+const numericMetadata = new Set(["width", "height", "duration_ms", "fps", "bitrate_bps", "video_bitrate_bps", "audio_bitrate_bps", "audio_channels", "sample_rate_hz"]);
+const textMetadata = new Set(["video_codec", "audio_codec", "audio_language", "container", "extension", "mime_type"]);
+function validateMetadataConflicts(metadata: Record<string, unknown>, role?: Resource["role"]): string[] {
+  if (metadata.field_conflicts === undefined) return [];
+  if (!object(metadata.field_conflicts) || !Object.keys(metadata.field_conflicts).length) return fail("媒体冲突规格无效");
+  const fields = Object.keys(metadata.field_conflicts);
+  for (const field of fields) {
+    const facts = metadata.field_conflicts[field];
+    if (metadata[field] !== undefined || !Array.isArray(facts) || facts.length < 2) fail("冲突规格不能同时声明确定值");
+    const values = [];
+    for (const fact of facts as unknown[]) {
+      if (!object(fact) || !["upstream", "probe"].includes(fact.evidence as string)
+        || Object.keys(fact).some((key) => !["value", "evidence"].includes(key))) return fail("规格冲突缺少可靠证据");
+      const value = fact.value;
+      const valid = numericMetadata.has(field) ? typeof value === "number" && Number.isFinite(value) && value > 0 && (field === "fps" || Number.isInteger(value))
+        : textMetadata.has(field) ? nonempty(value) && (field !== "extension" || /^[a-z0-9]+$/.test(value)) && (field !== "mime_type" || /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(value))
+        : field === "has_audio" ? typeof value === "boolean"
+        : field === "hdr_type" ? ["sdr", "hdr10", "hdr10_plus", "hlg", "dolby_vision", "hdr_unknown"].includes(value as string)
+        : field === "audio_language_role" && ["main", "alternate"].includes(value as string);
+      if (!valid) fail("规格冲突值无效");
+      if (field === "has_audio" && ["video", "image", "subtitle"].includes(role || "") && value === true) fail("无音频资源不能声明内嵌音轨");
+      if (field === "mime_type" && ["image", "audio"].includes(role || "") && !(value as string).startsWith(`${role}/`)) fail("媒体类型与资源角色不符");
+      values.push(JSON.stringify(value));
+    }
+    unique(values, "规格冲突值");
+  }
+  if (fields.includes("audio_language_role") && !nonempty(metadata.audio_language) && !fields.includes("audio_language")) fail("音轨语言角色缺少有效语言");
+  if (role === "audio" && fields.some((field) => ["width", "height", "fps", "hdr_type", "video_codec", "video_bitrate_bps"].includes(field))) fail("音频资源不能声明视频规格");
+  if ((metadata.has_audio === false || ["video", "image", "subtitle"].includes(role || ""))
+    && fields.some((field) => ["audio_codec", "audio_language", "audio_language_role", "audio_channels", "sample_rate_hz", "audio_bitrate_bps"].includes(field))) fail("无音频资源不能声明音轨规格");
+  return fields;
+}
 /** Check each layer's facts independently; conflicting layers remain diagnostic data. */
 function validateCapabilityMetadata(value: unknown, role?: Resource["role"]): void {
   if (value === undefined) return;
   if (!object(value)) return fail("媒体规格无效");
+  const conflicts = validateMetadataConflicts(value, role);
   if (
     value.hdr_type !== undefined &&
     !["sdr", "hdr10", "hdr10_plus", "hlg", "dolby_vision", "hdr_unknown"].includes(value.hdr_type as string)
@@ -200,7 +233,7 @@ function validateCapabilityMetadata(value: unknown, role?: Resource["role"]): vo
     fail("音轨语言无效");
   if (
     value.audio_language_role !== undefined &&
-    (!["main", "alternate"].includes(value.audio_language_role as string) || !nonempty(value.audio_language))
+    (!["main", "alternate"].includes(value.audio_language_role as string) || (!nonempty(value.audio_language) && !conflicts.includes("audio_language")))
   )
     fail("音轨语言角色缺少有效语言或类型");
   const facts = ["hdr_type", "audio_language", "audio_language_role"].filter(
@@ -210,7 +243,7 @@ function validateCapabilityMetadata(value: unknown, role?: Resource["role"]): vo
   if (!["upstream", "probe", "mixed"].includes(value.evidence as string)) fail("媒体能力缺少可靠证据");
   if (value.evidence === "mixed") {
     const technical = Object.keys(value).filter(
-      (field) => !["container", "extension", "mime_type", "evidence", "field_evidence"].includes(field),
+      (field) => !["container", "extension", "mime_type", "evidence", "field_evidence", "field_conflicts"].includes(field),
     );
     for (const field of technical) {
       if (!object(value.field_evidence) || !["upstream", "probe"].includes(value.field_evidence[field] as string))

@@ -132,6 +132,12 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   is not a transfer duration limit. A possible live owner keeps its bridge; confirmed
   termination or confirmed execution loss permits release. Unconfirmed history is
   excluded from the panel's active count.
+- Legacy summaries without an execution ID use their known build as fallback
+  ownership evidence: a different known build from the verified active-worker
+  handshake proves that execution has retired. Missing/`legacy` build markers or
+  query misses alone do not. A retired task still queries for a trusted outcome;
+  without one it stays unconfirmed, releases its bridge and can be cleared after
+  the recovery window, without restarting or cancelling a download.
 - `session.ts` coalesces discovery and the capability handshake. It distinguishes
   explicit refusals from lost replies; a lost START acknowledgement keeps an
   uncertain task rather than permitting Blob or another START. Dead page subscribers
