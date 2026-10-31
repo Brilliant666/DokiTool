@@ -8,7 +8,7 @@ CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
 
 The policy, ownership and deployment sections describe the current implementation
-(`downloads-20261031.1`). Dated acceptance entries preserve the investigation
+(`downloads-20261031.2`, with the pending PR #11 client recovery fix). Dated acceptance entries preserve the investigation
 history; earlier blockers and fallback behavior are not the current release
 contract. The latest controlled refresh, saved-file integrity and natural upgrade results are in
 [the unified-media acceptance record](UNIFIED-MEDIA-ACCEPTANCE.md#下载恢复与候选精简验收2026-10-31).
@@ -18,8 +18,26 @@ build does not itself establish the production version.
 The open production incident and investigation lessons are recorded in
 [INC-20261031-001](incidents/INC-20261031-001-download-delivery.md).
 Bridge/cache, media-probe compatibility, task recovery and original-source
-throughput have separate causes and acceptance states. A successful download
-using a temporarily substituted source does not close normal-parser delivery.
+throughput have separate evidence and acceptance states. The current closeout is
+in [the PR #11 acceptance summary](UNIFIED-MEDIA-ACCEPTANCE.md#pr11-closeout).
+
+As of the 2026-10-31 closeout, the owner reports three normal production purple-button
+saves of approximately 540 MB, with playable beginning/end, audio and completed
+cards. This updates the earlier normal-parser acceptance gap. Re-parsing occurred
+between attempts: these are user functional results, not a matched-URL benchmark
+or exact hash verification of the historical 523,069,472-byte original. No new
+throughput patch was deployed to cause these successes. Historical partial-transfer
+failures remain documented without a proven single cause.
+
+The frozen a8 URL was reused after a time encoded in its path without checking its
+validity window. The resulting 403/zero-media attempts cannot support SW or route
+performance conclusions. The incident report explicitly records this serious
+investigation error, excessive repeated manual steps and the required stop rules.
+Do not repeat the old URL or the completed download matrix. Probe compatibility
+and automatic expired-result recovery still await release; the latter requires
+post-release browser verification, preferably using an existing trusted terminal
+record without another transfer. The historical sections below do not prescribe
+new tests. A temporary source replacement alone still is not normal-parser acceptance.
 
 ## Unified media input boundary
 
@@ -691,9 +709,11 @@ compressed 4K; measured 4K original becomes the default; a measured 720p origina
 does not replace compressed 4K. The two actual 4K files differ in size by about
 12.14 times; a work URL or resolution label alone is not a matched-source test.
 
-The remaining throughput comparison must freeze one still-valid media URL/file
+At that historical checkpoint, the proposed throughput comparison was to freeze one still-valid media URL/file
 and the same browser/network path for PR #8 and the current client. A historical
 fast save of a different representation cannot locate a regression. Conversely,
 matching application code does not prove every browser/CDN/network interaction
-healthy. The 523 MB original remains unresolved; this recovery patch does not
+healthy. Later valid version comparisons, the rejected a8 experiment and the owner's
+successful normal production saves are superseding evidence in the closeout summary;
+do not repeat that comparison. This recovery patch does not
 change timeouts, media routing, quality defaults, proxy settings or the Worker.
