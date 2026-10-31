@@ -11,6 +11,16 @@ snap.example.com {
     encode @compress zstd gzip
     header X-Content-Type-Options nosniff
     header Referrer-Policy no-referrer
+    # The download bridge is a same-origin iframe, not a public embedding surface.
+    # Mutually exclusive setters avoid duplicate or conflicting framing headers.
+    @download_bridge path /downloads/bridge.html
+    @not_download_bridge not path /downloads/bridge.html
+    header @download_bridge X-Frame-Options SAMEORIGIN
+    header @not_download_bridge X-Frame-Options DENY
+    # A 304 cannot replace Chromium's previously cached X-Frame-Options: DENY.
+    # Return the small bridge document in full without touching Worker caching.
+    request_header @download_bridge -If-None-Match
+    request_header @download_bridge -If-Modified-Since
 
     # Exact signed-media endpoint: dedicated workers, no response buffering/compression.
     handle /api/media/weibo {
@@ -38,7 +48,8 @@ snap.example.com {
     # Missing scripts or expired handoff URLs must never become the SPA homepage.
     handle /downloads/* {
         root * /srv/dokitool/current/frontend/dist
-        header Cache-Control "no-cache"
+        header @download_bridge Cache-Control "no-store"
+        header @not_download_bridge Cache-Control "no-cache"
         file_server
     }
     # Exact SEO files must never fall through to the SPA, including when missing.

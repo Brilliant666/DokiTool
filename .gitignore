@@ -38,6 +38,7 @@
 !/docs/UPSTREAM-MAINTENANCE.md
 !/docs/UPSTREAM-WATCH.md
 !/docs/go-migration/
+!/docs/incidents/
 !/docs/research/
 !/docs/schema/
 /frontend/*
@@ -58,6 +59,7 @@
 /ops/*
 !/ops/examples/
 /scripts/*
+!/scripts/check-download-headers.py
 !/scripts/check-public-files.py
 !/scripts/check-upstream-updates.py
 !/scripts/go-migration/
@@ -146,6 +148,8 @@
 !/docs/go-migration/phase2-checks.json
 !/docs/go-migration/phase3-checks.json
 !/docs/go-migration/rollback.md
+/docs/incidents/*
+!/docs/incidents/INC-20261031-001-download-delivery.md
 /docs/research/*
 !/docs/research/xhs-4k-transport-comparison-2026-10-30.md
 /docs/schema/*

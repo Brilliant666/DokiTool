@@ -8,12 +8,36 @@ CDN files travel directly to the user's browser.
 Weibo's signed `/api/media/weibo` route remains a server relay when required.
 
 The policy, ownership and deployment sections describe the current implementation
-(`downloads-20261031.1`). Dated acceptance entries preserve the investigation
+(`downloads-20261031.2`, with the pending PR #11 client recovery fix). Dated acceptance entries preserve the investigation
 history; earlier blockers and fallback behavior are not the current release
 contract. The latest controlled refresh, saved-file integrity and natural upgrade results are in
 [the unified-media acceptance record](UNIFIED-MEDIA-ACCEPTANCE.md#下载恢复与候选精简验收2026-10-31).
 Publishing the source or passing a local
 build does not itself establish the production version.
+
+The open production incident and investigation lessons are recorded in
+[INC-20261031-001](incidents/INC-20261031-001-download-delivery.md).
+Bridge/cache, media-probe compatibility, task recovery and original-source
+throughput have separate evidence and acceptance states. The current closeout is
+in [the PR #11 acceptance summary](UNIFIED-MEDIA-ACCEPTANCE.md#pr11-closeout).
+
+As of the 2026-10-31 closeout, the owner reports three normal production purple-button
+saves of approximately 540 MB, with playable beginning/end, audio and completed
+cards. This updates the earlier normal-parser acceptance gap. Re-parsing occurred
+between attempts: these are user functional results, not a matched-URL benchmark
+or exact hash verification of the historical 523,069,472-byte original. No new
+throughput patch was deployed to cause these successes. Historical partial-transfer
+failures remain documented without a proven single cause.
+
+The frozen a8 URL was reused after a time encoded in its path without checking its
+validity window. The resulting 403/zero-media attempts cannot support SW or route
+performance conclusions. The incident report explicitly records this serious
+investigation error, excessive repeated manual steps and the required stop rules.
+Do not repeat the old URL or the completed download matrix. Probe compatibility
+and automatic expired-result recovery still await release; the latter requires
+post-release browser verification, preferably using an existing trusted terminal
+record without another transfer. The historical sections below do not prescribe
+new tests. A temporary source replacement alone still is not normal-parser acceptance.
 
 ## Unified media input boundary
 
@@ -129,7 +153,11 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   the compact history row says “无法确认下载结果，请查看浏览器下载列表。” with
   “重新查询状态”. That explicit action starts another bounded query window, never
   START, cancellation, transport fallback or a second media request. Sixty seconds
-  is not a transfer duration limit. A possible live owner keeps its bridge; confirmed
+  is not a transfer duration limit. Restoring an already expired record makes one
+  authenticated result-only query per task and page, without renewing the deadline
+  or restarting polling. A trusted terminal can correct the card; active replies,
+  subscribed progress pushes and missing results keep it unconfirmed. The explicit
+  query button remains available. A possible live owner keeps its bridge; confirmed
   termination or confirmed execution loss permits release. Unconfirmed history is
   excluded from the panel's active count.
 - Legacy summaries without an execution ID use their known build as fallback
@@ -172,6 +200,25 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
 - Bilibili lazy episode selection, segmented/HLS merging and ZIP assembly keep
   their existing pipelines. ZIP and segmented downloads are not claimed to be
   streaming or refresh-resumable by this change.
+
+### Cancellation diagnostics
+
+Worker build `downloads-20261031.2` preserves a fixed cancellation cause in the
+existing terminal snapshot `error` field. The first terminal event wins:
+
+| Detail | Observed event |
+| --- | --- |
+| 页面请求取消下载 | The Worker received the page's cancel request. |
+| 浏览器停止接收下载数据 | The attachment response stream was cancelled by its consumer. |
+| 浏览器中止下载请求 | The attachment request's abort signal fired. |
+
+These messages identify an event, not the underlying browser policy or the user's
+intent. Raw cancellation reasons, task tokens and signed URLs are not recorded.
+The manager and download card preserve the confirmed cause, including after
+refresh recovery; older records without a cause remain unchanged. Unconfirmed
+cancellation still remains unknown. This diagnostic change does not change
+timeouts, source selection, fallbacks, cancellation semantics or Worker activation.
+It does not by itself establish that the production download failure is fixed.
 
 ## Download panel
 
@@ -575,3 +622,98 @@ These presentation changes do not modify the SW implementation validated above,
 its data path, or the backend API. "Transfer complete" continues to mean bytes
 handed to the browser; the browser's download list and actual file determine
 whether saving succeeded.
+
+### Production incident: fixed-source observations, 2026-10-31
+
+PR #11 keeps the production download incident open. The bridge header/cache
+repair and Worker `.2` cancellation diagnostics are distinct from a throughput
+fix. Two user-created production `.2` tasks failed with `network error` after
+25 and 115 seconds, at displayed averages of approximately 180 and 253 KB/s.
+These failures occurred after media transfer started; an old Worker or a
+pre-START bridge failure does not explain them. The historical selected URLs
+were not captured, so the current player selection cannot establish their source.
+
+A separate, fixed CDN URL returned a 43,074,063-byte HEVC/AAC file. The following
+observations use that exact URL and retain failures as well as successes:
+
+| Path | Observation | What it establishes |
+| --- | --- | --- |
+| In-app browser, native video-menu download | Actual file saved; filesystem write interval about 116 s | Complete file, not a precise network throughput measurement |
+| In-app browser, localhost ordinary-page SW download | Output stream cancelled by the browser after the first 14,725 bytes | Consumer-side cancellation in this tool/browser path, not a proven universal SW defect |
+| Same browser, localhost raw Fetch | 43,074,063 bytes read in 3.460 s | Full readable response; bytes discarded, no disk-save claim |
+| Same browser, localhost controlled-page SW read | Full response in 2.288 s, Worker completed | Byte pump can read the file; the extra controlled document makes this unsuitable for lifecycle acceptance |
+| Chrome, localhost ordinary-page SW download | Worker completed in 6.183 s; actual 43,074,063-byte saved file independently verified | Real SW delivery and saved-file integrity on localhost; task timing is not exact disk-save timing |
+
+The two actual saved files have SHA-256
+`518abc4327148cd6ed5a0f05542eb89349e42ce070728463b01e137aaffb6115`,
+matching the previously saved local file. The native file also passed a complete
+packet scan: HEVC 2160x3840 and AAC, approximately 123.7 seconds. This is not an
+acceptance result for the 523 MB original or a production SW save.
+
+The fixture uses the exact `.2` Worker and official streaming modules, one URL
+and no backup routes. It skips the purple button's native-eligibility GET.
+Consequently its throughput cannot alone establish the production button's
+behavior. These direct-CDN downloads do not relay media bytes through the
+application server; the existing Weibo media relay is a separate path.
+
+A subsequent sequential HTTP comparison changed only the Origin header, using
+the same URL with no application-level proxy, cookies or Referer. Production
+Origin completed in 4.641 s (9,281,203 B/s); localhost Origin completed in
+18.844 s (2,285,824 B/s). Both were HTTP 200, ACAO `*`, and matched the full-file
+hash. This is an independent HTTP-client observation, not a browser test or a
+proof that the underlying OS/network path was identical to the browser. It does
+not reproduce a fixed production-Origin rate cap and does not invalidate the
+user's observed browser slowdown.
+
+The required production-Origin browser comparison, default/explicit-source full
+saves, and refreshed-page/save-state acceptance remain incomplete. The browser
+tool's saved CDP permission denied network diagnostics. Automated Chrome bridge
+timeouts also coincided with a paused-document-response tool condition; they
+must not be reported as media throughput evidence. No cache clearing, forced
+Worker activation, proxy change, timeout increase or transport fallback was
+used to turn these failures into passes. Signed URLs and detailed private
+observations remain outside the public repository.
+
+### Handoff evidence: baseline review and expired-result recovery, 2026-10-31
+
+This subsection records the incoming recovery-patch handoff environment's
+observations and experiments. Local receipt checks and the subsequent matched
+browser comparison are recorded separately in `UNIFIED-MEDIA-ACCEPTANCE.md`.
+
+The preceding incident section is a historical checkpoint. The owner subsequently
+reported two complete production Chrome SW saves of the 43,074,063-byte compressed
+4K file, one with a page refresh, and resolved CDP access. The 523,069,472-byte
+original still slowed down in SW, raw Fetch and a command-line client. Those new
+file/hash observations are owner-reported here, not independent reruns of the
+private Windows acceptance log.
+
+An independent read of the existing production page found one completed card and
+one unconfirmed card. Clicking only the latter's existing query button immediately
+recovered its completed outcome and `.mp4` filename. No parse or download button
+was used. This proves that this task's trusted terminal remained available; it
+does not identify the original communication failure or independently verify disk
+contents. The old client deliberately skipped queries for an expired saved
+recovery window, so a refresh could leave an available terminal unread. The
+result-only restoration query documented above repairs that gap without a new
+transfer, a renewed recovery deadline or automatic retries.
+
+Comparison of PR #8 (`f1a6778`), PR #9 (`665bd55`) and the reviewed PR #11
+(`d8cc86c`) found identical native/Blob/bridge modules, upstream Fetch parameters,
+read timeout and byte-pump behavior. Blocking every lifecycle persistence write in
+a deterministic three-version Worker test did not block any of the 64 MiB media
+response: each version performed one media Fetch and 1,025 upstream reads and
+produced the same bytes. This is a dependency test, not a browser speed benchmark.
+The backend default/source ordering functions also match. Four identical parser
+inputs per version produced the same complete outputs: unmeasured original uses
+compressed 4K; measured 4K original becomes the default; a measured 720p original
+does not replace compressed 4K. The two actual 4K files differ in size by about
+12.14 times; a work URL or resolution label alone is not a matched-source test.
+
+At that historical checkpoint, the proposed throughput comparison was to freeze one still-valid media URL/file
+and the same browser/network path for PR #8 and the current client. A historical
+fast save of a different representation cannot locate a regression. Conversely,
+matching application code does not prove every browser/CDN/network interaction
+healthy. Later valid version comparisons, the rejected a8 experiment and the owner's
+successful normal production saves are superseding evidence in the closeout summary;
+do not repeat that comparison. This recovery patch does not
+change timeouts, media routing, quality defaults, proxy settings or the Worker.

@@ -558,13 +558,85 @@ test('a fixed recovery deadline survives empty queries and refresh, then manual 
   h.tick(4000); assert.notEqual(h.bridges[0].removed, true, 'query misses alone cannot release a possibly live owner');
   const count = h.messages.length;
   await h.api.reconnectStreaming(() => {});
-  assert.equal(h.messages.length, count, 'refreshing an expired window cannot renew automatic polling');
+  assert.equal(h.messages.length, count + 1, 'expired recovery permits one read-only result check');
+  assert.equal(observed.at(-1).recoveryDeadline, deadline, 'the result check cannot renew the recovery window');
+  assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+  await h.api.reconnectStreaming(() => {});
+  assert.equal(h.messages.length, count + 1, 'repeated restoration in the same page cannot repeat the check');
   found = true; await h.api.queryStreaming(request.id);
   assert.equal(observed.at(-1).status, 'completed');
   assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
   assert.equal(h.attachments.length, 0);
   h.tick(4000); assert.equal(h.bridges[0].removed, true);
 });
+
+for (const status of ['completed', 'failed', 'cancelled']) {
+  test(`expired refresh reads a stored ${status} result once without restarting observation or delivery`, async t => {
+    const instance = 'original-instance';
+    const h = await harness(t, message => message.action === 'ping'
+      ? { ...admissionPing, workerInstance: 'replacement-instance' }
+      : { snapshots: [admittedState('claimed', 12, { status, workerInstance: instance, filename: '作品.mp4', error: status === 'failed' ? 'truncated' : undefined })] });
+    const { url, ...last } = admittedState('claimed', 10, { workerInstance: instance, filename: '作品.bin' });
+    const deadline = Date.now() - 1;
+    h.storage.set('dokitool-downloads-v1', JSON.stringify([{
+      id: request.id, token: 'a'.repeat(32), filename: last.filename, savedAt: Date.now(),
+      recoveryDeadline: deadline, ownerGone: true, last,
+    }]));
+    const observed = [];
+    const [restored] = await h.api.reconnectStreaming(value => observed.push(value));
+    assert.equal(restored.status, status);
+    assert.equal(observed.at(-1).filename, '作品.mp4');
+    assert.equal(restored.observation, undefined);
+    assert.equal(restored.recoveryDeadline, undefined);
+    assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
+    assert.deepEqual(h.messages.find(message => message.action === 'query').tasks, [{ id: request.id, token: 'a'.repeat(32), workerInstance: instance }]);
+    assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+    assert.equal(h.attachments.length, 0);
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+    await h.api.reconnectStreaming(() => {});
+    assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
+    h.tick(4000); assert.equal(h.bridges[0].removed, true);
+  });
+}
+
+for (const response of ['missing', 'active', 'wrong instance', 'old revision', 'wrong id', 'query error']) {
+  test(`expired refresh keeps its original deadline when a result check returns ${response}`, async t => {
+    const instance = 'original-instance';
+    const candidate = admittedState('claimed', response === 'old revision' ? 9 : 12, {
+      status: response === 'active' ? 'downloading' : 'completed',
+      workerInstance: response === 'wrong instance' ? 'different-instance' : instance,
+      ...(response === 'wrong id' ? { id: 'another0000000001' } : {}),
+    });
+    const h = await harness(t, message => message.action === 'ping'
+      ? { ...admissionPing, workerInstance: instance }
+      : response === 'query error' ? { error: 'temporary failure' }
+        : { snapshots: response === 'missing' ? [] : [candidate] });
+    const { url, ...last } = admittedState('claimed', 10, { workerInstance: instance });
+    const deadline = Date.now() - 1;
+    h.storage.set('dokitool-downloads-v1', JSON.stringify([{
+      id: request.id, token: 'a'.repeat(32), filename: request.filename, savedAt: Date.now(),
+      recoveryDeadline: deadline, cancelRequested: true, last,
+    }]));
+    const observed = []; await h.api.reconnectStreaming(value => observed.push(value));
+    assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
+    assert.equal(observed.at(-1).observation, 'unknown');
+    assert.equal(observed.at(-1).recoveryExpired, true);
+    assert.equal(observed.at(-1).recoveryDeadline, deadline);
+    assert.equal(JSON.parse(h.storage.get('dokitool-downloads-v1'))[0].recoveryDeadline, deadline);
+    assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);
+    assert.equal(h.attachments.length, 0);
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+    if (response === 'active') {
+      h.update(admittedState('claimed', 13, { workerInstance: instance }));
+      assert.equal(observed.at(-1).recoveryDeadline, deadline, 'subscribed progress must not reopen automatic observation');
+      assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
+      h.update(admittedState('claimed', 14, { status: 'completed', workerInstance: instance }));
+      assert.equal(observed.at(-1).status, 'completed', 'a same-owner late terminal remains authoritative');
+    }
+    await h.api.reconnectStreaming(() => {});
+    assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
+  });
+}
 
 test('old client-inferred interrupted is rechecked, but confirmed terminal summaries remain absorbing', async t => {
   const h = await harness(t, message => message.action === 'ping' ? admissionPing
@@ -614,7 +686,7 @@ for (const alreadyExpired of [false, true]) {
     assert.equal(observed.at(-1).recoveryExpired, true);
     assert.match(observed.at(-1).error, /无法确认下载结果/);
     assert.equal([...h.timers.values()].some(timer => timer.delay === 5000), false);
-    assert.equal(h.messages.some(message => message.action === 'query'), !alreadyExpired);
+    assert.equal(h.messages.filter(message => message.action === 'query').length, 1);
     await h.api.forgetStreaming(request.id);
     assert.deepEqual(JSON.parse(h.storage.get('dokitool-downloads-v1')), []);
     assert.equal(h.messages.some(message => ['start', 'cancel'].includes(message.action)), false);

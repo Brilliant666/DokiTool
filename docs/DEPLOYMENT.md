@@ -2,6 +2,14 @@
 
 此文档与 `ops/examples/` 都是通用示例，不包含生产配置、账号或凭据。仓库提交不会触发线上更新。
 
+## PR #11 发布收尾（2026-10-31，尚未执行）
+
+当前范围和证据以[统一验收收尾](UNIFIED-MEDIA-ACCEPTANCE.md#pr11-closeout)及[严重事故复盘](incidents/INC-20261031-001-download-delivery.md)为准。生产已有bridge局部修复和诊断前端，PR内探针兼容/自动终态恢复尚未发布。正常生产下载已有用户三次约540 MB完整保存反馈，不再为发布重复测速；不把这些成功算作未发布修复生效。
+
+获准合并后，以最终main同一提交构建前端、PHP、schema及目录；记录源码SHA、产物/Worker哈希和本站配置差异，保留发布前整套产物、指向与恢复命令。只做版本/精确bridge响应头/正常解析冒烟，以及新增自动终态恢复的浏览器验收；恢复优先复用已有完成任务，不重下媒体。不要求重跑历史PR #8测速、43 MB保存或无变化的全平台矩阵。
+
+回滚目标是发布前**已经修好bridge**的生产状态，不能随旧配置恢复DENY。按实际变更回退应用指向及本站局部配置，保留旧哈希资源、任务数据和Worker自然生命周期；不清站点数据、不注销/强制升级Worker，不覆盖用户后来修改的网络配置。文件回退不代表已激活Worker立即切换。实际部署、验收和回滚回执另记；本次文档更新不执行这些操作，不包含Go切换。
+
 ## 统一媒体 v1 切换
 
 这是九平台、网关和前端的合同切换，不能只替换前端。发布包必须包含同一提交的 `frontend/dist/`、`backend/` 以及 `docs/schema/unified-v1/unified-v1.schema.json`；PHP 从源码相对位置读取 schema，缺失文件不能用跳过验证兜底。后端注册表 `backend/config/platforms.json` 与前端生成的目录快照须来自同一版本。无数据库迁移，无 Go 重写，不增加 Python/curl_cffi 产品运行依赖。
@@ -20,7 +28,10 @@ PR #7 是前端更新，不修改后端解析 API、媒体池或数据库。下�
 
 核对现有站点的 `/downloads/*` 静态文件规则是否与 `ops/examples/snap.caddy` 一致，并位于 SPA 回退规则之前。已正确配置的站点无需重复修改；缺失时才局部补齐：
 
-- Worker 返回有效 JavaScript MIME，bridge 返回 `text/html`；两者使用 `Cache-Control: no-cache` 校验更新。`no-cache` 不等于禁止存储，也不强制立即替换正在工作的 Worker。
+- Worker 和 task-store 返回有效 JavaScript MIME，继续使用 `Cache-Control: no-cache` 校验更新；bridge 返回 `text/html`，单独使用 `Cache-Control: no-store`。这不强制立即替换正在工作的 Worker。
+- **只有精确 `/downloads/bridge.html` 允许同源嵌入**：最终 GET 响应必须只有一个 `X-Frame-Options: SAMEORIGIN`；首页、Worker、其他下载路径仍保持 `DENY`。全站 `DENY` 会阻止这个同源 iframe，使页面在发送下载任务前报“无法确认下载连接的控制关系”。按示例使用互斥路径条件替换响应值，不用 `+X-Frame-Options` 追加第二个值，也不放开整个 `/downloads/*`。实际站点、公共 import 和上层代理可能另设响应头，应追查最终生效来源，不能用示例文件代替现场配置。
+- **已有缓存也必须得到完整 bridge 响应**：Chromium 合并 304 时保留旧缓存的 `X-Frame-Options`，因此 304 本身显示 `SAMEORIGIN` 仍可能继续使用旧 `DENY`。仅对精确 bridge 删除请求的 `If-None-Match`、`If-Modified-Since`，让有效文档返回完整 200 和新安全头；响应用 `no-store`，避免再依赖这个文档的缓存头合并。缓存规则同样用互斥条件，不能被下载目录的 `no-cache` 覆盖。带旧 ETag、日期及两者组合的请求均须取得正确 200/HTML/标记、唯一 SAMEORIGIN 和 no-store。其他脚本的验证缓存机制不变。依据：[Chromium 的 304 非更新头列表](https://github.com/chromium/chromium/blob/main/net/http/http_response_headers.cc)、[Caddy 请求头删除规则](https://caddyserver.com/docs/caddyfile/directives/request_header)。
+- 若设置了 CSP，还须核对首页的 `frame-src`（及其回退指令）允许本站 bridge，以及 bridge 的 `frame-ancestors` 允许同源父页面；保留其他 CSP 指令和外站嵌入限制。备份本站实际配置、记录 diff 和恢复命令，使用服务器当前 Caddy 校验完整配置后，仅做必要 reload；再从公网 GET 检查头部没有被代理覆盖。
 - 缺失的 `/downloads/*` 文件返回 404，不能回退首页。`/downloads/file/*` 是浏览器内 Worker 生成的附件地址，服务器没有对应文件，直接请求服务器应返回 404。
 - 正式环境使用 HTTPS。Worker 仅注册 `/downloads/` 作用域，不控制首页或 API，不将作用域扩大为 `/`，也不增加全站离线缓存。普通源媒体仍由 CDN 直接传到用户浏览器；既有微博签名媒体路径不变。
 
@@ -34,6 +45,8 @@ bridge 是受 Worker 控制的同源 HTML 文档，用于在下载期间保留�
 
 1. **部署响应**：确认首页、实际 hash chunk、Worker 和 bridge 的内容/哈希、MIME、缓存头正确；缺失 chunk、缺失下载文件和服务器端附件路径为 404；既有 API/微博入口及访问控制保持正常。服务端 Worker 已更新，不代表每个已打开浏览器立即切到 `.4`。
 2. **真实浏览器**：通过紫色下载按钮检查实际保存文件名、大小和 SHA-256；下载中刷新后任务 ID 不变且不重复传输；有活动任务时新版保持 waiting，任务完成并释放 bridge 后自然升级，下一次下载使用新版。页面显示“传输完成”不能替代文件落盘验证。
+
+可用 `python scripts/check-download-headers.py --base-url https://snap.example.com --output /path/to/headers.json` 检查公开 GET 响应。脚本拒绝重定向和重复/冲突的 X-Frame-Options，核对真实 bridge 标记、缓存策略及相邻路径保护，再发送 ETag、日期和两者组合的条件请求，要求仍返回相同完整正文。默认使用当前 GET 的验证值；复现旧缓存时用 `--previous-etag`、`--previous-last-modified` 传入原失败请求的值。脚本记录有关的 CSP 指令供人工复核；不解析作品、不读取任务凭据、不代替真实下载验收。纯响应头修复应保留原浏览器 profile、现有 Worker 和失败记录，从原首页重试，覆盖默认与显式选源的实际保存及一次中途刷新。不得通过注销 Worker、清站点数据、关闭控制关系校验或切换下载方式来替代修复。
 
 本地 Edge 已用正式构建验证两条超过六分钟的下载、刷新、超过五分钟的排队、自然升级及五个文件的哈希；详情及历史检查点见 [下载说明](DOWNLOADS.md#state-and-admission-consolidation-2026-10-30)。这些是受控源的本地验收，不等于生产 CDN 吞吐测试。Safari/微信、锁屏、浏览器挂起和关闭所有页面仍需另行验证，不能保证 bridge 在这些条件下持续运行。
 
@@ -75,7 +88,11 @@ PHP 使用受支持的 8.x 版本，代码最低要求 8.1，启用 cURL、OpenS
 - `ops/examples/snap-fpm.conf`：公开解析、内部解析和媒体传输三个池。
 - `ops/examples/snap-access.caddy.example`：默认返回 503 的关闭入口，选择访问策略后才替换。
 
-访问控制必须覆盖 HTML、静态资源与 API。Caddy 外层 `route` 保证访问门先执行；不要将访问门与 `handle` 并列后依赖书写顺序，因为 Caddy 会重新排序。发布路径使用版本软链时，示例的 `resolve_root_symlink` 可让 FastCGI 使用实际根目录。修改后对实际安装版本执行配置检查，保留局部配置及上一版本以便回退。
+访问控制默认覆盖 HTML、静态资源与 API。Caddy 外层 `route` 保证访问门先执行；不要将访问门与 `handle` 并列后依赖书写顺序，因为 Caddy 会重新排序。发布路径使用版本软链时，示例的 `resolve_root_symlink` 可让 FastCGI 使用实际根目录。修改后对实际安装版本执行配置检查，保留局部配置及上一版本以便回退。
+
+密码保护的测试站还必须验证模块 Worker 的实际注册，不能用带认证的静态 GET 通过代替。香港测试站曾因全站 Basic Auth 使 `/downloads/worker.js` 返回 401，注册在媒体传输前失败。仅对 `/downloads/worker.js` 和其唯一模块依赖 `/downloads/task-store.js` 设置精确静态访问例外即可解除这项脚本门禁；两者须匿名返回 200、正确 JavaScript MIME、与构建一致的内容及 `no-cache`，不返回登录页或 SPA HTML。保留首页、API、bridge 和相邻路径的既有认证，不能放开整个 `/downloads/*`、源码或媒体接口。该例外只公开静态脚本，不公开用户浏览器中的任务数据，也不增加服务器媒体中转。
+
+部署验收须分别记录匿名脚本响应、认证边界、浏览器注册/模块加载/激活、协议握手，以及认证后的 bridge 控制关系；后者继续遵守上文 SAMEORIGIN、no-store 和完整 200 要求。注册作用域仍为 `/downloads/`，无需扩大到 `/`。如 bridge 嵌入仍失败，按实际响应与浏览器错误另行定位，不默认扩大匿名例外。配置、下载服务启动和整文件保存是三层验收，任一层通过均不能代替后一层。
 
 | 变量 | 用途 |
 | --- | --- |
@@ -94,7 +111,11 @@ TLS 校验、入口域名检查、连接超时和跳转数量上限都已实施�
 
 除微博外，普通播放/下载直连返回的媒体 URL，仍受 CORS、防盗链、签名时效、Range 和浏览器策略影响。微博采用下述限定来源的签名传输服务，不启用原始 `svproxyurl.php` 开放代理。Cookie 主页、Python/Flask 网易云、其他可选模块不在本仓库维护范围。真实平台的匿名可用性和高级清晰度需单独验证；固定样例通过不是平台成功率证明。
 
-抖音解析会额外探测程序生成的原始播放入口，以识别实际分辨率和视频码率，并返回最终 CDN 地址，避免浏览器必须经过缺少 CORS 头的原始 302 入口。探测由纯 PHP 完成，无需安装 ffprobe；只读取文件头和 MP4 元数据，不缓存或中转整段视频。限制为最多三次跳转、十二次请求、1 MiB 正文，cURL 共享六秒截止预算；系统 DNS 解析仍由操作系统的解析器超时控制。每跳限制 HTTPS 官方媒体域名、校验所有 DNS 地址为公网并固定连接 IP，继承现有部署出网隔离。失败时保留已知可用主源，不阻断整次解析。
+抖音解析会额外探测程序生成的原始播放入口，以识别实际分辨率和视频码率，并返回最终 CDN 地址，避免浏览器必须经过缺少 CORS 头的原始 302 入口。探测由纯 PHP 完成，无需安装 ffprobe；只读取文件头和 MP4/QuickTime 元数据，不缓存或中转整段视频。限制为最多三次跳转、十二次请求、1 MiB 正文，cURL 共享六秒截止预算；系统 DNS 解析仍由操作系统的解析器超时控制。
+
+探针先按平台规则授权初始入口：抖音原始入口由平台返回的视频 ID 生成，小红书原始候选由已提取的 `originVideoKey` 生成。随后允许该入口通过 HTTPS 重定向分配公共 CDN，不再枚举 CDN 域名。每跳仍只允许 HTTPS 443、禁止认证信息与 fragment，检查所有 DNS 地址均为公网并固定连接 IP，验证 TLS，且保持 Range、响应类型、容器结构和读取预算检查。旧入口返回的 HTTP Location 会先升级为 HTTPS，不发送 HTTP 请求；localhost、内网地址及混合公网/内网 DNS 答案均拒绝。现有部署出网隔离继续生效。
+
+这不是供用户提交任意 URL 的通用探针或媒体代理，公共 API 路由和平台输入范围不变。探测失败时保留已知可用主源，不阻断整次解析；小红书页面获取与 4K deferred 的既定范围不变。
 
 ## 微博播放与下载
 
