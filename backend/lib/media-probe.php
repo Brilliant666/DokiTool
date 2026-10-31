@@ -28,7 +28,8 @@ abstract class SnapMediaProbe
 
     protected static function mediaTypes(): array
     {
-        return ['video/mp4', 'application/octet-stream', 'video/x-m4v'];
+        // QuickTime originals use the same ftyp/moov track validation below.
+        return ['video/mp4', 'video/quicktime', 'application/octet-stream', 'video/x-m4v'];
     }
 
     /** All DNS answers must be public. Pin the selected IP to prevent rebinding. */

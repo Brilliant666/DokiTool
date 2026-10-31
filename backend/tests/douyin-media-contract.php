@@ -1,7 +1,8 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/../api/douyin/DouyinParser.php';
-$checks = [];
+require_once __DIR__ . '/../lib/gateway.php';
+$checks = []; $responses = [];
 function check(string $name, bool $passed): void { global $checks; $checks[] = ['name' => $name, 'passed' => $passed]; }
 function box(string $type, string $payload): string { return pack('N', strlen($payload) + 8) . $type . $payload; }
 function movie(int $width = 2160, int $height = 3840, string $codec = 'hvc1', int $sampleSize = 500000, int $version = 0, bool $variable = false): string
@@ -99,6 +100,43 @@ $unmeasured = $parseWith(['url' => $cdn, 'metadata' => []]);
 check('resolved CDN with unknown metadata remains a backup', str_contains($unmeasured['url'], 'standard.mp4') && str_starts_with($unmeasured['video_backup'][0]['url'], $cdn) && !isset($unmeasured['video_backup'][0]['width']));
 $thrown = json_decode($format->invoke(new DouyinParser(fn () => throw new RuntimeException('optional probe')), $source, '1234567890123456'), true);
 check('optional probe exception preserves parse success', $thrown['code'] === 200 && str_contains($thrown['data']['url'], 'standard.mp4'));
+
+// Original QuickTime files use the same bounded atom reader. A CDN MIME label
+// must not discard verified dimensions or change the server-selected default.
+$quicktimeFile = box('ftyp', 'qt  ' . pack('N', 0) . 'qt  ') . substr($file, strlen($ftyp));
+$mimeDefaults = [];
+foreach (['video/mp4', 'video/quicktime', 'Video/QuickTime; charset=binary', 'text/html'] as $mime) {
+    $containerTransport = static function (string $url, int $offset, int $length) use ($original, $cdn, $quicktimeFile, $mime): array {
+        if ($url === $original) return ['status' => 302, 'headers' => ['location' => $cdn], 'body' => ''];
+        $body = substr($quicktimeFile, $offset, $length);
+        return ['status' => 206, 'headers' => ['content-type' => $mime,
+            'content-range' => 'bytes ' . $offset . '-' . ($offset + strlen($body) - 1) . '/' . strlen($quicktimeFile)], 'body' => $body];
+    };
+    $parser = new DouyinParser(static fn (string $url): ?array => (new SnapDouyinMediaProbe($containerTransport))->probe($url));
+    $raw = json_decode($format->invoke($parser, $source, '1234567890123456'), true, 512, JSON_THROW_ON_ERROR);
+    $adapted = snapAdaptParser('douyin', $raw, 'https://www.douyin.com/video/1234567890123456');
+    foreach ([false, true] as $debug) {
+        [$status, $public] = snapPreparePublicMedia('douyin', $adapted, debug: $debug);
+        snapValidateEnvelope($public); $responses[] = $public;
+        $item = $public['data']['items'][0];
+        $selected = array_values(array_filter($item['variants'], static fn (array $variant): bool => $variant['id'] === $item['default']['variant_id']))[0];
+        $name = $mime . ($debug ? ' debug' : ' normal');
+        check($name . ' remains valid and retains both complete candidates', $status === 200 && count($item['variants']) === 2);
+        if ($mime === 'text/html') {
+            check($name . ' cannot promote non-media responses to original quality', str_contains($item['default']['url'], 'standard.mp4') && !isset($selected['provenance']));
+            continue;
+        }
+        check($name . ' selects the probed complete original', ($selected['provenance'] ?? '') === 'original_endpoint'
+            && ($selected['metadata']['width'] ?? 0) === 2160 && ($selected['metadata']['height'] ?? 0) === 3840
+            && ($selected['metadata']['video_codec'] ?? '') === 'hevc' && ($selected['metadata']['video_bitrate_bps'] ?? 0) === 4000000
+            && $selected['delivery']['sources'][0]['size_bytes'] === strlen($quicktimeFile));
+        $mimeDefaults[$mime][$debug ? 'debug' : 'normal'] = [$item['default'], $selected['metadata']];
+    }
+}
+check('MIME variants retain identical default identity and verified facts', $mimeDefaults['video/mp4'] === $mimeDefaults['video/quicktime']
+    && $mimeDefaults['video/mp4'] === $mimeDefaults['Video/QuickTime; charset=binary']);
+
+if (($argv[1] ?? '') === '--export') { echo json_encode($responses, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . PHP_EOL; exit; }
 $passed = count(array_filter($checks, fn ($check) => $check['passed']));
 echo json_encode(['suite' => 'douyin-media', 'passed' => $passed, 'total' => count($checks), 'checks' => $checks], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL;
 exit($passed === count($checks) ? 0 : 1);
