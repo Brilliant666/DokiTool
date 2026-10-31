@@ -15,6 +15,12 @@ contract. The latest controlled refresh, saved-file integrity and natural upgrad
 Publishing the source or passing a local
 build does not itself establish the production version.
 
+The open production incident and investigation lessons are recorded in
+[INC-20261031-001](incidents/INC-20261031-001-download-delivery.md).
+Bridge/cache, media-probe compatibility, task recovery and original-source
+throughput have separate causes and acceptance states. A successful download
+using a temporarily substituted source does not close normal-parser delivery.
+
 ## Unified media input boundary
 
 The backend selects each item's complete-file `default`. The frontend validates
