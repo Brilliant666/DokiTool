@@ -3,7 +3,7 @@ import AppIcon from './AppIcon.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({ downloads: { type: Array, default: () => [] } })
-const emit = defineEmits(['cancel', 'retry', 'handoff', 'clear-completed'])
+const emit = defineEmits(['cancel', 'retry', 'query', 'handoff', 'clear-completed'])
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -19,9 +19,10 @@ const formatElapsed = (elapsed) => {
 }
 const getStatusColor = (status) => ({ downloading: 'text-blue-500', completed: 'text-green-500', failed: 'text-red-500', cancelled: 'text-gray-500', 'handed-off': 'text-blue-500' }[status] || 'text-slate-500')
 const getStatusIcon = (status) => ({ downloading: 'fa-spinner fa-spin', completed: 'fa-check-circle', failed: 'fa-exclamation-circle', cancelled: 'fa-times-circle', 'handed-off': 'fa-external-link-alt' }[status] || 'fa-hourglass-half')
-const observationText = (item) => item.observation === 'unknown' ? '暂时无法获取进度' : item.observation === 'stalled' ? '传输暂无进展，可等待或取消' : ''
-const isActive = (item) => ['queued', 'preparing', 'downloading'].includes(item.status) || item.observation === 'unknown'
-const isSettled = (item) => !item.observation && ['completed', 'failed', 'cancelled', 'interrupted', 'handed-off'].includes(item.status)
+const observationText = (item) => item.recoveryExpired ? '结果未确认' : item.observation === 'unknown' ? '暂时无法获取进度' : item.observation === 'stalled' ? '传输暂无进展，可等待或取消' : ''
+const isActive = (item) => !item.recoveryExpired && (['queued', 'preparing', 'downloading'].includes(item.status) || item.observation === 'unknown')
+const isSettled = (item) => (item.transport === 'browser_streaming' && item.observation === 'unknown' && item.ownerGone === true && item.recoveryExpired === true)
+  || (!item.observation && ['completed', 'failed', 'cancelled', 'interrupted', 'handed-off'].includes(item.status))
 const orderedDownloads = computed(() => [...props.downloads.filter(isActive), ...props.downloads.filter(item => !isActive(item))])
 const activeCount = computed(() => props.downloads.filter(isActive).length)
 const settledCount = computed(() => props.downloads.filter(isSettled).length)
@@ -30,7 +31,7 @@ const outcomeSummary = computed(() => [['completed', '完成'], ['failed', '失�
   .filter(([count]) => count > 0).map(([count, label]) => `${label} ${count}`).join(' · '))
 const summary = computed(() => activeCount.value
   ? `${activeCount.value} 个进行中${settledCount.value ? ` · 已结束 ${settledCount.value}` : ''}`
-  : outcomeSummary.value || '下载记录')
+  : [outcomeSummary.value, props.downloads.some(item => item.recoveryExpired) ? `未确认 ${props.downloads.filter(item => item.recoveryExpired).length}` : ''].filter(Boolean).join(' · ') || '下载记录')
 const statusText = (item) => observationText(item) || (item.status === 'completed' ? '传输完成' : item.statusText)
   || ({ queued: '排队中', preparing: '准备下载', downloading: '下载中…', failed: '下载失败', cancelled: '已取消', interrupted: '下载连接已中断', 'handed-off': '已交给浏览器' }[item.status] || item.status)
 
@@ -84,6 +85,9 @@ onBeforeUnmount(stopCollapseTimer)
         :key="item.id"
         :data-download-id="item.id"
         :data-worker-build="item.workerBuild"
+        :data-worker-instance="item.workerInstance"
+        :data-task-id="item.deliveryId"
+        :data-recovery-expired="item.recoveryExpired || undefined"
         :data-download-state="item.observation || item.status"
         :data-download-transport="item.transport"
         class="download-panel-item theme-colors border-b border-slate-100 dark:border-slate-700 last:border-b-0"
@@ -135,7 +139,12 @@ onBeforeUnmount(stopCollapseTimer)
             </div>
           </div>
 
-          <div v-if="item.status === 'downloading'" class="mt-3 mb-2">
+          <div v-if="item.recoveryExpired" class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            无法确认下载结果，请查看浏览器下载列表。
+            <button type="button" @click="emit('query', item.id)" class="block mt-2 text-indigo-600 dark:text-indigo-400 hover:underline">重新查询状态</button>
+          </div>
+
+          <div v-if="item.status === 'downloading' && !item.recoveryExpired" class="mt-3 mb-2">
             <div class="flex justify-between text-xs text-slate-500 mb-1">
               <span v-if="item.progressKind === 'bytes'">{{ formatBytes(item.loaded || 0) }}<template v-if="item.total"> / {{ formatBytes(item.total) }}</template><template v-else> / 大小未知</template></span>
               <span v-else>{{ item.progressKind === 'archive' ? '打包进度' : '分片进度' }}</span>

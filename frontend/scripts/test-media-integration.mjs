@@ -12,7 +12,7 @@ const result = spawnSync(
   [
     "--test",
     "--test-concurrency=1",
-    "--test-name-pattern=PR8 integration:",
+    "--test-name-pattern=PR[89] integration:",
     fileURLToPath(
       new URL("../tests/ui-download-contract.test.mjs", import.meta.url),
     ),

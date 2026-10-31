@@ -166,17 +166,149 @@ async function mount(mediaData) {
   };
 }
 
-test('quality UI retains complete variants, truthful sizes and unsupported processing choices', async () => {
+const muxVariant = (id = 'mux') => ({ id, delivery: { kind: 'mux', output: { container: 'mp4', extension: 'mp4' }, resources: [
+  { id: 'video', role: 'video', metadata: { width: 3840, height: 2160, evidence: 'upstream' }, delivery: variant('video-track').delivery },
+  { id: 'audio', role: 'audio', delivery: variant('audio-track').delivery },
+] } });
+
+test('candidate policy UI: unsupported versions start collapsed and cannot replace a downloadable selection', async () => {
+  const file = variant('file', ['primary', 'backup'], { width: 1920, height: 1080 });
+  const mux = muxVariant(), dash = { id: 'dash', delivery: { kind: 'dash', scope: 'adaptive', sources: [{ url: 'https://media.example.test/a.mpd' }] } };
+  const pending = { id: 'pending', state: 'deferred', reason: { code: 'PENDING', message: '等待后端验证' } };
+  const value = item([file, mux, dash, pending], 'file', 'backup'), before = structuredClone(value), view = await mount(data(value));
+  try {
+    await view.click('画质选项');
+    assert.equal(view.choices().length, 1, 'only currently downloadable options belong in the main list');
+    const folded = view.elements('rs-other-versions');
+    assert.equal(folded.length, 1); assert.equal(folded[0].type, 'details'); assert.ok(!folded[0].props.open);
+    assert.equal(view.elements('rs-other-version').length, 3);
+    assert.ok(view.elements('rs-other-version').every(row => row.type !== 'button' && !row.props.onClick));
+    assert.equal(view.selection.currentSelection.value, null);
+    assert.equal(view.selection.currentTarget.value.url, url('backup'));
+    assert.deepEqual(value, before, 'ready mux resources and every other variant remain unchanged');
+  } finally { view.app.unmount(); }
+});
+
+test('candidate policy UI: no complete file has a visible reason outside the collapsed versions', async () => {
+  const value = { id: 'video-1', type: 'video', variants: [muxVariant()], default: null, default_unavailable_reason: 'processing_required' };
+  const view = await mount(data(value));
+  try {
+    await view.click('画质选项');
+    const notice = view.elements('rs-quality-unavailable');
+    assert.equal(notice.length, 1); assert.match(view.textOf(notice[0]), /完整文件|暂不支持/);
+    assert.notEqual(notice[0].parent.type, 'details');
+    assert.equal(view.choices().length, 0); assert.equal(view.selection.currentTarget.value.kind, 'unsupported');
+  } finally { view.app.unmount(); }
+});
+
+test('candidate policy UI: higher quality notice reads backend references once without inferring from dimensions', async () => {
+  const value = item([variant('file'), muxVariant('higher-a'), muxVariant('higher-b')]);
+  const view = await mount(data(value));
+  try {
+    await view.click('画质选项'); assert.equal(view.elements('rs-higher-quality-note').length, 0);
+    value.higher_quality_variants = [{ variant_id: 'higher-a', requires: ['mux'] }, { variant_id: 'higher-b', requires: ['mux'] }];
+    view.store.resultData = data({ ...value }); await nextTick();
+    assert.equal(view.elements('rs-higher-quality-note').length, 1);
+    assert.match(view.textOf(view.elements('rs-higher-quality-note')[0]), /更高画质.*暂不支持/);
+    assert.equal(view.selection.currentTarget.value.url, url('file'));
+  } finally { view.app.unmount(); }
+});
+
+test('candidate policy contract: HDR and alternate language facts require valid enums and evidence', () => {
+  const envelope = metadata => ({ schema_version: '1.0', code: 'OK', data: data(item([variant('file', ['file'], metadata)])) });
+  for (const metadata of [{ hdr_type: 'hevc' }, { audio_language_role: 'other', audio_language: 'en' }, { audio_language_role: 'alternate' }]) {
+    assert.throws(() => contract.validateMediaEnvelope(envelope(metadata)), /媒体合同无效/);
+  }
+  const missingEvidence = envelope({ hdr_type: 'hdr10' }); delete missingEvidence.data.items[0].variants[0].metadata.evidence;
+  assert.throws(() => contract.validateMediaEnvelope(missingEvidence), /证据/);
+});
+
+test('candidate policy contract: capability facts validate every metadata layer without rejecting evidenced mux conflicts', () => {
+  const mux = muxVariant(), file = variant('file', ['file'], { hdr_type: 'sdr' });
+  mux.metadata = { width: 1920, height: 1080, hdr_type: 'hdr10', evidence: 'upstream' };
+  mux.delivery.resources[0].metadata.hdr_type = 'hlg';
+  mux.delivery.resources[1].metadata = { audio_language: 'en', audio_language_role: 'alternate', audio_channels: 6, evidence: 'upstream' };
+  const envelope = { schema_version: '1.0', code: 'OK', data: data(item([file, mux])) }, before = structuredClone(envelope);
+  assert.equal(contract.validateMediaEnvelope(envelope), envelope.data);
+  assert.deepEqual(envelope, before, 'conflicting facts are retained, not merged into a new default');
+  for (const hdr of ['sdr', 'hdr10', 'hdr10_plus', 'hlg', 'dolby_vision', 'hdr_unknown']) {
+    file.metadata.hdr_type = hdr; assert.doesNotThrow(() => contract.validateMediaEnvelope(envelope));
+  }
+  file.metadata = { hdr_type: 'hdr10', fps: 60, evidence: 'mixed', field_evidence: { hdr_type: 'probe' } };
+  assert.throws(() => contract.validateMediaEnvelope(envelope), /证据/);
+  file.metadata.field_evidence.fps = 'upstream'; assert.doesNotThrow(() => contract.validateMediaEnvelope(envelope));
+  mux.delivery.resources[1].metadata.hdr_type = 'hdr10';
+  assert.throws(() => contract.validateMediaEnvelope(envelope), /音频资源不能声明 HDR/);
+  delete mux.delivery.resources[1].metadata.hdr_type;
+  mux.delivery.resources[0].metadata.audio_language = 'en';
+  assert.throws(() => contract.validateMediaEnvelope(envelope), /无音频资源/);
+});
+
+test('candidate policy UI: failed explicit source stays failed until a user selects an available option', async () => {
+  const selected = variant('file', ['old', 'backup']), value = item([selected]), view = await mount(data(value));
+  try {
+    view.selection.choose({ variant_id: 'file', source_id: 'old' });
+    selected.delivery.sources.shift();
+    view.store.resultData = data(item([selected])); await nextTick();
+    await view.click('画质选项');
+    assert.equal(view.selection.currentTarget.value.kind, 'invalid');
+    assert.deepEqual(view.selection.currentSelection.value, { variant_id: 'file', source_id: 'old' });
+    assert.equal(view.choices().length, 1); assert.ok(!String(view.choices()[0].props.class).includes('rs-backup-item--cur'));
+    view.choices()[0].props.onClick(); await nextTick();
+    assert.equal(view.selection.currentTarget.value.url, url('backup'));
+  } finally { view.app.unmount(); }
+});
+
+test('merged identity conflicts retain evidence without changing server or explicit selection', () => {
+  const observations = (...values) => values.map(value => ({ value, evidence: 'upstream' }));
+  const file = variant('file', ['file']), mux = muxVariant();
+  mux.metadata = { field_conflicts: { fps: observations(30, 60), hdr_type: observations('sdr', 'hdr10') } };
+  mux.delivery.resources[0].metadata = structuredClone(mux.metadata);
+  mux.delivery.resources[1].metadata = { audio_language_role: 'main', evidence: 'upstream', field_conflicts: { audio_language: observations('en', 'fr') } };
+  const envelope = { schema_version: '1.0', code: 'OK', data: data(item([file, mux])) }, before = structuredClone(envelope);
+  assert.equal(contract.validateMediaEnvelope(envelope), envelope.data);
+  assert.deepEqual(envelope, before);
+  for (const bad of [
+    { fps: observations(60, 60) }, { fps: observations('30', '60') }, { fps: observations(30) },
+    { fps: [{ value: 30, evidence: 'unknown' }, { value: 60, evidence: 'upstream' }] },
+    { hdr_type: observations('sdr', 'HEVC') }, { private_url: observations('a', 'b') },
+    { audio_language: observations('   ', 'en') },
+    { fps: [{ value: 30, evidence: 'upstream' }, { value: 30.0, evidence: 'probe' }] },
+  ]) {
+    const changed = structuredClone(before); changed.data.items[0].variants[1].metadata.field_conflicts = bad;
+    assert.throws(() => contract.validateMediaEnvelope(changed), /媒体合同无效/);
+  }
+  let changed = structuredClone(before); changed.data.items[0].variants[1].metadata.fps = 60;
+  assert.throws(() => contract.validateMediaEnvelope(changed), /确定值/);
+  changed = structuredClone(before); changed.data.items[0].variants[1].delivery.resources[1].metadata.field_conflicts.fps = observations(30, 60);
+  assert.throws(() => contract.validateMediaEnvelope(changed), /音频资源/);
+  changed = structuredClone(before); changed.data.items[0].variants[1].delivery.resources[0].metadata.field_conflicts.has_audio = observations(false, true);
+  assert.throws(() => contract.validateMediaEnvelope(changed), /无音频资源/);
+});
+
+test('candidate policy capabilities: adaptive HLS remains unsupported even inside a live pair', () => {
+  const adaptive = { kind: 'hls', scope: 'adaptive', sources: [{ url: 'https://media.example.test/adaptive.m3u8' }] };
+  const pair = { id: 'pair', delivery: { kind: 'pair', resources: [
+    { id: 'still', role: 'image', delivery: variant('still').delivery }, { id: 'motion', role: 'motion', delivery: adaptive },
+  ] } };
+  for (const unsupported of [{ id: 'hls', delivery: adaptive }, pair]) {
+    const value = { id: 'one', type: 'video', variants: [unsupported], default: null, default_unavailable_reason: 'processing_required' };
+    assert.equal(contract.getDownloadTarget(value, { variant_id: unsupported.id }).kind, 'unsupported');
+  }
+});
+
+test('quality UI retains complete variants and truthful sizes while processing entries remain read-only', async () => {
   const original = variant('original', ['raw'], { width: 2160, height: 3840, bitrate_bps: 52619915, video_bitrate_bps: 52000000, audio_bitrate_bps: 128000 }); original.label = '原画'; original.provenance = 'original_endpoint'; original.delivery.sources[0].size_bytes = 60342212;
   const small = variant('compressed', ['small'], { width: 2160, height: 3840 }); small.delivery.sources[0].size_bytes = 2051199;
   const dash = { id: 'dash', label: '更高画质', delivery: { kind: 'dash', scope: 'adaptive', sources: [{ url: 'https://media.example.test/manifest.mpd' }] } };
   const value = item([original, small, dash], 'original'), snapshot = structuredClone(value), view = await mount(data(value));
   try {
-    await view.click('画质选项'); assert.equal(view.choices().length, 3);
+    await view.click('画质选项'); assert.equal(view.choices().length, 2);
     assert.deepEqual(view.elements('rs-backup-name').slice(0, 2).map(view.textOf), ['60.3 MB · 原画', '2.1 MB · 2160p']);
     assert.match(view.text(),/总码率\s+52\.6 Mbps/);assert.match(view.text(),/视频码率\s+52\.0 Mbps/);assert.match(view.text(),/音频码率\s+128 Kbps/);
-    view.choices()[2].props.onClick(); await nextTick(); assert.equal(view.selection.currentTarget.value.kind, 'unsupported');
-    assert.equal(view.player().src, undefined); assert.match(view.text(), /暂不支持/); assert.deepEqual(value, snapshot);
+    assert.equal(view.elements('rs-other-version').length, 1);
+    assert.equal(view.selection.currentTarget.value.url, url('raw'));
+    assert.equal(view.player().src, url('raw')); assert.match(view.text(), /暂不支持/); assert.deepEqual(value, snapshot);
   } finally { view.app.unmount(); }
 });
 
@@ -193,18 +325,19 @@ test('compact quality cards preserve the server source, explicit versions and ac
   const snapshot = structuredClone(value), view = await mount(data(value));
   try {
     await view.click('画质选项');
-    assert.equal(view.choices().length, 6, 'only ordinary files of one measured resolution share a display card');
+    assert.equal(view.choices().length, 4, 'only downloadable files participate in compact display cards');
     assert.equal(view.selection.currentSelection.value, null);
     assert.equal(view.selection.currentTarget.value.url, url('hevc-b'));
     assert.match(view.text(), /原始入口/); assert.match(view.text(), /原始资源待解析/); assert.match(view.text(), /暂不支持/);
-    await view.click('全部版本 (7)');
-    assert.equal(view.choices().length, 7);
+    assert.equal(view.elements('rs-other-version').length, 2);
+    await view.click('全部可下载版本 (5)');
+    assert.equal(view.choices().length, 5);
     assert.equal(view.selection.currentTarget.value.url, url('hevc-b'), 'expansion never selects a different source');
     view.choices()[2].props.onClick(); await nextTick();
     assert.deepEqual(view.selection.currentSelection.value, { variant_id: '1080-h264', source_id: 'h264-a' });
     view.selection.choose({ variant_id: '1080-h264', source_id: 'h264-b' }); await nextTick();
     await view.click('精简展示');
-    assert.equal(view.choices().length, 6);
+    assert.equal(view.choices().length, 4);
     assert.equal(view.selection.currentTarget.value.url, url('h264-b'), 'collapsing keeps the exact explicit route');
     assert.match(view.textOf(view.choices()[2]), /h264/);
     assert.deepEqual(value, snapshot, 'display grouping never mutates or removes domain variants');

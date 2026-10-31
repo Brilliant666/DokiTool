@@ -192,6 +192,20 @@
       "scenario": "Reserved deferred original variant has no URL or measured metadata and cannot override complete file default",
       "evidence": "synthetic_implementation",
       "live_tested": false
+    },
+    {
+      "file": "examples/28-protected-mux-capabilities.json",
+      "platform": "future_formats",
+      "scenario": "Same spatial resolution with explicitly evidenced FPS, HDR, alternate language and channels; no false higher spatial reference",
+      "evidence": "synthetic_implementation",
+      "live_tested": false
+    },
+    {
+      "file": "examples/29-conflicting-mux-evidence.json",
+      "platform": "future_formats",
+      "scenario": "Conflicting summary and video resource evidence is retained and excluded from spatial dominance",
+      "evidence": "synthetic_implementation",
+      "live_tested": false
     }
   ],
   "design_generator": "Design archive generate_contract.py (not runtime implementation)"

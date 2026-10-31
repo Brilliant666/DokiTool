@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { transformWithEsbuild } from 'vite';
+import { build as bundle } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { fakeIndexedDB } from './helpers/download-idb.mjs';
 
-const source = await readFile(new URL('../public/downloads/worker.js', import.meta.url), 'utf8');
+const source = (await bundle({ entryPoints: [fileURLToPath(new URL('../public/downloads/worker.js', import.meta.url))], bundle: true, write: false, format: 'iife' })).outputFiles[0].text;
 const origin = 'https://snap.example.test';
 const token = 'a'.repeat(32);
 const id = number => `task000000000000${number}`;
 const bytes = [new Uint8Array([0, 0, 0, 8]), new Uint8Array([102, 116, 121, 112])];
 
-function harness(fetcher) {
+function harness(fetcher, indexedDB) {
   const events = new Map(), timers = new Map(), updates = [], lifetime = [], clientLookups = [], deferredReplies = [];
   let nextTimer = 0;
   let now = 1_000_000;
@@ -22,6 +26,7 @@ function harness(fetcher) {
   const context = vm.createContext({
     self: { location: new URL(origin), clients: { get: async key => { clientLookups.push(key); return clients.get(key); } }, addEventListener: (key, handler) => events.set(key, handler) },
     fetch: fetcher, URL, Response, ReadableStream, AbortController, DOMException, TextDecoder,
+    crypto: { randomUUID }, indexedDB,
     Date: class extends Date { static now() { return now; } },
     setTimeout(callback, delay) { const handle = ++nextTimer; timers.set(handle, { callback, delay }); return handle; },
     clearTimeout: handle => timers.delete(handle),
@@ -40,6 +45,7 @@ function harness(fetcher) {
   const query = async (number, client = 'page') => (await send({ action: 'query', tasks: [{ id: id(number), token }] }, client)).snapshots[0];
   const cancel = number => send({ action: 'cancel', id: id(number), token });
   return { start, admit, send, download, query, cancel, timers, updates, clientLookups,
+    tick: delay => { for (const [key, timer] of [...timers]) if (timer.delay === delay) { timers.delete(key); timer.callback(); } },
     get transferTimers() { return [...timers.values()].filter(timer => timer.delay < 600_000); },
     closeClient: key => clients.delete(key), releaseReplies: () => deferredReplies.splice(0).forEach(reply => reply()),
     eventsSettled: () => Promise.all(lifetime), advance: ms => { now += ms; }, async close() {
@@ -54,6 +60,92 @@ function media(parts = bytes, length = 8, onPull = () => {}) {
     headers: { 'content-type': 'video/mp4', 'content-length': String(length) },
   });
 }
+
+test('durable terminal survives a lost notification and a same-build execution restart', async t => {
+  const db = fakeIndexedDB(); let fetches = 0;
+  const first = harness(async () => { fetches++; return media(); }, db); t.after(() => first.close());
+  const before = await first.send({ action: 'ping' });
+  await first.start(1); first.closeClient('page');
+  assert.equal((await (await first.download(1)).arrayBuffer()).byteLength, 8);
+  const result = await first.query(1, 'reloaded');
+  assert.equal(result.status, 'completed');
+  assert.equal(db.records.get(id(1)).snapshot.status, 'completed');
+  assert.ok(!JSON.stringify([...db.records.values()]).includes('cdn.test'), 'durable records contain no source URLs or media bytes');
+  const second = harness(async () => { throw new Error('recovery must not fetch media'); }, db); t.after(() => second.close());
+  const after = await second.send({ action: 'ping' });
+  assert.equal(after.workerBuild, before.workerBuild); assert.notEqual(after.workerInstance, before.workerInstance);
+  const restored = await second.query(1);
+  assert.equal(restored.status, 'completed'); assert.equal(restored.workerInstance, before.workerInstance);
+  assert.equal(restored.revision, result.revision); assert.equal(restored.url, ''); assert.equal(fetches, 1);
+  assert.equal(first.updates.some(value => value.status === 'completed'), false, 'the test deliberately loses the terminal notification');
+});
+
+test('same-build restart cannot adopt a durable active task or implicitly restart its stream', async t => {
+  const db = fakeIndexedDB(); let fetches = 0;
+  const first = harness(async () => { fetches++; return media(); }, db); t.after(() => first.close());
+  const start = await first.start(1); const response = await first.download(1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(db.records.get(id(1)).snapshot.status, 'downloading');
+  const second = harness(async () => { fetches++; return media(); }, db); t.after(() => second.close());
+  const reply = await second.send({ action: 'query', tasks: [{ id: id(1), token, workerInstance: start.snapshot.workerInstance }] });
+  assert.equal(reply.snapshots.length, 0); assert.equal(reply.unavailable[0].ownerGone, true);
+  assert.match((await second.start(1)).error, /不能重新启动/);
+  assert.equal(fetches, 1); await response.body.cancel();
+});
+
+test('lifecycle persistence stays bounded and does not write once per chunk', async t => {
+  const db = fakeIndexedDB(), chunks = Array.from({ length: 100 }, () => bytes[0]);
+  const h = harness(async () => media(chunks, 400), db); t.after(() => h.close());
+  await h.start(1); await (await h.download(1)).arrayBuffer(); await h.query(1);
+  assert.ok(db.writes <= 5, `expected lifecycle-only writes, saw ${db.writes}`);
+});
+
+test('concurrent duplicate START stays idempotent across the asynchronous durable lookup', async t => {
+  let fetches = 0;
+  const h = harness(async () => { fetches++; return media(); }, fakeIndexedDB()); t.after(() => h.close());
+  const replies = await Promise.all([h.admit(1), h.admit(1)]);
+  assert.ok(replies.every(reply => !reply.error));
+  await h.admit(2);
+  assert.equal((await h.query(2)).delivery, 'ready', 'duplicate START must occupy only one of two admission slots');
+  await (await h.download(1)).arrayBuffer();
+  assert.equal(fetches, 1);
+});
+
+for (const failure of ['unavailable', 'openFails', 'writeFails', 'openHangs', 'writeHangs']) {
+  test(`storage ${failure} never converts a complete transfer into failure`, async t => {
+    const db = failure === 'unavailable' ? undefined : fakeIndexedDB({ [failure]: true });
+    const h = harness(async () => media(), db); t.after(() => h.close());
+    const starting = h.start(1);
+    await new Promise(resolve => setImmediate(resolve)); h.tick(1500);
+    await starting;
+    const reading = (await h.download(1)).arrayBuffer();
+    assert.equal((await reading).byteLength, 8);
+    await new Promise(resolve => setImmediate(resolve)); h.tick(1500);
+    const result = await h.query(1);
+    assert.equal(result.status, 'completed'); assert.equal(result.loaded, 8);
+  });
+}
+
+test('loaded equals total stays active until real EOF and normal stream close', async t => {
+  const h = harness(async () => media(), fakeIndexedDB()); t.after(() => h.close());
+  await h.start(1); const reader = (await h.download(1)).body.getReader();
+  await reader.read(); await reader.read();
+  const beforeEOF = await h.query(1);
+  assert.equal(beforeEOF.loaded, beforeEOF.total); assert.equal(beforeEOF.status, 'downloading');
+  assert.equal((await reader.read()).done, true);
+  assert.equal((await h.query(1)).status, 'completed');
+});
+
+test('durable history retains 24h and latest 100 terminals without deleting active records', async t => {
+  const db = fakeIndexedDB(), h = harness(async () => media(), db); t.after(() => h.close());
+  await h.start(1);
+  for (let number = 2; number <= 102; number++) { h.advance(1); await h.start(number); await h.cancel(number); }
+  assert.ok(db.records.has(id(1))); assert.ok(!db.records.has(id(2))); assert.equal(db.records.size, 101);
+  h.advance(24 * 60 * 60_000);
+  assert.equal(await h.query(102), undefined); assert.equal((await h.query(1)).status, 'queued');
+  await h.cancel(1);
+  assert.equal(db.records.size, 1);
+});
 
 test('streams with backpressure, UTF-8 filename and truthful completion', async t => {
   let pulls = 0;
@@ -326,7 +418,7 @@ test('finished elapsed time and average speed remain stable across later queries
 test('worker reports its build and separates total elapsed time from transfer speed', async t => {
   const h = harness(async () => media()); t.after(() => h.close());
   const ping = await h.send({ action: 'ping' });
-  assert.equal(ping.workerBuild, 'downloads-20261030.4');
+  assert.equal(ping.workerBuild, 'downloads-20261031.1');
   assert.equal(ping.capabilities.admission, true);
   await h.start(1, [], { startedAt: 995_000 });
   assert.equal((await h.query(1)).elapsed, 5);
@@ -480,7 +572,7 @@ test('terminal history does not consume pending capacity, keeps only 100 records
   assert.equal((await h.admit(102)).snapshot.delivery, 'ready', '100 historical records do not occupy active capacity');
   await h.cancel(102);
   assert.equal(h.timers.size, 1, 'history shares one expiration timer');
-  h.advance(600_000);
+  h.advance(24 * 60 * 60_000);
   [...h.timers.values()][0].callback();
   assert.equal(h.timers.size, 0, 'expiration requires no subsequent page query');
   assert.equal(await h.query(102), undefined);
@@ -632,12 +724,13 @@ test('refresh queries an existing task, does not start a download, and can cance
   assert.equal(observed[2].observation, undefined);
 });
 
-test('missing worker task restores interruption, rather than restarting or claiming completion', async t => {
+test('missing worker task restores uncertainty, rather than restarting or claiming completion', async t => {
   const h = await clientHarness(t, message => message.action === 'ping' ? { protocol: 1 } : message.action === 'query' ? { snapshots: [] } : undefined);
   h.storage.set('dokitool-downloads-v1', JSON.stringify([{ id: id(1), token, filename: request.filename, savedAt: Date.now() }]));
   const observed = [];
   const restored = await h.api.reconnectStreaming(snapshot => observed.push(snapshot));
-  assert.equal(restored[0].status, 'interrupted'); assert.equal(observed.length, 1);
+  assert.equal(restored[0].status, 'queued'); assert.equal(observed.length, 1);
+  assert.equal(restored[0].observation, 'unknown');
   assert.equal(h.attachments.length, 0);
   assert.ok(!h.messages.some(message => message.action === 'start'));
 });

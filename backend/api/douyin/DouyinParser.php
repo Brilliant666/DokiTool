@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../lib/runtime.php';
 require_once __DIR__ . '/../../lib/douyin-media-probe.php';
+require_once __DIR__ . '/../../lib/media-metadata.php';
 /**
  * @Author: JH-Ahua
  * @CreateTime: 2026/2/12 下午9:47
@@ -359,12 +360,12 @@ class DouyinParser
             $main = $this->ensureVideoMimeType($main);
 
             $backups = [];
-            $seen = $main ? [$this->candidateDeliveryKey($main, $videoInfo['metadata']) => true] : [];
+            $seen = $main ? [$this->candidateObservationKey($main, $videoInfo['metadata']) => true] : [];
             foreach ($videoInfo['backup'] as $candidate) {
                 $item = is_string($candidate) ? ['url' => $candidate] : $candidate;
                 $converted = $this->ensureVideoMimeType($this->toHttps(str_replace('playwm', 'play', $item['url'] ?? '')));
                 if (!$converted) continue;
-                $key = $this->candidateDeliveryKey($converted, $item);
+                $key = $this->candidateObservationKey($converted, $item);
                 if (isset($seen[$key])) continue;
                 $item['url'] = $converted;
                 $backups[] = $item;
@@ -666,12 +667,29 @@ class DouyinParser
             $metadata['private_delivery_kind'] ?? 'file', $metadata['private_audio_id'] ?? null], JSON_UNESCAPED_SLASHES);
     }
 
+    /** Deduplicate observations, not media facts. Different observations of the
+     * same source/pairing must reach the adapter's shared metadata aggregation.
+     * This key is local to formatting and never becomes a variant/source ID.
+     */
+    private function candidateObservationKey(string $url, array $metadata): string
+    {
+        $delivery = $this->candidateDeliveryKey($url, $metadata);
+        unset($metadata['url'], $metadata['quality'], $metadata['label'], $metadata['private_representation_id']);
+        ksort($metadata, SORT_STRING);
+        return json_encode([$delivery, $metadata], JSON_UNESCAPED_SLASHES);
+    }
+
     /** Metadata belongs to this candidate, never copied from a different quality. */
     private function videoMetadata(array $item): array
     {
         $address = is_array($item['play_addr'] ?? null) ? $item['play_addr'] : ($item['playAddr'][0] ?? []);
         $address = is_array($address) ? $address : [];
-        $metadata = [];
+        $extra = is_string($item['video_extra'] ?? null) ? json_decode($item['video_extra'], true) : [];
+        $extra = is_array($extra) ? $extra : [];
+        $sub = is_string($extra['sub_info'] ?? null) ? json_decode($extra['sub_info'], true) : [];
+        $sub = is_array($sub) ? $sub : [];
+        $metadata = snapVideoFacts($item) + snapVideoFacts($address) + snapVideoFacts($extra) + snapVideoFacts($sub);
+        if (($item['format'] ?? $extra['format'] ?? '') !== 'dash' && empty($item['is_dash'])) $metadata += snapAudioFacts($item) + snapAudioFacts($extra) + snapAudioFacts($sub);
         foreach (['width' => ['width'], 'height' => ['height'], 'bit_rate' => ['bit_rate', 'bitRate'], 'size' => ['data_size', 'dataSize']] as $key => $aliases) {
             foreach ($aliases as $alias) {
                 $value = $item[$alias] ?? $address[$alias] ?? null;
@@ -719,6 +737,7 @@ class DouyinParser
             unset($source);
             $candidate = ['private_audio_id' => $audio['file_id'], 'private_media_identity' => 'douyin:audio:' . $audio['file_id'], 'sources' => $sources];
             $info = is_string($audio['sub_info'] ?? null) ? json_decode($audio['sub_info'], true) : [];
+            $candidate += snapAudioFacts($audio) + snapAudioFacts(is_array($info) ? $info : []);
             if (is_string($info['audio_profile'] ?? null)) $candidate['audio_codec'] = $info['audio_profile'];
             if (is_numeric($info['audio_sample_rate'] ?? null) && $info['audio_sample_rate'] > 0) $candidate['sample_rate_hz'] = (int)$info['audio_sample_rate'];
             if (is_numeric($info['audio_channels'] ?? null) && $info['audio_channels'] > 0) $candidate['audio_channels'] = (int)$info['audio_channels'];

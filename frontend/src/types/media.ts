@@ -14,6 +14,7 @@ export interface MediaMetadata {
   height?: number;
   duration_ms?: number;
   fps?: number;
+  hdr_type?: "sdr" | "hdr10" | "hdr10_plus" | "hlg" | "dolby_vision" | "hdr_unknown";
   bitrate_bps?: number;
   video_bitrate_bps?: number;
   audio_bitrate_bps?: number;
@@ -21,6 +22,7 @@ export interface MediaMetadata {
   audio_codec?: string;
   has_audio?: boolean;
   audio_language?: string;
+  audio_language_role?: "main" | "alternate";
   audio_channels?: number;
   sample_rate_hz?: number;
   container?: string;
@@ -28,6 +30,8 @@ export interface MediaMetadata {
   mime_type?: string;
   evidence?: "upstream" | "probe" | "mixed" | "unknown";
   field_evidence?: Record<string, "upstream" | "probe">;
+  /** No scalar fact is authoritative while this media identity has conflicting observations. */
+  field_conflicts?: Record<string, { value: number | string | boolean; evidence: "upstream" | "probe" }[]>;
 }
 export interface FileDelivery {
   kind: "file";
@@ -240,6 +244,10 @@ export interface DownloadTask {
   transferElapsed?: number;
   observation?: "unknown" | "stalled";
   workerBuild?: string;
+  workerInstance?: string;
+  recoveryDeadline?: number;
+  recoveryExpired?: boolean;
+  ownerGone?: boolean;
   /** Bytes actually received, including failed routes when retried. */
   transferred?: number;
   progressKind?: "bytes" | "segments" | "archive";

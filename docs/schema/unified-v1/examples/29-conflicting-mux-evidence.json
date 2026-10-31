@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "code": "OK",
+  "data": {
+    "platform": "future_formats",
+    "content_id": "synthetic-001",
+    "source_url": "https://source.example.test/future_formats/synthetic-001",
+    "items": [
+      {
+        "id": "file-and-mux",
+        "type": "video",
+        "default": {
+          "variant_id": "4k-file",
+          "url": "https://media.example.test/4k-file.mp4"
+        },
+        "variants": [
+          {
+            "id": "4k-file",
+            "metadata": {
+              "width": 3840,
+              "height": 2160,
+              "has_audio": true,
+              "evidence": "upstream"
+            },
+            "delivery": {
+              "kind": "file",
+              "sources": [
+                {
+                  "url": "https://media.example.test/4k-file.mp4"
+                }
+              ]
+            }
+          },
+          {
+            "id": "4k-mux",
+            "delivery": {
+              "kind": "mux",
+              "resources": [
+                {
+                  "id": "4k-mux-video",
+                  "role": "video",
+                  "metadata": {
+                    "width": 3840,
+                    "height": 2160,
+                    "has_audio": false,
+                    "evidence": "upstream",
+                    "fps": 59.94,
+                    "hdr_type": "hdr10"
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/4k-mux-video"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "4k-mux-audio",
+                  "role": "audio",
+                  "metadata": {
+                    "has_audio": true,
+                    "audio_codec": "mp4a.40.2",
+                    "evidence": "upstream",
+                    "audio_language": "ja",
+                    "audio_language_role": "alternate",
+                    "audio_channels": 6
+                  },
+                  "delivery": {
+                    "kind": "file",
+                    "sources": [
+                      {
+                        "url": "https://media.example.test/4k-mux-audio"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "output": {
+                "container": "mp4",
+                "extension": "mp4",
+                "mime_type": "video/mp4"
+              }
+            },
+            "metadata": {
+              "width": 1280,
+              "height": 720,
+              "fps": 30,
+              "hdr_type": "hlg",
+              "evidence": "upstream"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

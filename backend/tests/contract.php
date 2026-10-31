@@ -102,7 +102,8 @@ check('signed media delivery reflected in backend default', $status === 200 && $
 check('selected dimensions retained', $prepared['data']['items'][0]['variants'][0]['metadata']['width'] === 1920);
 check('unknown media hosts are not eligible', $prepared['data']['items'][0]['variants'][2]['delivery']['sources'][0]['availability'] === 'unavailable');
 check('missing signing configuration fails clearly', snapPreparePublicMedia('weibo', $weibo, 200, '')[0] === 503);
-check('other platforms remain direct', snapPreparePublicMedia('douyin', $media, 200, $fixtureKey) === [200, $media]);
+[$directStatus, $directPayload] = snapPreparePublicMedia('douyin', $media, 200, $fixtureKey);
+check('other platforms retain original direct file and source selection', $directStatus === 200 && $directPayload['data']['items'] === $media['data']['items']);
 check('business failures never mint tickets', snapPreparePublicMedia('weibo', $business, 404, $fixtureKey) === [404, $business]);
 check('HTTP failures never mint tickets', snapPreparePublicMedia('weibo', $weibo, 502, $fixtureKey) === [502, $weibo]);
 $foreign = snapAdaptParser('weibo', ['code' => 200, 'data' => ['url' => 'https://evil.test/a.mp4']], 'https://weibo.com/example');

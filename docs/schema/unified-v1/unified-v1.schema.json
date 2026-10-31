@@ -547,6 +547,11 @@
           "title": "Fps",
           "type": "number"
         },
+        "hdr_type": {
+          "type": "string",
+          "enum": ["sdr", "hdr10", "hdr10_plus", "hlg", "dolby_vision", "hdr_unknown"],
+          "description": "Omitted means unknown. hdr_unknown confirms HDR without a known type; it cannot prove coverage."
+        },
         "bitrate_bps": {
           "exclusiveMinimum": 0,
           "title": "Bitrate Bps",
@@ -580,6 +585,11 @@
           "minLength": 1,
           "title": "Audio Language",
           "type": "string"
+        },
+        "audio_language_role": {
+          "type": "string",
+          "enum": ["main", "alternate"],
+          "description": "Explicit upstream language role; requires audio_language. A track ID or non-default bitrate is not language evidence."
         },
         "audio_channels": {
           "exclusiveMinimum": 0,
@@ -616,6 +626,28 @@
           ],
           "title": "Evidence",
           "type": "string"
+        },
+        "field_conflicts": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Contradictory trusted observations for one media identity. The same field must be absent from scalar metadata; these observations cannot prove capability coverage.",
+          "propertyNames": {
+            "enum": ["width", "height", "duration_ms", "fps", "hdr_type", "bitrate_bps", "video_bitrate_bps", "audio_bitrate_bps", "has_audio", "video_codec", "audio_codec", "audio_language", "audio_language_role", "audio_channels", "sample_rate_hz", "container", "extension", "mime_type"]
+          },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "evidence"],
+              "properties": {
+                "value": {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "boolean"}]},
+                "evidence": {"type": "string", "enum": ["probe", "upstream"]}
+              }
+            }
+          }
         },
         "field_evidence": {
           "additionalProperties": {

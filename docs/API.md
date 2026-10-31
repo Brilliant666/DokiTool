@@ -8,8 +8,8 @@
 
 | 路径 | 参数与用途 |
 | --- | --- |
-| `/api/parse` | `url` 为分享 URL 或包含 URL 的分享文本；可选 `platform` 为目录中的 ID，`all` 或省略时识别域名。 |
-| `/api/resolve` | 使用后端给出的 `resolve_url`，携带原分享 `url` 与不透明的 `item_id`，解析指定条目。客户端不能从 ID 拼平台参数或借用其他分 P 的地址。 |
+| `/api/parse` | `url` 为分享 URL 或包含 URL 的分享文本；可选 `platform` 为目录中的 ID，`all` 或省略时识别域名。可选 `debug=1` 返回规范化全量版本。 |
+| `/api/resolve` | 使用后端给出的 `resolve_url`，携带原分享 `url` 与不透明的 `item_id`，解析指定条目；同样支持 `debug=1`。客户端不能从 ID 拼平台参数或借用其他分 P 的地址。 |
 | `/api/platforms` | 返回启用平台的公开目录。 |
 
 ```sh
@@ -59,7 +59,9 @@ curl --get 'https://snap.example.com/api/parse' \
 
 普通文件直接使用 `delivery.sources`，不套一层只有一个成员的 `resources`。只有音视频组合 `mux` 和实况 `pair` 使用 `resources`。无完整文件时 `default:null` 并说明 `processing_required`、`needs_refresh`、`needs_resolve` 或 `unavailable`；不能把视频裸轨当成完整视频。
 
-所有版本保留在 `variants`。已知更高规格但需要处理的可用版本由后端放入 `higher_quality_variants`，引用 variant ID，并给出准确的 `requires`。当前支持范围：
+后端先完整规范化所有版本及明确音轨配对，再生成普通产品视图：只过滤被同一条当前有效完整音画 `file` 在空间尺寸和已知受保护能力上覆盖的 `mux`。四项保护为高于 30 fps 的帧率、已确认 HDR 类型、已证明备选语言及多声道。未知值不新增保护；保护已经触发时，替代文件的未知值不能证明覆盖。具体 1% 帧率容差、缺失和冲突规则见 [产品视图规则](schema/unified-v1/README.md#普通产品视图与诊断视图)。
+
+`debug=1` 保留完整规范化 `variants`，不是平台原始响应，也不跳过公开来源资格和微博签名处理。两种视图的存活 item/variant/source ID 相同；debug 响应的 `refresh_url`、`resolve_url` 延续 `debug=1`。筛选后重新计算 default、不可用原因与更高画质引用。已知空间尺寸更高、可用但需要处理的版本由后端放入 `higher_quality_variants`；HDR、帧率、语言本身不冒充“空间分辨率更高”。当前支持范围：
 
 | delivery | 本轮行为 |
 | --- | --- |
@@ -76,6 +78,7 @@ variant 的 `state:"deferred"` 是待解析能力预留，只有 ID、可选标�
 ## 规格、统计与来源
 
 - 尺寸是所选文件/轨道的尺寸，时长为 `duration_ms`，码率为 `*_bps`，大小为 source 的 `size_bytes`。`metadata.evidence` 区分 `probe/upstream/mixed/unknown`；混合证据逐字段说明。上传原片尺寸不是当前直链尺寸。
+- `hdr_type` 可选值为 `sdr/hdr10/hdr10_plus/hlg/dolby_vision/hdr_unknown`，缺失表示未知；`hdr_unknown` 只代表已确认 HDR、类型未确认。`audio_language_role` 可选 `main/alternate`，必须同时有已知 `audio_language`。这些字段也必须有技术证据；不从 HEVC、音频 ID 或非默认音轨推断 HDR/备选语言。冲突的 variant/resource 证据保留各层事实，不用冲突尺寸作默认或更高画质排序。
 - `provenance:"original_endpoint"` 仅说明来源。它不能独自证明更高画质；未验证规格的原始入口不能覆盖已知高规格完整文件。UI 展示后端标签与实际元数据，不自行将“原始入口”升级成“原画”。
 - 多 CDN 来源属于同一个已确认的文件版本；编码、原始码率、尺寸或明确规格冲突时不能仅按相同分辨率合并。缺少可靠同档证据的候选单独保留。
 - 统计项使用 `state:"known"` 与数值，或 `state:"unverified"`；真实零和无法确认的零不同。平台特有的原值解释由后端处理，前端只显示状态，不再特判抖音。
@@ -88,7 +91,7 @@ variant 的 `state:"deferred"` 是待解析能力预留，只有 ID、可选标�
 
 错误响应有 `schema_version/code/error`，`error.code` 与顶层一致；错误无 `data`。客户端同时检查 HTTP 状态和业务码。主要错误码为 `INVALID_INPUT`、`UNSUPPORTED_PLATFORM`、`NO_MEDIA`、`CONTENT_UNAVAILABLE`、`UPSTREAM_INVALID_RESPONSE`、`UPSTREAM_UNAVAILABLE`、`UPSTREAM_TIMEOUT`、`UPSTREAM_BLOCKED`、`RATE_LIMITED`、`SERVICE_NOT_CONFIGURED`、`INTERNAL_ERROR`。可重试错误可提供 `retryable` 与 `retry_after_seconds`。
 
-微博仍通过固定 `/api/media/weibo?ticket=...` 签名媒体服务，GET/HEAD/Range 行为不变。公开层先为统一 source 签名，再重新计算 default，确保投影一致；不再向前端发送 `playback_url/original_url/media_delivery` 旧别名。未配置共享签名密钥明确报错。它不是通用 URL 代理；入口隔离与池配置见 [部署说明](DEPLOYMENT.md#微博播放与下载)。
+微博仍通过固定 `/api/media/weibo?ticket=...` 签名媒体服务，GET/HEAD/Range 行为不变。公开层先处理简单及组合交付的来源资格和签名，再筛选产品视图并重新计算 default，确保投影一致。签名不能延长已知 CDN 有效期；被公开层拒绝的完整文件不能导致有效 mux 被过滤。不再向前端发送 `playback_url/original_url/media_delivery` 旧别名。未配置共享签名密钥明确报错。它不是通用 URL 代理；入口隔离与池配置见 [部署说明](DEPLOYMENT.md#微博播放与下载)。
 
 紫色下载按钮仍按原生附件、SW 流式、能力缺失时 Blob 兼容路径处理完整文件。选源、命名和任务快照在交付前固定；Worker、桥接页和刷新恢复沿用 PR #7，不因统一合同强制升级或重开任务。具体边界及历史实际保存证据见 [下载说明](DOWNLOADS.md)。
 

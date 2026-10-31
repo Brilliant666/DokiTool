@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/runtime.php';
 require_once __DIR__ . '/platforms.php';
 require_once __DIR__ . '/media-contract.php';
+require_once __DIR__ . '/media-metadata.php';
 
 /** Upstream/private parser fields end here. Public consumers only receive unified-v1. */
 function snapAdaptParser(string $platform, array $payload, string $url): array
@@ -104,7 +105,7 @@ function snapResourceIdentity(array $resource): array
 
 function snapCandidateMetadata(array $raw): array
 {
-    $metadata = [];
+    $metadata = snapVideoFacts($raw) + snapAudioFacts($raw);
     foreach (['width' => 'width', 'height' => 'height', 'bitrate_bps' => 'bitrate_bps', 'video_bitrate_bps' => 'video_bitrate_bps',
         'audio_bitrate_bps' => 'audio_bitrate_bps', 'sample_rate_hz' => 'sample_rate_hz', 'audio_channels' => 'audio_channels'] as $from => $to) {
         if (is_numeric($raw[$from] ?? null) && $raw[$from] > 0) $metadata[$to] = (int)round($raw[$from]);
@@ -123,6 +124,64 @@ function snapCandidateMetadata(array $raw): array
     if (!isset($metadata['extension']) && isset($metadata['container']) && in_array($metadata['container'], ['mp4', 'mov', 'webm', 'mkv', 'mp3', 'm4a', 'aac', 'flac'], true)) $metadata['extension'] = $metadata['container'];
     if ($metadata) $metadata['evidence'] = in_array($raw['metadata_source'] ?? '', ['mp4', 'probe'], true) ? 'probe' : 'upstream';
     return $metadata;
+}
+
+/** A proven media identity shares facts, not input order. Missing facts can be
+ * filled, but contradictory observations must remain visible and non-authoritative.
+ */
+function snapMergeMetadata(array $existing, array $additional): array
+{
+    $observations = [];
+    foreach ([$existing, $additional] as $metadata) {
+        foreach ($metadata as $field => $value) {
+            if (in_array($field, ['evidence', 'field_evidence', 'field_conflicts'], true)) continue;
+            $evidence = $metadata['field_evidence'][$field] ?? $metadata['evidence'] ?? 'upstream';
+            $observations[$field][] = ['value' => $value, 'evidence' => $evidence];
+        }
+        foreach ($metadata['field_conflicts'] ?? [] as $field => $facts) $observations[$field] = array_merge($observations[$field] ?? [], $facts);
+    }
+    ksort($observations, SORT_STRING);
+    $merged = []; $conflicts = []; $fieldEvidence = [];
+    foreach ($observations as $field => $facts) {
+        $unique = [];
+        foreach ($facts as $fact) {
+            $key = json_encode($fact['value'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            // Agreement with a probe strengthens the same fact. It never erases
+            // a different upstream observation about this identity.
+            if (!isset($unique[$key]) || $fact['evidence'] === 'probe') $unique[$key] = $fact;
+        }
+        ksort($unique, SORT_STRING);
+        if (count($unique) > 1) { $conflicts[$field] = array_values($unique); continue; }
+        $fact = reset($unique); $merged[$field] = $fact['value'];
+        $fieldEvidence[$field] = $fact['evidence'];
+    }
+    if ($conflicts) $merged['field_conflicts'] = $conflicts;
+    if ($fieldEvidence) {
+        $evidence = array_values(array_unique($fieldEvidence));
+        $merged['evidence'] = count($evidence) === 1 ? $evidence[0] : 'mixed';
+        if (count($evidence) > 1) $merged['field_evidence'] = $fieldEvidence;
+    }
+    return $merged;
+}
+
+/** Individually legal observations can contradict across fields after merging.
+ * Keep the identity visible, but do not invent audio or publish an invalid file.
+ */
+function snapDeferAudioContradiction(array $variant): array
+{
+    if (($variant['state'] ?? 'ready') !== 'ready') return $variant;
+    $metadataLayers = [$variant['metadata'] ?? []];
+    foreach ($variant['delivery']['resources'] ?? [] as $resource) $metadataLayers[] = $resource['metadata'] ?? [];
+    foreach ($metadataLayers as $metadata) {
+        $fields = array_merge(array_keys($metadata), array_keys($metadata['field_conflicts'] ?? []));
+        if (($metadata['has_audio'] ?? null) === false
+            && array_intersect($fields, ['audio_codec', 'audio_language', 'audio_language_role', 'audio_channels', 'sample_rate_hz', 'audio_bitrate_bps'])) {
+            return ['id' => $variant['id'], 'state' => 'deferred', 'reason' => [
+                'code' => 'CONFLICTING_MEDIA_FACTS', 'message' => '同一媒体的音轨信息互相矛盾，无法确认可交付版本，暂不可下载',
+            ]] + array_intersect_key($variant, array_flip(['label', 'provenance']));
+        }
+    }
+    return $variant;
 }
 
 /** Only an upstream representation identity can join flattened CDN alternatives.
@@ -153,6 +212,8 @@ function snapFileVariants(array $candidates): array
         if ($signature !== null && isset($keys[$signature])) {
             $n = $keys[$signature];
             $variants[$n]['delivery']['sources'] = snapMergeSources($variants[$n]['delivery']['sources'], $sources);
+            $merged = snapMergeMetadata($variants[$n]['metadata'] ?? [], $metadata);
+            if ($merged) $variants[$n]['metadata'] = $merged;
             // Each entry was already matched to its explicit audio_file_id by
             // the platform adapter; merge those options, never global audio.
             if ($track) $trackAudio[$n] = array_merge($trackAudio[$n], $candidate['private_audio_candidates'] ?? []);
@@ -173,7 +234,11 @@ function snapFileVariants(array $candidates): array
         $sourceIds = array_column($variant['delivery']['sources'], 'id'); sort($sourceIds, SORT_STRING);
         $identity = [$variant['delivery']['kind'], array_key_exists($index, $trackAudio), $stableIdentities[$index] ?? $sourceIds];
         $id = $variant['id'] = 'v-' . substr(hash('sha256', json_encode($identity)), 0, 24);
-        if (isset($identified[$id])) $identified[$id]['delivery']['sources'] = snapMergeSources($identified[$id]['delivery']['sources'], $variant['delivery']['sources']);
+        if (isset($identified[$id])) {
+            $identified[$id]['delivery']['sources'] = snapMergeSources($identified[$id]['delivery']['sources'], $variant['delivery']['sources']);
+            $merged = snapMergeMetadata($identified[$id]['metadata'] ?? [], $variant['metadata'] ?? []);
+            if ($merged) $identified[$id]['metadata'] = $merged;
+        }
         else $identified[$id] = $variant;
         if (array_key_exists($index, $trackAudio)) $audioByVariant[$id] = array_merge($audioByVariant[$id] ?? [], $trackAudio[$index]);
     }
@@ -188,14 +253,18 @@ function snapFileVariants(array $candidates): array
             continue;
         }
         foreach ($audioOptions as $audio) {
+            $combined = $variant; $combined['id'] .= '-' . $audio['id'];
+            if (($audio['state'] ?? 'ready') === 'deferred') {
+                $complete[] = ['id' => $combined['id'], 'state' => 'deferred', 'reason' => $audio['reason']];
+                continue;
+            }
             $resource = ['id' => 'audio', 'role' => 'audio', 'delivery' => $audio['delivery']];
             if (isset($audio['metadata'])) $resource['metadata'] = $audio['metadata'];
-            $combined = $variant; $combined['id'] .= '-' . $audio['id'];
             $combined['delivery'] = ['kind' => 'mux', 'resources' => [$video, $resource], 'output' => ['container' => 'mp4', 'extension' => 'mp4', 'mime_type' => 'video/mp4']];
             $complete[] = $combined;
         }
     }
-    return $complete;
+    return array_map('snapDeferAudioContradiction', $complete);
 }
 
 function snapResolveUrl(string $url, string $itemId): string
@@ -404,7 +473,8 @@ function snapBilibiliVariants(array $raw): array
     $variants = [];
     if (count($durl) === 1) {
         $part = $durl[0];
-        $variants = snapFileVariants([['sources' => array_merge([['url' => $part['url'], 'size' => $part['size'] ?? null]], $part['backup_url'] ?? []), 'label' => $raw['quality'] ?? '规格未知']]);
+        $variants = snapFileVariants([['sources' => array_merge([['url' => $part['url'], 'size' => $part['size'] ?? null]], $part['backup_url'] ?? []), 'label' => $raw['quality'] ?? '规格未知']
+            + snapVideoFacts($part) + snapVideoFacts($play) + snapAudioFacts($part) + snapAudioFacts($play)]);
     } elseif (count($durl) > 1) {
         $pieces = [];
         foreach ($durl as $i => $part) {
@@ -443,10 +513,14 @@ function snapBilibiliTrack(array $track, string $role, string $id): ?array
     $resource = ['id' => $id, 'role' => $role, 'delivery' => ['kind' => 'file', 'sources' => $sources]];
     $m = ['evidence' => 'upstream'];
     if ($role === 'video') {
+        $m += snapVideoFacts($track);
+        // These IDs are explicit HDR profiles in the upstream playurl catalogue.
+        if (!isset($m['hdr_type']) && in_array((int)($track['id'] ?? 0), [125, 126], true)) $m['hdr_type'] = (int)$track['id'] === 126 ? 'dolby_vision' : 'hdr_unknown';
         foreach (['width', 'height'] as $field) if (is_numeric($track[$field] ?? null) && $track[$field] > 0) $m[$field] = (int)$track[$field];
         if ($codec = snapText($track['codecs'] ?? null)) $m['video_codec'] = $codec;
         if (is_numeric($track['bandwidth'] ?? null) && $track['bandwidth'] > 0) $m['video_bitrate_bps'] = (int)$track['bandwidth'];
     } else {
+        $m += snapAudioFacts($track);
         if ($codec = snapText($track['codecs'] ?? null)) $m['audio_codec'] = $codec;
         if (is_numeric($track['bandwidth'] ?? null) && $track['bandwidth'] > 0) $m['audio_bitrate_bps'] = (int)$track['bandwidth'];
     }

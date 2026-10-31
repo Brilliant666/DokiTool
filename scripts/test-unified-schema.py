@@ -142,6 +142,87 @@ class ContractTests(unittest.TestCase):
         contract.validate(r)
         self.assertEqual(item(r)['default'], selected)
 
+    def test_protected_capabilities_require_known_enums_and_field_evidence(self):
+        r = example(28)
+        contract.validate(r)
+        for update in [
+            {'hdr_type': 'HDR'}, {'hdr_type': 'hdr10', 'evidence': 'unknown'},
+            {'hdr_type': 'hdr10', 'evidence': 'mixed', 'field_evidence': {'width': 'upstream', 'height': 'upstream'}},
+        ]:
+            changed = deepcopy(r)
+            item(changed)['variants'][1]['delivery']['resources'][0]['metadata'].update(update)
+            with self.assertRaises(ValueError):
+                contract.validate(changed)
+        for update in [{'audio_language_role': 'dub'}, {'audio_language': ''}, {'audio_language_role': 'alternate', 'evidence': 'unknown'}]:
+            changed = deepcopy(r)
+            item(changed)['variants'][1]['delivery']['resources'][1]['metadata'].update(update)
+            with self.assertRaises(ValueError):
+                contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['delivery']['resources'][1]['metadata'].pop('audio_language')
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+
+    def test_hdr_fps_language_channels_do_not_invent_higher_spatial_quality(self):
+        r = example(28)
+        contract.validate(r)
+        item(r)['higher_quality_variants'] = [{'variant_id': item(r)['variants'][1]['id'], 'requires': ['mux']}]
+        with self.assertRaises(ValueError):
+            contract.validate(r)
+
+    def test_conflicting_resource_evidence_is_retained_without_false_spatial_order(self):
+        r = example(29)
+        contract.validate(r)
+        self.assertIsNone(contract.dimensions(item(r)['variants'][1]))
+        item(r)['higher_quality_variants'] = [{'variant_id': item(r)['variants'][1]['id'], 'requires': ['mux']}]
+        with self.assertRaises(ValueError):
+            contract.validate(r)
+
+    def test_merged_identity_conflicts_retain_values_and_do_not_invent_geometry(self):
+        facts = lambda *values: [{'value': value, 'evidence': 'upstream'} for value in values]
+        r = example(28)
+        mux = item(r)['variants'][1]
+        mux['metadata'] = {'field_conflicts': {'fps': facts(30, 60), 'hdr_type': facts('sdr', 'hdr10')}}
+        video = mux['delivery']['resources'][0]['metadata']
+        video.pop('width')
+        video['field_conflicts'] = {'width': facts(1920, 3840)}
+        audio = mux['delivery']['resources'][1]['metadata']
+        audio.pop('audio_language')
+        audio['field_conflicts'] = {'audio_language': facts('en', 'fr')}
+        contract.validate(r)
+        self.assertIsNone(contract.dimensions(mux))
+        for update in [
+            {'fps': facts(60, 60)}, {'fps': facts(60)}, {'fps': facts('30', '60')},
+            {'fps': [{'value': 30, 'evidence': 'unknown'}, {'value': 60, 'evidence': 'probe'}]},
+            {'hdr_type': facts('sdr', 'HEVC')}, {'unknown': facts(1, 2)},
+            {'audio_language': facts('   ', 'en')},
+            {'fps': [{'value': 30, 'evidence': 'upstream'}, {'value': 30.0, 'evidence': 'probe'}]},
+        ]:
+            changed = deepcopy(r)
+            item(changed)['variants'][1]['metadata']['field_conflicts'] = update
+            with self.assertRaises(ValueError):
+                contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['metadata']['fps'] = 60
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['delivery']['resources'][1]['metadata'] = {'audio_language': '   ', 'audio_language_role': 'main', 'evidence': 'upstream'}
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['delivery']['resources'][1]['metadata']['field_conflicts']['fps'] = facts(30, 60)
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['variants'][1]['delivery']['resources'][0]['metadata']['field_conflicts']['has_audio'] = facts(False, True)
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+        changed = deepcopy(r)
+        item(changed)['higher_quality_variants'] = [{'variant_id': mux['id'], 'requires': ['mux']}]
+        with self.assertRaises(ValueError):
+            contract.validate(changed)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

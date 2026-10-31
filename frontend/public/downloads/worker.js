@@ -1,6 +1,9 @@
 /* Download-only service worker. It never caches or intercepts the application/API. */
+import { createTaskStore, HISTORY_MS } from "./task-store.js";
 const PROTOCOL = 1;
-const BUILD = "downloads-20261030.4";
+const BUILD = "downloads-20261031.1";
+const INSTANCE = crypto.randomUUID();
+const store = createTaskStore();
 const MAX_ACTIVE = 2;
 const IDLE_MS = 45_000;
 // Bound attachment-response preparation below browser extended-event limits.
@@ -9,7 +12,7 @@ const RESPONSE_MS = 120_000;
 const STALLED_MS = 15_000;
 const SPEED_WINDOW_MS = 2000;
 const CLAIM_MS = 60_000;
-const RETAIN_MS = 10 * 60_000;
+const RETAIN_MS = HISTORY_MS;
 const tasks = new Map();
 const history = new Map();
 const queue = [];
@@ -37,11 +40,21 @@ function snapshot(task) {
   // cancelling the transfer, starting another route, or releasing its slot.
   const observation = task.state.status === "downloading" && !task.pendingUpstream &&
     now - Math.max(task.lastPullAt ?? task.transferStartedAt, task.lastReceivedAt ?? 0) >= STALLED_MS ? "stalled" : undefined;
-  const result = { ...task.state, workerBuild: BUILD, revision: ++task.revision, observation, elapsed, transferElapsed,
+  const result = { ...task.state, workerBuild: BUILD, workerInstance: INSTANCE, ...(task.finishedAt === undefined ? {} : { finishedAt: task.finishedAt }), revision: ++task.revision, observation, elapsed, transferElapsed,
     speed: now - (task.lastReceivedAt || 0) > 3000 ? 0 : task.state.speed,
     averageSpeed: task.state.loaded / Math.max(0.001, transferElapsed) };
   if (terminal(task.state.status)) task.result = result;
   return result;
+}
+
+function persist(task) {
+  const { url: _url, ...summary } = snapshot(task);
+  const record = { id: task.state.id, token: task.token, createdAt: task.startedAt,
+    updatedAt: Date.now(), finishedAt: task.finishedAt, snapshot: summary };
+  // Preserve lifecycle ordering even when one transaction is delayed. No chunks
+  // are written here; the small queue contains phase transitions and the result.
+  task.persistence = (task.persistence || Promise.resolve()).then(() => store.put(record));
+  return task.persistence;
 }
 
 function publish(task, force = false) {
@@ -54,6 +67,11 @@ function publish(task, force = false) {
     task.state.speed = (task.state.loaded - samples[0].loaded) / Math.max(0.001, (now - samples[0].at) / 1000);
   } else task.state.speed = 0;
   task.publishedAt = now;
+  const phase = `${task.state.status}:${task.state.delivery || ""}`;
+  if (!terminal(task.state.status) && task.persistedPhase !== phase) {
+    task.persistedPhase = phase;
+    void persist(task);
+  }
   const message = { channel: "dokitool-download", protocol: PROTOCOL, snapshot: snapshot(task) };
   for (const clientId of task.subscribers) {
     void self.clients.get(clientId).then(client => {
@@ -82,7 +100,7 @@ function drain() {
 }
 
 function settle(task, status, error) {
-  if (terminal(task.state.status)) return;
+  if (terminal(task.state.status)) return task.settling;
   clearTimeout(task.claimTimer);
   clearTimeout(task.responseTimer);
   task.state.status = status;
@@ -104,11 +122,19 @@ function settle(task, status, error) {
   void reader?.cancel().catch(() => {}).finally(() => { reader.releaseLock(); });
   task.rejectSlot?.(abortError());
   if (task.hasSlot) { task.hasSlot = false; active--; }
-  publish(task, true);
-  tasks.delete(task.state.id);
-  history.set(task.state.id, { token: task.token, finishedAt: task.finishedAt, result: task.result });
-  prune();
+  // Close/abort the stream independently of storage. Retain the authoritative
+  // result in memory until its bounded write and notification have finished.
+  task.settling = persist(task).then(() => {
+    publish(task, true);
+    history.set(task.state.id, { token: task.token, finishedAt: task.finishedAt, result: task.result });
+    tasks.delete(task.state.id);
+    prune();
+  });
+  // A fetch event may already be inactive at EOF. This protects only the short
+  // result write where the browser permits it, never the whole transfer.
+  try { task.protect?.(task.settling); } catch { /* Stream/event lifetime is browser-owned. */ }
   drain();
+  return task.settling;
 }
 
 function prune() {
@@ -264,14 +290,20 @@ self.addEventListener("message", event => {
     prune();
     const message = event.data;
     try {
-      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL, workerBuild: BUILD, capabilities: { admission: true } }); return; }
+      if (message.action === "ping") { port.postMessage({ protocol: PROTOCOL, workerBuild: BUILD, workerInstance: INSTANCE, capabilities: { admission: true, recovery: true } }); return; }
       if (message.action === "start") {
         const request = message.request;
         if (!validKey(request?.id) || !validKey(message.token)) throw new Error("无效下载任务");
         let task = tasks.get(request.id);
-        const previous = history.get(request.id);
+        const stored = !task && !history.has(request.id) ? await store.get(request.id) : null;
+        // Another START may have admitted this ID while storage was pending.
+        task = tasks.get(request.id);
+        const previous = history.get(request.id) || (stored && { token: stored.token, result: stored.snapshot });
         if ((task || previous) && (task || previous).token !== message.token) throw new Error("下载任务无访问权限");
-        if (previous) { port.postMessage({ snapshot: previous.result }); return; }
+        if (previous) {
+          if (!terminal(previous.result.status)) throw new Error("原执行实例已结束，不能重新启动同一任务");
+          port.postMessage({ snapshot: { url: "", ...previous.result } }); return;
+        }
         let created = false;
         if (!task) {
           if (tasks.size >= 100) throw new Error("下载任务过多，请清理后重试");
@@ -290,6 +322,7 @@ self.addEventListener("message", event => {
         }
         task.subscribers.add(client.id);
         if (created) {
+          void persist(task);
           if (task.admission) { queue.push(task); drain(); }
           else awaitClaim(task);
         }
@@ -300,28 +333,40 @@ self.addEventListener("message", event => {
         return;
       }
       if (message.action === "query") {
-        const result = [];
+        const result = [], unavailable = [];
         for (const key of (message.tasks || []).slice(0, 100)) {
+          if (!validKey(key.id) || !validKey(key.token)) continue;
           const task = tasks.get(key.id);
-          if (task && task.token === key.token) { task.subscribers.add(client.id); result.push(snapshot(task)); }
+          if (task && task.token === key.token) { await task.settling; task.subscribers.add(client.id); result.push(snapshot(task)); }
           else {
             const previous = history.get(key.id);
             if (previous?.token === key.token) result.push(previous.result);
+            else {
+              const stored = await store.get(key.id);
+              if (stored?.token === key.token && terminal(stored.snapshot.status)) result.push({ url: "", ...stored.snapshot });
+              else {
+                const instance = stored?.token === key.token ? stored.snapshot.workerInstance : key.workerInstance;
+                unavailable.push({ id: key.id, ownerGone: !!instance && instance !== INSTANCE });
+              }
+            }
           }
         }
-        port.postMessage({ snapshots: result, workerBuild: BUILD }); return;
+        port.postMessage({ snapshots: result, unavailable, workerBuild: BUILD, workerInstance: INSTANCE }); return;
       }
       if (!validKey(message.id) || !validKey(message.token)) throw new Error("无效下载任务");
       const task = tasks.get(message.id);
-      const previous = history.get(message.id);
+      const stored = !task && !history.has(message.id) ? await store.get(message.id) : null;
+      const previous = history.get(message.id) || (stored && terminal(stored.snapshot.status) ? { token: stored.token, result: { url: "", ...stored.snapshot } } : null);
+      if (stored && stored.token !== message.token) throw new Error("下载任务无访问权限");
       if ((task || previous) && (task || previous).token !== message.token) throw new Error("下载任务无访问权限");
       if (message.action === "forget") {
         if (task) throw new Error("请先停止下载，再清除任务");
         history.delete(message.id); prune();
+        await store.remove(message.id);
         port.postMessage({ forgotten: true }); return;
       }
       if (message.action !== "cancel" || (!task && !previous)) throw new Error("下载任务不存在或已失效");
-      if (task) settle(task, "cancelled");
+      if (task) await settle(task, "cancelled");
       port.postMessage({ snapshot: task ? snapshot(task) : previous.result });
     } catch (error) { port.postMessage({ error: error.message }); }
   })());
@@ -339,6 +384,7 @@ self.addEventListener("fetch", event => {
     event.respondWith(new Response("Download not admitted", { status: 409, headers: { "Cache-Control": "no-store" } })); return;
   }
   task.claimed = true;
+  task.protect = promise => event.waitUntil(promise);
   if (task.admission) task.state.delivery = "claimed";
   clearTimeout(task.claimTimer);
   task.responseTimer = setTimeout(() => settle(task, "failed", task.state.status === "queued"

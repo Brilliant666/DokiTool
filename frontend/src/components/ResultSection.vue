@@ -9,11 +9,13 @@ import {
   sourceUrl,
   resourceSource,
   requiredCapabilities,
+  sourceAvailable,
 } from "../utils/mediaContract";
 import {
   variantLabel,
   formatMediaSize,
   groupVariantsForDisplay,
+  variantSpecifications,
 } from "../utils/mediaSources";
 import { apiConfig } from "../services/apiConfig";
 const props = defineProps({
@@ -108,38 +110,63 @@ const allQualityOptions = computed(() =>
             ? variant.delivery.sources.find(
                 (source) =>
                   active &&
+                  sourceAvailable(source) &&
                   source.id ===
                     (selected?.source_id ||
                       currentItem.value.default?.source_id),
-              ) || variant.delivery.sources[0]
+              ) ||
+              variant.delivery.sources.find((source) => sourceAvailable(source)) ||
+              variant.delivery.sources[0]
             : null;
+        const downloadTarget = getDownloadTarget(currentItem.value, {
+          variant_id: variant.id,
+          ...(source?.id ? { source_id: source.id } : {}),
+        }, context);
         return {
           variant,
-          source,
-          active,
+          source: downloadTarget.kind === "file" ? downloadTarget.source : source,
+          active:
+            active && target.value?.kind === downloadTarget.kind &&
+            (downloadTarget.kind !== "file" || target.value.url === downloadTarget.url),
+          downloadTarget,
+          downloadable: ["file", "hls", "segments", "pair"].includes(downloadTarget.kind),
           capabilities: readyVariant(variant)
             ? requiredCapabilities(variant.delivery)
             : [],
-          higher: currentItem.value.higher_quality_variants?.find(
-            (entry) => entry.variant_id === variant.id,
-          ),
         };
       })
     : [],
 );
 const showAllQualityVariants = ref(false);
+const downloadableQualityOptions = computed(() =>
+  allQualityOptions.value.filter((option) => option.downloadable),
+);
+const otherQualityOptions = computed(() =>
+  allQualityOptions.value.filter((option) => !option.downloadable),
+);
+const higherQualityNotice = computed(() =>
+  (currentItem.value?.higher_quality_variants?.length || 0) > 0,
+);
+const unavailableQualityReason = computed(() => {
+  if (!currentItem.value || downloadableQualityOptions.value.some((option) => option.downloadTarget.kind === "file"))
+    return "";
+  const decision = getDownloadTarget(currentItem.value, null, context);
+  return props.locale === "en"
+    ? "No complete downloadable file is currently available."
+    : `暂无可直接下载的完整文件。${"message" in decision ? decision.message : ""}`;
+});
 const qualityGroups = computed(() =>
   groupVariantsForDisplay(
-    readyItem(currentItem.value) ? currentItem.value.variants : [],
+    downloadableQualityOptions.value.map((option) => option.variant),
   ),
 );
 const hasHiddenQualityVariants = computed(
-  () => qualityGroups.value.length < allQualityOptions.value.length,
+  () => qualityGroups.value.length < downloadableQualityOptions.value.length,
 );
 const qualityOptions = computed(() => {
-  if (showAllQualityVariants.value) return allQualityOptions.value;
+  if (showAllQualityVariants.value) return downloadableQualityOptions.value;
   const optionsById = new Map(
-    allQualityOptions.value.map((option) => [option.variant.id, option]),
+    downloadableQualityOptions.value.map((option) => [option.variant.id, option]),
   );
   return qualityGroups.value.map((group) => {
     const options = group.map((variant) => optionsById.get(variant.id));
@@ -298,6 +325,7 @@ watch(activeVideoUrl, () => {
   playbackFailed.value = false;
 });
 const selectQuality = (option) => {
+  if (!option.downloadable) return;
   manualSelection.value++;
   attemptedSources.clear();
   playbackFailed.value = false;
@@ -1237,11 +1265,17 @@ onUnmounted(() => {
                   showAllQualityVariants
                     ? locale === "en" ? "Compact view" : "精简展示"
                     : locale === "en"
-                      ? `All versions (${allQualityOptions.length})`
-                      : `全部版本 (${allQualityOptions.length})`
+                      ? `All downloadable versions (${downloadableQualityOptions.length})`
+                      : `全部可下载版本 (${downloadableQualityOptions.length})`
                 }}
               </button>
             </div>
+            <p v-if="unavailableQualityReason" class="rs-stat-note rs-quality-unavailable" role="status">
+              {{ unavailableQualityReason }}
+            </p>
+            <p v-if="higherQualityNotice" class="rs-stat-note rs-higher-quality-note">
+              {{ locale === "en" ? "Higher quality is available but requires processing that is not supported yet." : "存在更高画质，需要处理，当前暂不支持。" }}
+            </p>
             <div class="rs-backup-list">
               <div
                 v-for="option in qualityOptions"
@@ -1251,7 +1285,6 @@ onUnmounted(() => {
                 <button
                   @click="selectQuality(option)"
                   class="rs-backup-item"
-                  :disabled="option.variant.state === 'deferred'"
                   :class="{ 'rs-backup-item--cur': option.active }"
                 >
                   <div class="rs-backup-hd">
@@ -1303,37 +1336,20 @@ onUnmounted(() => {
                       >{{ option.capabilities.join(" + ") }}</span
                     >
                   </div>
-                  <p
-                    v-if="option.variant.state === 'deferred'"
-                    class="rs-stat-note"
-                  >
-                    {{ option.variant.reason.message }} ·
-                    {{ locale === "en" ? "Awaiting resolution" : "待解析" }}
-                  </p>
-                  <p v-if="option.higher" class="rs-stat-note">
-                    {{
-                      locale === "en"
-                        ? "Higher quality requires: "
-                        : "更高画质需要："
-                    }}{{ option.higher.requires.join(" + ") }}
-                  </p>
-                  <p
-                    v-if="
-                      option.capabilities.some((value) =>
-                        ['dash', 'mux', 'segment_remux'].includes(value),
-                      )
-                    "
-                    class="rs-stat-note"
-                  >
-                    {{
-                      locale === "en"
-                        ? "Processing is not supported yet"
-                        : "所需处理能力暂不支持"
-                    }}
-                  </p>
                 </button>
               </div>
             </div>
+            <details v-if="otherQualityOptions.length" :key="currentItem.id" class="rs-other-versions">
+              <summary>{{ locale === "en" ? "Other versions" : "其他版本" }} ({{ otherQualityOptions.length }})</summary>
+              <div v-for="option in otherQualityOptions" :key="option.variant.id" class="rs-other-version">
+                <div class="rs-backup-name">{{ variantLabel(option.variant, locale) }}</div>
+                <div class="rs-backup-meta">
+                  <span v-for="specification in variantSpecifications(option.variant)" :key="specification" class="rs-backup-meta-tag">{{ specification }}</span>
+                  <span v-if="option.capabilities.length" class="rs-backup-meta-tag">{{ option.capabilities.join(" + ") }}</span>
+                </div>
+                <p class="rs-stat-note">{{ option.downloadTarget.message }}</p>
+              </div>
+            </details>
           </div>
           <div v-if="activeTab === 'tags'" class="rs-tab-panel">
             <div class="rs-tags-wrap">
@@ -2518,6 +2534,20 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: .4rem;
+}
+.rs-other-versions {
+  margin-top: .65rem;
+  color: var(--c-fg-3);
+  font-size: .6875rem;
+}
+.rs-other-versions > summary {
+  cursor: pointer;
+}
+.rs-other-version {
+  display: grid;
+  gap: .25rem;
+  padding: .5rem 0;
+  border-bottom: 1px solid var(--c-border-2);
 }
 .rs-backup-item {
   display: flex;
