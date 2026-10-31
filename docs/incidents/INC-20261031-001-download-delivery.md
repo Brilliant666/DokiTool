@@ -25,6 +25,8 @@
 
 历史定位：初始导入`71d6fe4`已有原画入口与跟随重定向；`f096d23`（PR #3，对应实现`84f3512`）引入实测尺寸/码率比较。来源逻辑早于PR #8，不能把它归因统一格式迁移。小文件可能较早完成，但未逐例证明所有历史成功都由此造成。
 
+上游溯源补充：独立核对[上游提交 e5fc81d](https://github.com/jiuhunwl/short_videos/commit/e5fc81d59c91b92fcdb599b51f146e57804b626a)（2026-09-23）确认新增了原画入口、服务器跟随重定向与回退入口逻辑。`UPSTREAM.json`记录的导入基线`72e5b6e72ab21e695d510e1c4c45213ce9a25f0f`已经包含该实现。DokiTool后来的探针仍在服务器端解析跳转并输出落地来源；这是继承后保留的来源选择行为，不是PR #8首次引入。
+
 ## 排错时间线与转折
 
 | 阶段 | 观察、行动与纠正 |
@@ -110,6 +112,14 @@
 只改变抖音详情/原画入口解析出站，媒体仍CDN→用户浏览器。当前`SnapMediaProbe::request`显式禁用环境代理并绑定DNS结果，单设全局HTTP_PROXY不会改变这条路径；实际实施应是明确的平台出站策略，保留HTTPS/TLS、公网地址、跳转与字节预算，不能变成全站代理或媒体中转。
 
 下一轮固定作品、原画入口、UA/头部、代码及预算，只比较现有出口与一个候选出口，每边一次有界请求；记录真实出口/DNS、最终主机、URL摘要与媒体规格。确认等价可交付来源后，在同一用户网络做一次正式完整保存。出口不存在或需改全局DNS/TUN时先明确具体配置与影响，不直接切换现网。上述均为评估，本次未实施选源或出站变更。
+
+## 原画入口直接交给浏览器的可行性（2026-10-31）
+
+既有生产Origin试验使用`GET + Range: bytes=0-65535`，入口302没有跨域许可，未取得媒体字节；它不能证明无Range或原生导航也失败。因此本轮只补一次无Range请求：Edge156、`https://snap.dokitool.com` Origin，同一个冻结的原画入口（URL SHA-256 `c8ce892f6c061a905e76025a7e123045351923b0818efb27d4e2b056b486b0fc`），与正式SW一致的`mode:cors`、`credentials:omit`、`referrerPolicy:no-referrer`；不重新解析、不手改CDN、不重试。诊断预算8秒或读取64KiB后取消，没有启动下载任务。
+
+请求230ms后自然被Fetch拒绝，读取0B，未触发诊断预算取消。CDP requestId `356944.67`记录入口HTTP302、无`Access-Control-Allow-Origin`，Location主机为`v5-se-bd-daily-cold.douyinvod.com`；紧接的`Network.loadingFailed`明确为`corsError: MissingAllowOriginHeader`、`net::ERR_FAILED`、`canceled:false`。尚未请求落地媒体，不能把这个结果写成CDN吞吐失败、签名过期或完整文件验收。临时页已关闭，未改产品或网络配置；脱敏记录在私有`original-entry-client-routing/RESULT.md`。
+
+结论边界：当前入口不能直接作为已验证可读的SW/Blob默认来源。`no-cors`响应体不可供JavaScript读取，`redirect:manual`也不会向页面暴露跨域Location（[MDN响应类型](https://developer.mozilla.org/en-US/docs/Web/API/Response/type)）。直接导航入口是另一条能力，可能跳转播放或由浏览器下载，但未在本轮验证，且不能保证作品命名和页面进度；不能将其导航可用性冒充当前紫色按钮全流程通过。服务器探测的文件属性也不能直接保证客户端重新调度后仍为相同文件。只保留入口为候选不自动解决这些条件，不据此调整default或删除原画。
 
 ## 香港测试站新增部署故障（2026-10-31）
 
