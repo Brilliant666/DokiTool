@@ -20,8 +20,9 @@ PR #7 是前端更新，不修改后端解析 API、媒体池或数据库。下�
 
 核对现有站点的 `/downloads/*` 静态文件规则是否与 `ops/examples/snap.caddy` 一致，并位于 SPA 回退规则之前。已正确配置的站点无需重复修改；缺失时才局部补齐：
 
-- Worker 返回有效 JavaScript MIME，bridge 返回 `text/html`；两者使用 `Cache-Control: no-cache` 校验更新。`no-cache` 不等于禁止存储，也不强制立即替换正在工作的 Worker。
+- Worker 和 task-store 返回有效 JavaScript MIME，继续使用 `Cache-Control: no-cache` 校验更新；bridge 返回 `text/html`，单独使用 `Cache-Control: no-store`。这不强制立即替换正在工作的 Worker。
 - **只有精确 `/downloads/bridge.html` 允许同源嵌入**：最终 GET 响应必须只有一个 `X-Frame-Options: SAMEORIGIN`；首页、Worker、其他下载路径仍保持 `DENY`。全站 `DENY` 会阻止这个同源 iframe，使页面在发送下载任务前报“无法确认下载连接的控制关系”。按示例使用互斥路径条件替换响应值，不用 `+X-Frame-Options` 追加第二个值，也不放开整个 `/downloads/*`。实际站点、公共 import 和上层代理可能另设响应头，应追查最终生效来源，不能用示例文件代替现场配置。
+- **已有缓存也必须得到完整 bridge 响应**：Chromium 合并 304 时保留旧缓存的 `X-Frame-Options`，因此 304 本身显示 `SAMEORIGIN` 仍可能继续使用旧 `DENY`。仅对精确 bridge 删除请求的 `If-None-Match`、`If-Modified-Since`，让有效文档返回完整 200 和新安全头；响应用 `no-store`，避免再依赖这个文档的缓存头合并。缓存规则同样用互斥条件，不能被下载目录的 `no-cache` 覆盖。带旧 ETag、日期及两者组合的请求均须取得正确 200/HTML/标记、唯一 SAMEORIGIN 和 no-store。其他脚本的验证缓存机制不变。依据：[Chromium 的 304 非更新头列表](https://github.com/chromium/chromium/blob/main/net/http/http_response_headers.cc)、[Caddy 请求头删除规则](https://caddyserver.com/docs/caddyfile/directives/request_header)。
 - 若设置了 CSP，还须核对首页的 `frame-src`（及其回退指令）允许本站 bridge，以及 bridge 的 `frame-ancestors` 允许同源父页面；保留其他 CSP 指令和外站嵌入限制。备份本站实际配置、记录 diff 和恢复命令，使用服务器当前 Caddy 校验完整配置后，仅做必要 reload；再从公网 GET 检查头部没有被代理覆盖。
 - 缺失的 `/downloads/*` 文件返回 404，不能回退首页。`/downloads/file/*` 是浏览器内 Worker 生成的附件地址，服务器没有对应文件，直接请求服务器应返回 404。
 - 正式环境使用 HTTPS。Worker 仅注册 `/downloads/` 作用域，不控制首页或 API，不将作用域扩大为 `/`，也不增加全站离线缓存。普通源媒体仍由 CDN 直接传到用户浏览器；既有微博签名媒体路径不变。
@@ -37,7 +38,7 @@ bridge 是受 Worker 控制的同源 HTML 文档，用于在下载期间保留�
 1. **部署响应**：确认首页、实际 hash chunk、Worker 和 bridge 的内容/哈希、MIME、缓存头正确；缺失 chunk、缺失下载文件和服务器端附件路径为 404；既有 API/微博入口及访问控制保持正常。服务端 Worker 已更新，不代表每个已打开浏览器立即切到 `.4`。
 2. **真实浏览器**：通过紫色下载按钮检查实际保存文件名、大小和 SHA-256；下载中刷新后任务 ID 不变且不重复传输；有活动任务时新版保持 waiting，任务完成并释放 bridge 后自然升级，下一次下载使用新版。页面显示“传输完成”不能替代文件落盘验证。
 
-可用 `python scripts/check-download-headers.py --base-url https://snap.example.com --output /path/to/headers.json` 检查公开 GET 响应。脚本拒绝重定向和重复/冲突的 X-Frame-Options，核对真实 bridge 标记及相邻路径保护，并记录有关的 CSP 指令供人工复核；不解析作品、不读取任务凭据、不代替真实下载验收。纯响应头修复应保留原浏览器 profile、现有 Worker 和失败记录，从原首页重试，覆盖默认与显式选源的实际保存及一次中途刷新。不得通过注销 Worker、清站点数据、关闭控制关系校验或切换下载方式来替代修复。
+可用 `python scripts/check-download-headers.py --base-url https://snap.example.com --output /path/to/headers.json` 检查公开 GET 响应。脚本拒绝重定向和重复/冲突的 X-Frame-Options，核对真实 bridge 标记、缓存策略及相邻路径保护，再发送 ETag、日期和两者组合的条件请求，要求仍返回相同完整正文。默认使用当前 GET 的验证值；复现旧缓存时用 `--previous-etag`、`--previous-last-modified` 传入原失败请求的值。脚本记录有关的 CSP 指令供人工复核；不解析作品、不读取任务凭据、不代替真实下载验收。纯响应头修复应保留原浏览器 profile、现有 Worker 和失败记录，从原首页重试，覆盖默认与显式选源的实际保存及一次中途刷新。不得通过注销 Worker、清站点数据、关闭控制关系校验或切换下载方式来替代修复。
 
 本地 Edge 已用正式构建验证两条超过六分钟的下载、刷新、超过五分钟的排队、自然升级及五个文件的哈希；详情及历史检查点见 [下载说明](DOWNLOADS.md#state-and-admission-consolidation-2026-10-30)。这些是受控源的本地验收，不等于生产 CDN 吞吐测试。Safari/微信、锁屏、浏览器挂起和关闭所有页面仍需另行验证，不能保证 bridge 在这些条件下持续运行。
 

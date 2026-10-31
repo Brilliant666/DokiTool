@@ -42,13 +42,17 @@ def framing_csp(headers):
     }
 
 
-def check(opener, base, path, expected_status, frame_policy, timeout):
+def check(opener, base, path, expected_status, frame_policy, timeout, *,
+          expected_cache=None, conditions=None, expected_sha256=None):
     expected_statuses = (expected_status,) if isinstance(expected_status, int) else expected_status
     result = {"path": path, "expected_status": expected_status,
               "expected_x_frame_options": frame_policy, "failures": []}
+    if conditions:
+        result["conditions"] = conditions
     request = urllib.request.Request(base + path, headers={
         "Accept-Encoding": "identity", "Cache-Control": "no-cache",
         "User-Agent": "DokiTool-download-framing-check",
+        **(conditions or {}),
     })
     try:
         try:
@@ -62,14 +66,20 @@ def check(opener, base, path, expected_status, frame_policy, timeout):
             final_url = response.geturl()
         result.update(status=status, x_frame_options=headers.get_all("X-Frame-Options", []),
                       content_type=headers.get("Content-Type", ""),
+                      cache_control=headers.get_all("Cache-Control", []),
+                      etag=headers.get("ETag"), last_modified=headers.get("Last-Modified"),
                       bytes=len(body), sha256=hashlib.sha256(body).hexdigest(),
                       csp=framing_csp(headers))
         if status not in expected_statuses:
             result["failures"].append("Unexpected HTTP status")
-        if final_url != base + path or 300 <= status < 400:
+        if final_url != base + path or status in (301, 302, 303, 307, 308):
             result["failures"].append("Redirects are not allowed")
         if [value.strip().upper() for value in result["x_frame_options"]] != [frame_policy]:
             result["failures"].append("Expected exactly one matching X-Frame-Options value")
+        if expected_cache and [value.strip().lower() for value in result["cache_control"]] != [expected_cache]:
+            result["failures"].append("Expected exactly one Cache-Control: " + expected_cache)
+        if expected_sha256 and result["sha256"] != expected_sha256:
+            result["failures"].append("Conditional request did not return the same complete document")
         if len(body) > 1024 * 1024:
             result["failures"].append("Response exceeds the 1 MiB inspection limit")
         if path.startswith("/downloads/bridge.html?") or path == "/downloads/bridge.html":
@@ -89,21 +99,32 @@ def main():
     parser.add_argument("--base-url", required=True, type=origin)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--previous-etag", help="ETag from the original cached bridge response")
+    parser.add_argument("--previous-last-modified", help="Last-Modified from the original cached bridge response")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     paths = [
-        ("/", 200, "DENY"),
-        ("/downloads/bridge.html", 200, "SAMEORIGIN"),
-        ("/downloads/bridge.html?frame-policy-check=1", 200, "SAMEORIGIN"),
-        ("/downloads/worker.js", 200, "DENY"),
-        ("/downloads/task-store.js", 200, "DENY"),
-        ("/downloads/bridge-check-missing.html", 404, "DENY"),
+        ("/", 200, "DENY", None),
+        ("/downloads/bridge.html", 200, "SAMEORIGIN", "no-store"),
+        ("/downloads/bridge.html?frame-policy-check=1", 200, "SAMEORIGIN", "no-store"),
+        ("/downloads/worker.js", 200, "DENY", "no-cache"),
+        ("/downloads/task-store.js", 200, "DENY", "no-cache"),
+        ("/downloads/bridge-check-missing.html", 404, "DENY", None),
         # Caddy may reject a child path beneath a regular file as malformed.
-        ("/downloads/bridge.html/missing", (400, 404), "DENY"),
+        ("/downloads/bridge.html/missing", (400, 404), "DENY", None),
     ]
     opener = urllib.request.build_opener(NoRedirect())
-    checks = [check(opener, args.base_url, *item, args.timeout) for item in paths]
+    checks = [check(opener, args.base_url, path, status, policy, args.timeout, expected_cache=cache)
+              for path, status, policy, cache in paths]
+    bridge = checks[1]
+    # The fallback validators also match an existing document on an unfixed server.
+    etag = args.previous_etag or bridge.get("etag") or "*"
+    modified = args.previous_last_modified or bridge.get("last_modified") or "Fri, 31 Dec 9999 23:59:59 GMT"
+    for conditions in ({"If-None-Match": etag}, {"If-Modified-Since": modified},
+                       {"If-None-Match": etag, "If-Modified-Since": modified}):
+        checks.append(check(opener, args.base_url, "/downloads/bridge.html", 200, "SAMEORIGIN", args.timeout,
+                            expected_cache="no-store", conditions=conditions, expected_sha256=bridge.get("sha256")))
     report = {
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "base_url": args.base_url, "checks": checks,
