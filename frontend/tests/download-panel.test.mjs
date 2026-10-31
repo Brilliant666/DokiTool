@@ -270,6 +270,22 @@ test('expanded native handoff and lost-worker history remain honest about comple
   assert.ok(view.button('重试', view.row('lost')));
 });
 
+test('cancelled history exposes the reported cause without changing its status or starting another action', async t => {
+  const causes = ['页面请求取消下载', '浏览器停止接收下载数据', '浏览器中止下载请求'];
+  const view = await mount(t, causes.map((error, index) => task(`cancel-${index}`, 'cancelled', { error })));
+  await view.click(view.toggle());
+  causes.forEach((cause, index) => {
+    const row = view.row(`cancel-${index}`);
+    assert.ok(textOf(row).includes(cause));
+    assert.match(textOf(row), /已取消/);
+    assert.doesNotMatch(textOf(row), /下载失败|传输完成/);
+  });
+  assert.deepEqual(view.events, []);
+  await view.update([task('legacy', 'cancelled')]);
+  assert.match(textOf(view.row('legacy')), /已取消/);
+  assert.equal(causes.some(cause => textOf(view.row('legacy')).includes(cause)), false);
+});
+
 test('unmount clears the automatic-collapse timer', async t => {
   const view = await mount(t);
   await view.update([task('done')]);

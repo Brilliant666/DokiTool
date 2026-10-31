@@ -34,6 +34,7 @@
 !/docs/UNIFIED-MEDIA-ACCEPTANCE.md
 !/docs/UPSTREAM-MAINTENANCE.md
 !/docs/UPSTREAM-WATCH.md
+!/docs/incidents/
 !/docs/research/
 !/docs/schema/
 /frontend/*
@@ -54,6 +55,7 @@
 /ops/*
 !/ops/examples/
 /scripts/*
+!/scripts/check-download-headers.py
 !/scripts/check-public-files.py
 !/scripts/check-upstream-updates.py
 !/scripts/requirements-validation.txt
@@ -119,6 +121,8 @@
 !/backend/tests/validate.py
 !/backend/tests/weibo-contract.php
 !/backend/tests/weibo-media-contract.php
+/docs/incidents/*
+!/docs/incidents/INC-20261031-001-download-delivery.md
 /docs/research/*
 !/docs/research/xhs-4k-transport-comparison-2026-10-30.md
 /docs/schema/*

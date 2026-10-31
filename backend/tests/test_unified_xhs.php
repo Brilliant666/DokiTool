@@ -71,6 +71,25 @@ xhsCheck('live motion representations remain available to unified adapter', coun
 foreach (['qn','al','qc','bd'] as $cdn) xhsCheck('allow origin CDN '.$cdn, XiaohongshuMediaProbe::allowedUrl('https://sns-video-'.$cdn.'.xhscdn.com/spectrum/fixture'));
 foreach (['https://user@sns-video-qn.xhscdn.com/spectrum/f','https://sns-video-qn.xhscdn.com.evil.test/spectrum/f','https://127.0.0.1/f','http://sns-video-qn.xhscdn.com/f','https://sns-video-qn.xhscdn.com/../f'] as $url) xhsCheck('reject unsafe origin media '.parse_url($url,PHP_URL_HOST), !XiaohongshuMediaProbe::allowedUrl($url));
 
+$originEntry = 'https://sns-video-qn.xhscdn.com/spectrum/fixture';
+$redirectedCdn = 'https://edge-a.example.net/original.mov';
+$container = pack('N', 20) . 'ftypqt  ' . pack('N', 0) . 'qt  ' . pack('N', 8) . 'free';
+$mediaRequests = [];
+$mediaProbe = new XiaohongshuMediaProbe(static function (string $url, int $offset, int $length) use ($originEntry, $redirectedCdn, $container, &$mediaRequests): array {
+    $mediaRequests[] = $url;
+    if ($url === $originEntry) return ['status' => 302, 'headers' => ['location' => $redirectedCdn], 'body' => ''];
+    $body = substr($container, $offset, $length);
+    return ['status' => 206, 'headers' => ['content-type' => 'video/quicktime',
+        'content-range' => 'bytes ' . $offset . '-' . ($offset + strlen($body) - 1) . '/' . strlen($container)], 'body' => $body];
+});
+$redirected = $mediaProbe->inspect($originEntry, microtime(true) + 6);
+xhsCheck('trusted original entry can redirect to a public CDN outside the entry list', $redirected['result']['url'] === $redirectedCdn
+    && $redirected['http_status'] === 206 && $mediaRequests[0] === $originEntry && count($mediaRequests) >= 2
+    && array_unique(array_slice($mediaRequests, 1)) === [$redirectedCdn]);
+xhsCheck('redirect does not invent unmeasured dimensions or change deferred scope', $redirected['result']['metadata'] === []);
+$mediaRequests = [];
+xhsCheck('a redirected CDN cannot be supplied as an initial XHS entry', $mediaProbe->inspect($redirectedCdn, microtime(true) + 6)['result'] === null && $mediaRequests === []);
+
 $failed = array_filter($checks, fn ($check) => !$check['passed']);
 echo json_encode(['suite'=>'unified-xhs','evidence'=>'synthetic offline fixtures, not live platform acceptance','passed'=>count($checks)-count($failed),'total'=>count($checks),'checks'=>$checks], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
 exit($failed ? 1 : 0);

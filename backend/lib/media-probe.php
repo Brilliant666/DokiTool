@@ -24,11 +24,28 @@ abstract class SnapMediaProbe
         $this->transport = $transport ?? [static::class, 'request'];
     }
 
+    /** Authorize the initial platform entry, not the CDN hosts it redirects to. */
     abstract public static function allowedUrl(string $url): bool;
+
+    /** Every hop remains HTTPS-only; public DNS and TLS are checked by request(). */
+    private static function safeTransportUrl(string $url): bool
+    {
+        if (strlen($url) > 8192 || preg_match('/[\\\\\x00-\x20\x7f]/', $url)
+            || !filter_var($url, FILTER_VALIDATE_URL)) return false;
+        $parts = parse_url($url);
+        if (!$parts || ($parts['scheme'] ?? '') !== 'https'
+            || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])
+            || (isset($parts['port']) && $parts['port'] !== 443)) return false;
+        $host = strtolower(rtrim($parts['host'] ?? '', '.'));
+        if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost')) return false;
+        $address = trim($host, '[]');
+        return !filter_var($address, FILTER_VALIDATE_IP) || snapWeiboMediaPublicIp($address);
+    }
 
     protected static function mediaTypes(): array
     {
-        return ['video/mp4', 'application/octet-stream', 'video/x-m4v'];
+        // QuickTime originals use the same ftyp/moov track validation below.
+        return ['video/mp4', 'video/quicktime', 'application/octet-stream', 'video/x-m4v'];
     }
 
     /** All DNS answers must be public. Pin the selected IP to prevent rebinding. */
@@ -52,10 +69,10 @@ abstract class SnapMediaProbe
         return $ips[0];
     }
 
-    /** cURL follows no redirects and accepts no proxy or caller-supplied headers. */
-    public static function request(string $url, int $offset, int $length, float $deadline): ?array
+    /** Internal transport: cURL follows no redirects and accepts no caller headers. */
+    protected static function request(string $url, int $offset, int $length, float $deadline): ?array
     {
-        if (!static::allowedUrl($url) || microtime(true) >= $deadline) return null;
+        if (!self::safeTransportUrl($url) || microtime(true) >= $deadline) return null;
         $host = (string)parse_url($url, PHP_URL_HOST);
         $ip = self::resolve($host);
         $remaining = (int)(($deadline - microtime(true)) * 1000);
@@ -103,7 +120,7 @@ abstract class SnapMediaProbe
     {
         if ($offset < 0 || $length < 1 || $length > self::MAX_BYTES - $this->bytes) return null;
         while ($this->requests < self::MAX_REQUESTS && microtime(true) < $this->deadline) {
-            if (!static::allowedUrl($url)) return null;
+            if (!self::safeTransportUrl($url)) return null;
             $this->requests++;
             $r = ($this->transport)($url, $offset, $length, $this->deadline);
             if (!is_array($r) || !is_string($r['body'] ?? null) || strlen($r['body']) > $length) return null;
@@ -115,7 +132,7 @@ abstract class SnapMediaProbe
                 if (str_starts_with($next, '//')) $next = 'https:' . $next;
                 elseif (str_starts_with($next, '/')) $next = 'https://' . parse_url($url, PHP_URL_HOST) . $next;
                 elseif (str_starts_with($next, 'http://')) $next = 'https://' . substr($next, 7);
-                if (!static::allowedUrl($next)) return null;
+                if (!self::safeTransportUrl($next)) return null;
                 $url = $next;
                 continue;
             }
@@ -142,6 +159,9 @@ abstract class SnapMediaProbe
     /** A successful URL can survive an unsupported/truncated metadata layout. */
     public function probe(string $url, ?float $deadline = null): ?array
     {
+        // Only platform-produced entries may start a probe. A successful HTTPS
+        // response may choose its CDN; each later hop uses transport safeguards.
+        if (!static::allowedUrl($url)) return null;
         $this->deadline = min(microtime(true) + self::TIMEOUT_SECONDS, $deadline ?? INF);
         $this->bytes = $this->requests = $this->redirects = 0; $this->size = null;
         $prefix = $this->read($url, 0, 65536);

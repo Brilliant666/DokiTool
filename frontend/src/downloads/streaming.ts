@@ -12,6 +12,7 @@ interface TaskRecord {
   owner?: WorkerSession;
   confirmed: boolean;
   uncertain: boolean;
+  checkedExpiredResult?: boolean;
   cancelRequested: boolean;
   cancellation?: Promise<void>;
   observers: Set<DownloadObserver>;
@@ -106,6 +107,9 @@ function deliver(task: TaskRecord, url: string): void {
 /** One reducer handles push, query and START replies. Terminal outcomes are absorbing. */
 function accept(task: TaskRecord, snapshot: DownloadSnapshot): void {
   if (tasks.get(task.key.id) !== task || terminal(task.snapshot)) return;
+  // An expired page-restoration check reads results only. Query may subscribe
+  // this page to progress; those pushes must not reopen automatic observation.
+  if (task.checkedExpiredResult && expired(task) && !terminal(snapshot)) return;
   const previous = task.snapshot;
   const recovering = task.uncertain || !!task.key.recoveryDeadline;
   if (snapshot.id !== task.key.id) return;
@@ -159,10 +163,10 @@ async function ownerFor(task: TaskRecord): Promise<WorkerSession | null> {
   return owner;
 }
 
-async function observe(current: TaskRecord[]): Promise<void> {
+async function observe(current: TaskRecord[], resultOnly = false): Promise<void> {
   const groups = new Map<WorkerSession, TaskRecord[]>();
   await Promise.all(current.map(async task => {
-    if (expired(task)) { emit(task); return; }
+    if (expired(task) && !resultOnly) { emit(task); return; }
     try {
       const owner = await ownerFor(task);
       if (!owner || owner.worker.state === "redundant") { ownerGone(task); return; }
@@ -180,13 +184,14 @@ async function observe(current: TaskRecord[]): Promise<void> {
         if (snapshot) accept(task, snapshot);
         else if (reply.unavailable?.find(item => item.id === task.key.id)?.ownerGone) ownerGone(task);
         else unknown(task);
-        if (task.cancelRequested && !terminal(task.snapshot) && !task.uncertain) cancellations.push(cancel(task).catch(() => {}));
+        if (!resultOnly && task.cancelRequested && !terminal(task.snapshot) && !task.uncertain) cancellations.push(cancel(task).catch(() => {}));
       }
       await Promise.all(cancellations);
     } catch {
       for (const task of group) owner.worker.state === "redundant" ? ownerGone(task) : unknown(task);
     }
   }));
+  if (resultOnly) for (const task of current) if (task.key.ownerGone) releaseBridge(task.key.id);
 }
 
 function watch(): void {
@@ -313,8 +318,11 @@ export async function reconnectStreaming(onUpdate: DownloadObserver): Promise<Do
   });
   if (!restored.length) return [];
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) listen();
-  await Promise.all(restored.filter(task => !terminal(task.snapshot) && expired(task) && !task.key.ownerGone)
-    .map(task => ownerFor(task).catch(() => null)));
+  // One authenticated result lookup per task/page can recover a terminal that
+  // arrived after the old window. Keep its deadline and do not restart polling.
+  const expiredResults = restored.filter(task => !terminal(task.snapshot) && expired(task) && !task.checkedExpiredResult);
+  for (const task of expiredResults) task.checkedExpiredResult = true;
+  await observe(expiredResults, true);
   await observe(restored.filter(task => !terminal(task.snapshot) && !expired(task)));
   watch();
   return restored.map(visible);

@@ -1,7 +1,7 @@
 /* Download-only service worker. It never caches or intercepts the application/API. */
 import { createTaskStore, HISTORY_MS } from "./task-store.js";
 const PROTOCOL = 1;
-const BUILD = "downloads-20261031.1";
+const BUILD = "downloads-20261031.2";
 const INSTANCE = crypto.randomUUID();
 const store = createTaskStore();
 const MAX_ACTIVE = 2;
@@ -262,7 +262,7 @@ async function attachment(task) {
         settle(task, task.controller.signal.aborted ? "cancelled" : "failed", error.message);
       }
     },
-    cancel() { settle(task, "cancelled"); },
+    cancel() { settle(task, "cancelled", "浏览器停止接收下载数据"); },
   }, { highWaterMark: 0 });
   const encoded = encodeURIComponent(task.state.filename).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   const headers = {
@@ -366,7 +366,7 @@ self.addEventListener("message", event => {
         port.postMessage({ forgotten: true }); return;
       }
       if (message.action !== "cancel" || (!task && !previous)) throw new Error("下载任务不存在或已失效");
-      if (task) await settle(task, "cancelled");
+      if (task) await settle(task, "cancelled", "页面请求取消下载");
       port.postMessage({ snapshot: task ? snapshot(task) : previous.result });
     } catch (error) { port.postMessage({ error: error.message }); }
   })());
@@ -391,7 +391,7 @@ self.addEventListener("fetch", event => {
     ? "等待下载空位超过 2 分钟，请在其他下载结束后重试"
     : task.admission ? "下载准备超过 2 分钟，请稍后重试" : "下载准备超过 2 分钟（含排队），请稍后重试"), RESPONSE_MS);
   const signal = event.request.signal;
-  const abort = () => settle(task, "cancelled");
+  const abort = () => settle(task, "cancelled", "浏览器中止下载请求");
   task.detachRequestAbort = () => signal.removeEventListener("abort", abort);
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
