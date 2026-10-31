@@ -594,3 +594,54 @@ These presentation changes do not modify the SW implementation validated above,
 its data path, or the backend API. "Transfer complete" continues to mean bytes
 handed to the browser; the browser's download list and actual file determine
 whether saving succeeded.
+
+### Production incident: fixed-source observations, 2026-10-31
+
+PR #11 keeps the production download incident open. The bridge header/cache
+repair and Worker `.2` cancellation diagnostics are distinct from a throughput
+fix. Two user-created production `.2` tasks failed with `network error` after
+25 and 115 seconds, at displayed averages of approximately 180 and 253 KB/s.
+These failures occurred after media transfer started; an old Worker or a
+pre-START bridge failure does not explain them. The historical selected URLs
+were not captured, so the current player selection cannot establish their source.
+
+A separate, fixed CDN URL returned a 43,074,063-byte HEVC/AAC file. The following
+observations use that exact URL and retain failures as well as successes:
+
+| Path | Observation | What it establishes |
+| --- | --- | --- |
+| In-app browser, native video-menu download | Actual file saved; filesystem write interval about 116 s | Complete file, not a precise network throughput measurement |
+| In-app browser, localhost ordinary-page SW download | Output stream cancelled by the browser after the first 14,725 bytes | Consumer-side cancellation in this tool/browser path, not a proven universal SW defect |
+| Same browser, localhost raw Fetch | 43,074,063 bytes read in 3.460 s | Full readable response; bytes discarded, no disk-save claim |
+| Same browser, localhost controlled-page SW read | Full response in 2.288 s, Worker completed | Byte pump can read the file; the extra controlled document makes this unsuitable for lifecycle acceptance |
+| Chrome, localhost ordinary-page SW download | Worker completed in 6.183 s; actual 43,074,063-byte saved file independently verified | Real SW delivery and saved-file integrity on localhost; task timing is not exact disk-save timing |
+
+The two actual saved files have SHA-256
+`518abc4327148cd6ed5a0f05542eb89349e42ce070728463b01e137aaffb6115`,
+matching the previously saved local file. The native file also passed a complete
+packet scan: HEVC 2160x3840 and AAC, approximately 123.7 seconds. This is not an
+acceptance result for the 523 MB original or a production SW save.
+
+The fixture uses the exact `.2` Worker and official streaming modules, one URL
+and no backup routes. It skips the purple button's native-eligibility GET.
+Consequently its throughput cannot alone establish the production button's
+behavior. These direct-CDN downloads do not relay media bytes through the
+application server; the existing Weibo media relay is a separate path.
+
+A subsequent sequential HTTP comparison changed only the Origin header, using
+the same URL with no application-level proxy, cookies or Referer. Production
+Origin completed in 4.641 s (9,281,203 B/s); localhost Origin completed in
+18.844 s (2,285,824 B/s). Both were HTTP 200, ACAO `*`, and matched the full-file
+hash. This is an independent HTTP-client observation, not a browser test or a
+proof that the underlying OS/network path was identical to the browser. It does
+not reproduce a fixed production-Origin rate cap and does not invalidate the
+user's observed browser slowdown.
+
+The required production-Origin browser comparison, default/explicit-source full
+saves, and refreshed-page/save-state acceptance remain incomplete. The browser
+tool's saved CDP permission denied network diagnostics. Automated Chrome bridge
+timeouts also coincided with a paused-document-response tool condition; they
+must not be reported as media throughput evidence. No cache clearing, forced
+Worker activation, proxy change, timeout increase or transport fallback was
+used to turn these failures into passes. Signed URLs and detailed private
+observations remain outside the public repository.

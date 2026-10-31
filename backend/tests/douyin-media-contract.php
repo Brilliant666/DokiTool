@@ -136,6 +136,90 @@ foreach (['video/mp4', 'video/quicktime', 'Video/QuickTime; charset=binary', 'te
 check('MIME variants retain identical default identity and verified facts', $mimeDefaults['video/mp4'] === $mimeDefaults['video/quicktime']
     && $mimeDefaults['video/mp4'] === $mimeDefaults['Video/QuickTime; charset=binary']);
 
+// CDN selection belongs to the trusted platform response. Changing its public
+// hostname must not change entry authorization, measured facts or media identity.
+$deliveryDefaults = [];
+foreach ([$cdn, 'https://edge-a.example.net/original.mov', 'https://edge-b.example.org/original.mov'] as $destination) {
+    $chainReads = [];
+    $chainTransport = static function (string $url, int $offset, int $length) use ($original, $cdn, $destination, $quicktimeFile, &$chainReads): array {
+        $chainReads[] = [$url, $offset, $length];
+        if ($url === $original) return ['status' => 302, 'headers' => ['location' => $cdn], 'body' => ''];
+        if ($url === $cdn && $destination !== $cdn) return ['status' => 302, 'headers' => ['location' => $destination], 'body' => ''];
+        $body = substr($quicktimeFile, $offset, $length);
+        return ['status' => 206, 'headers' => ['content-type' => 'video/quicktime',
+            'content-range' => 'bytes ' . $offset . '-' . ($offset + strlen($body) - 1) . '/' . strlen($quicktimeFile)], 'body' => $body];
+    };
+    $chainParser = new DouyinParser(static fn (string $url): ?array => (new SnapDouyinMediaProbe($chainTransport))->probe($url));
+    $raw = json_decode($format->invoke($chainParser, $source, '1234567890123456'), true, 512, JSON_THROW_ON_ERROR);
+    $adapted = snapAdaptParser('douyin', $raw, 'https://www.douyin.com/video/1234567890123456');
+    foreach ([false, true] as $debug) {
+        [$status, $public] = snapPreparePublicMedia('douyin', $adapted, debug: $debug);
+        snapValidateEnvelope($public); $responses[] = $public;
+        $item = $public['data']['items'][0];
+        $selected = array_values(array_filter($item['variants'], static fn (array $variant): bool => $variant['id'] === $item['default']['variant_id']))[0];
+        check('trusted chain selects verified original on ' . parse_url($destination, PHP_URL_HOST) . ($debug ? ' debug' : ' normal'),
+            $status === 200 && count($item['variants']) === 2 && str_starts_with($item['default']['url'], $destination)
+            && ($selected['metadata']['width'] ?? 0) === 2160 && ($selected['metadata']['height'] ?? 0) === 3840
+            && $selected['delivery']['sources'][0]['size_bytes'] === strlen($quicktimeFile));
+        $deliveryDefaults[$destination][$debug ? 'debug' : 'normal'] = [
+            $item['default']['variant_id'], $item['default']['source_id'], $selected['metadata'],
+        ];
+    }
+    check('new CDN chain stays within Range and transfer budgets', count($chainReads) <= 6
+        && !array_filter($chainReads, static fn (array $read): bool => !str_starts_with($read[0], 'https://') || $read[2] > SnapMediaProbe::MAX_BYTES));
+}
+check('CDN reassignment preserves original identity and measured facts', count(array_unique(array_map('serialize', $deliveryDefaults))) === 1);
+
+$laterCdn = 'https://edge-c.example.net/original.mp4';
+$laterProbe = new SnapDouyinMediaProbe(static function (string $url, int $offset, int $length) use ($cdn, $laterCdn, $transport): array {
+    return $url === $cdn && $offset > 0
+        ? ['status' => 302, 'headers' => ['location' => $laterCdn], 'body' => '']
+        : $transport($cdn, $offset, $length);
+});
+$laterResult = $laterProbe->probe($cdn);
+check('a later moov Range can move to another public CDN', ($laterResult['url'] ?? '') === $laterCdn
+    && ($laterResult['metadata']['width'] ?? 0) === 2160 && ($laterResult['metadata']['size'] ?? 0) === strlen($file));
+$laterUnsafeCalls = [];
+$laterUnsafeProbe = new SnapDouyinMediaProbe(static function (string $url, int $offset, int $length) use ($cdn, $transport, &$laterUnsafeCalls): array {
+    $laterUnsafeCalls[] = $url;
+    return $offset > 0
+        ? ['status' => 302, 'headers' => ['location' => 'https://127.0.0.1/private'], 'body' => '']
+        : $transport($cdn, $offset, $length);
+});
+$laterUnsafeResult = $laterUnsafeProbe->probe($cdn);
+check('unsafe later redirect preserves last successful source without inventing metadata', ($laterUnsafeResult['url'] ?? '') === $cdn
+    && $laterUnsafeResult['metadata'] === [] && array_unique($laterUnsafeCalls) === [$cdn]);
+
+$unauthorizedCalls = 0;
+$unauthorizedProbe = new SnapDouyinMediaProbe(static function () use (&$unauthorizedCalls): ?array { $unauthorizedCalls++; return null; });
+check('a public CDN cannot start a probe outside platform entry rules', $unauthorizedProbe->probe('https://edge-a.example.net/original.mov') === null && $unauthorizedCalls === 0);
+check('an expired probe budget does not start transport', $unauthorizedProbe->probe($original, microtime(true) - 1) === null && $unauthorizedCalls === 0);
+foreach (['https://localhost/a', 'https://sub.localhost./a', 'https://127.0.0.1/a', 'https://10.0.0.1/a',
+    'https://[::1]/a', 'https://[::ffff:127.0.0.1]/a', 'https://169.254.169.254/a',
+    'https://user:password@edge-a.example.net/a', 'https://edge-a.example.net:444/a',
+    'https://edge-a.example.net/a#fragment', 'file:///tmp/media.mp4', 'ftp://edge-a.example.net/a',
+    "https://edge-a.example.net/\na", 'https://edge-a.example.net/\\a'] as $unsafeDestination) {
+    $unsafeCalls = 0;
+    $unsafeProbe = new SnapDouyinMediaProbe(static function () use ($unsafeDestination, &$unsafeCalls): array {
+        $unsafeCalls++; return ['status' => 302, 'headers' => ['location' => $unsafeDestination], 'body' => ''];
+    });
+    check('redirect rejects unsafe transport URL ' . str_replace("\n", '', $unsafeDestination), $unsafeProbe->probe($original) === null && $unsafeCalls === 1);
+}
+foreach ([['127.0.0.1'], ['10.0.0.1'], ['1.1.1.1', '192.168.0.1'], ['2606:4700:4700::1111', '::1']] as $addresses) {
+    check('unlisted CDN still rejects private or mixed DNS ' . implode(',', $addresses),
+        SnapDouyinMediaProbe::resolve('edge-a.example.net', static fn (): array => $addresses) === null);
+}
+$upgradedNewCdn = [];
+$upgradeTransport = static function (string $url, int $offset, int $length) use ($original, $transport, $cdn, &$upgradedNewCdn): array {
+    $upgradedNewCdn[] = $url;
+    return $url === $original
+        ? ['status' => 302, 'headers' => ['location' => 'http://edge-a.example.net/original.mp4'], 'body' => '']
+        : $transport($cdn, $offset, $length);
+};
+$upgradeResult = (new SnapDouyinMediaProbe($upgradeTransport))->probe($original);
+check('HTTP CDN Location is upgraded without sending an HTTP request', ($upgradeResult['metadata']['width'] ?? 0) === 2160
+    && !array_filter($upgradedNewCdn, static fn (string $url): bool => !str_starts_with($url, 'https://')));
+
 if (($argv[1] ?? '') === '--export') { echo json_encode($responses, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . PHP_EOL; exit; }
 $passed = count(array_filter($checks, fn ($check) => $check['passed']));
 echo json_encode(['suite' => 'douyin-media', 'passed' => $passed, 'total' => count($checks), 'checks' => $checks], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL;
