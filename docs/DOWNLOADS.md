@@ -129,7 +129,11 @@ neither message nor fetch events wait for the whole file through `waitUntil`.
   the compact history row says “无法确认下载结果，请查看浏览器下载列表。” with
   “重新查询状态”. That explicit action starts another bounded query window, never
   START, cancellation, transport fallback or a second media request. Sixty seconds
-  is not a transfer duration limit. A possible live owner keeps its bridge; confirmed
+  is not a transfer duration limit. Restoring an already expired record makes one
+  authenticated result-only query per task and page, without renewing the deadline
+  or restarting polling. A trusted terminal can correct the card; active replies,
+  subscribed progress pushes and missing results keep it unconfirmed. The explicit
+  query button remains available. A possible live owner keeps its bridge; confirmed
   termination or confirmed execution loss permits release. Unconfirmed history is
   excluded from the panel's active count.
 - Legacy summaries without an execution ID use their known build as fallback
@@ -645,3 +649,45 @@ must not be reported as media throughput evidence. No cache clearing, forced
 Worker activation, proxy change, timeout increase or transport fallback was
 used to turn these failures into passes. Signed URLs and detailed private
 observations remain outside the public repository.
+
+### Handoff evidence: baseline review and expired-result recovery, 2026-10-31
+
+This subsection records the incoming recovery-patch handoff environment's
+observations and experiments. Local receipt checks and the subsequent matched
+browser comparison are recorded separately in `UNIFIED-MEDIA-ACCEPTANCE.md`.
+
+The preceding incident section is a historical checkpoint. The owner subsequently
+reported two complete production Chrome SW saves of the 43,074,063-byte compressed
+4K file, one with a page refresh, and resolved CDP access. The 523,069,472-byte
+original still slowed down in SW, raw Fetch and a command-line client. Those new
+file/hash observations are owner-reported here, not independent reruns of the
+private Windows acceptance log.
+
+An independent read of the existing production page found one completed card and
+one unconfirmed card. Clicking only the latter's existing query button immediately
+recovered its completed outcome and `.mp4` filename. No parse or download button
+was used. This proves that this task's trusted terminal remained available; it
+does not identify the original communication failure or independently verify disk
+contents. The old client deliberately skipped queries for an expired saved
+recovery window, so a refresh could leave an available terminal unread. The
+result-only restoration query documented above repairs that gap without a new
+transfer, a renewed recovery deadline or automatic retries.
+
+Comparison of PR #8 (`f1a6778`), PR #9 (`665bd55`) and the reviewed PR #11
+(`d8cc86c`) found identical native/Blob/bridge modules, upstream Fetch parameters,
+read timeout and byte-pump behavior. Blocking every lifecycle persistence write in
+a deterministic three-version Worker test did not block any of the 64 MiB media
+response: each version performed one media Fetch and 1,025 upstream reads and
+produced the same bytes. This is a dependency test, not a browser speed benchmark.
+The backend default/source ordering functions also match. Four identical parser
+inputs per version produced the same complete outputs: unmeasured original uses
+compressed 4K; measured 4K original becomes the default; a measured 720p original
+does not replace compressed 4K. The two actual 4K files differ in size by about
+12.14 times; a work URL or resolution label alone is not a matched-source test.
+
+The remaining throughput comparison must freeze one still-valid media URL/file
+and the same browser/network path for PR #8 and the current client. A historical
+fast save of a different representation cannot locate a regression. Conversely,
+matching application code does not prove every browser/CDN/network interaction
+healthy. The 523 MB original remains unresolved; this recovery patch does not
+change timeouts, media routing, quality defaults, proxy settings or the Worker.
