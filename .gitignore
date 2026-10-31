@@ -54,6 +54,7 @@
 /ops/*
 !/ops/examples/
 /scripts/*
+!/scripts/check-download-headers.py
 !/scripts/check-public-files.py
 !/scripts/check-upstream-updates.py
 !/scripts/requirements-validation.txt

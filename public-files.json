@@ -220,6 +220,7 @@
     "ops/examples/snap-fpm.conf",
     "ops/examples/snap.caddy",
     "public-files.json",
+    "scripts/check-download-headers.py",
     "scripts/check-public-files.py",
     "scripts/check-upstream-updates.py",
     "scripts/requirements-validation.txt",

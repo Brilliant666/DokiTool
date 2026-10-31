@@ -11,6 +11,12 @@ snap.example.com {
     encode @compress zstd gzip
     header X-Content-Type-Options nosniff
     header Referrer-Policy no-referrer
+    # The download bridge is a same-origin iframe, not a public embedding surface.
+    # Mutually exclusive setters avoid duplicate or conflicting framing headers.
+    @download_bridge path /downloads/bridge.html
+    @not_download_bridge not path /downloads/bridge.html
+    header @download_bridge X-Frame-Options SAMEORIGIN
+    header @not_download_bridge X-Frame-Options DENY
 
     # Exact signed-media endpoint: dedicated workers, no response buffering/compression.
     handle /api/media/weibo {
