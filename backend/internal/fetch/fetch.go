@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -27,12 +28,14 @@ var (
 )
 
 type Policy struct {
-	Purpose         string
-	AllowedURL      func(string) bool
-	Timeout         time.Duration
-	MaxBytes        int64
-	FollowRedirects bool
-	MaxRedirects    int
+	Purpose            string
+	AllowedURL         func(string) bool
+	Timeout            time.Duration
+	MaxBytes           int64
+	MaxHeaderBytes     int64
+	StrictMediaHeaders bool
+	FollowRedirects    bool
+	MaxRedirects       int
 }
 
 type Request struct {
@@ -60,7 +63,7 @@ type Executor interface {
 type resolver interface {
 	LookupNetIP(context.Context, string, string) ([]netip.Addr, error)
 }
-type roundTrip func(*http.Request, []netip.Addr) (*http.Response, error)
+type roundTrip func(*http.Request, []netip.Addr, Policy) (*http.Response, error)
 
 type Client struct {
 	resolver  resolver
@@ -150,8 +153,11 @@ func prefixes(values ...string) []netip.Prefix {
 
 func (c *Client) Do(parent context.Context, in Request) (Response, error) {
 	p := in.Policy
-	if p.AllowedURL == nil || p.Purpose == "" || p.Timeout <= 0 || p.Timeout > 45*time.Second || p.MaxBytes < 1 || p.MaxBytes > 8<<20 || p.MaxRedirects < 0 || p.MaxRedirects > 5 {
+	if p.AllowedURL == nil || p.Purpose == "" || p.Timeout <= 0 || p.Timeout > 45*time.Second || p.MaxBytes < 1 || p.MaxBytes > 8<<20 || p.MaxHeaderBytes < 0 || p.MaxHeaderBytes > 64<<10 || p.MaxRedirects < 0 || p.MaxRedirects > 5 {
 		return Response{}, ErrPolicy
+	}
+	if p.MaxHeaderBytes == 0 {
+		p.MaxHeaderBytes = 64 << 10
 	}
 	ctx, cancel := context.WithTimeout(parent, p.Timeout)
 	defer cancel()
@@ -200,7 +206,7 @@ func (c *Client) Do(parent context.Context, in Request) (Response, error) {
 			return Response{}, err
 		}
 		req.Header = headers.Clone()
-		response, err := c.transport(req, ips)
+		response, err := c.transport(req, ips, p)
 		if err != nil {
 			return Response{}, err
 		}
@@ -247,6 +253,11 @@ func (c *Client) Do(parent context.Context, in Request) (Response, error) {
 		if err != nil {
 			return Response{}, err
 		}
+		if p.StrictMediaHeaders {
+			if err := mergeMediaTrailers(out.Header, response.Trailer); err != nil {
+				return Response{}, err
+			}
+		}
 		return out, nil
 	}
 }
@@ -254,7 +265,11 @@ func (c *Client) Do(parent context.Context, in Request) (Response, error) {
 // One transport per outbound hop keeps DNS checks and the actual socket bound
 // together. A platform cannot enable environment proxies, redirects or cookies.
 // The transport replacement point receives only already approved IPs.
-func standardRoundTrip(req *http.Request, ips []netip.Addr) (*http.Response, error) {
+func standardRoundTrip(req *http.Request, ips []netip.Addr, policy Policy) (*http.Response, error) {
+	return roundTripWithDial(req, ips, policy, (&net.Dialer{Timeout: 5 * time.Second}).DialContext)
+}
+
+func roundTripWithDial(req *http.Request, ips []netip.Addr, policy Policy, dial func(context.Context, string, string) (net.Conn, error)) (*http.Response, error) {
 	host, port := req.URL.Hostname(), req.URL.Port()
 	if port == "" {
 		if req.URL.Scheme == "https" {
@@ -263,32 +278,90 @@ func standardRoundTrip(req *http.Request, ips []netip.Addr) (*http.Response, err
 			port = "80"
 		}
 	}
+	dialPinned := func(ctx context.Context, network, address string) (net.Conn, error) {
+		wanted := net.JoinHostPort(host, port)
+		if address != wanted {
+			return nil, ErrPolicy
+		}
+		var last error
+		for _, ip := range ips {
+			// net/http may detach its dial context for connection reuse. These
+			// per-request transports instead share the original request budget.
+			conn, err := dial(req.Context(), "tcp", net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return bindRequestConnection(req.Context(), conn), nil
+			}
+			last = err
+			if req.Context().Err() != nil {
+				return nil, req.Context().Err()
+			}
+		}
+		return nil, last
+	}
 	transport := &http.Transport{
 		Proxy: nil, DisableCompression: true, DisableKeepAlives: true,
 		TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 20 * time.Second,
-		MaxResponseHeaderBytes: 64 << 10, ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			wanted := net.JoinHostPort(host, port)
-			if address != wanted {
-				return nil, ErrPolicy
+		MaxResponseHeaderBytes: policy.MaxHeaderBytes, ForceAttemptHTTP2: true,
+		DialContext: dialPinned,
+	}
+	if policy.StrictMediaHeaders {
+		// HTTP/1.1 is explicit for strict media probes: net/http otherwise merges
+		// duplicate identical Content-Length before exposing Response.Header.
+		// Inspect bounded plaintext headers before the standard parser does so.
+		transport.ForceAttemptHTTP2 = false
+		transport.ReadBufferSize = int(policy.MaxHeaderBytes)
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dialPinned(ctx, network, address)
+			if err != nil {
+				return nil, err
 			}
-			var last error
-			for _, ip := range ips {
-				conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), port))
-				if err == nil {
-					return conn, nil
-				}
-				last = err
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
+			return newMediaHeaderConn(conn, policy.MaxHeaderBytes), nil
+		}
+		transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dialPinned(ctx, network, address)
+			if err != nil {
+				return nil, err
 			}
-			return nil, last
-		},
+			secure := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
+			handshake, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+			defer cancel()
+			if err := secure.HandshakeContext(handshake); err != nil {
+				conn.Close()
+				return nil, err
+			}
+			return newMediaHeaderConn(secure, policy.MaxHeaderBytes), nil
+		}
 	}
 	// http.Transport retains the original URL hostname for TLS SNI and
 	// certificate verification; no InsecureSkipVerify or IP URL substitution.
 	return transport.RoundTrip(req)
+}
+
+// Closing or cancelling a request also closes an in-flight standard-library
+// TLS handshake, whose internal dial context can outlive RoundTrip's return.
+type requestConnection struct {
+	net.Conn
+	stop func() bool
+}
+
+func bindRequestConnection(ctx context.Context, conn net.Conn) net.Conn {
+	return &requestConnection{Conn: conn, stop: context.AfterFunc(ctx, func() { _ = conn.Close() })}
+}
+func (c *requestConnection) Close() error { c.stop(); return c.Conn.Close() }
+
+func mergeMediaTrailers(headers, trailers http.Header) error {
+	for _, key := range []string{"Location", "Content-Range", "Content-Length", "Content-Type", "Content-Encoding"} {
+		values := trailers.Values(key)
+		if len(values) == 0 {
+			continue
+		}
+		if len(values) != 1 || len(headers.Values(key)) != 0 {
+			return ErrMediaHeaders
+		}
+		headers.Set(key, values[0])
+	}
+	return nil
 }
 
 func readBody(body io.Reader, encoding string, limit int64) ([]byte, error) {

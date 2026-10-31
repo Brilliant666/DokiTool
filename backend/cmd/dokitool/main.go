@@ -19,6 +19,9 @@ import (
 
 	"github.com/Brilliant666/DokiTool/backend/internal/api"
 	"github.com/Brilliant666/DokiTool/backend/internal/catalog"
+	"github.com/Brilliant666/DokiTool/backend/internal/fetch"
+	"github.com/Brilliant666/DokiTool/backend/internal/platform/douyin"
+	"github.com/Brilliant666/DokiTool/backend/internal/probe"
 	"github.com/Brilliant666/DokiTool/backend/internal/unified"
 )
 
@@ -81,7 +84,8 @@ func run(args []string) error {
 	if err != nil || numberErr != nil || number < 1024 || number > 65535 || ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("listen must use an explicit loopback IP and port 1024–65535")
 	}
-	adapters := map[string]api.Adapter{}
+	executor := fetch.New()
+	adapters := map[string]api.Adapter{"douyin": douyin.New(executor, probe.New(executor, douyin.AllowedMediaURL))}
 	handler, err := api.New(c, adapters, time.Now, nil)
 	if err != nil {
 		return err

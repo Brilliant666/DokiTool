@@ -46,7 +46,7 @@ func TestPublicAddressBoundary(t *testing.T) {
 
 func TestRejectMixedDNSBeforeTransport(t *testing.T) {
 	called := false
-	c := fixtureClient(func(*http.Request, []netip.Addr) (*http.Response, error) {
+	c := fixtureClient(func(*http.Request, []netip.Addr, Policy) (*http.Response, error) {
 		called = true
 		return reply(200, nil, "{}"), nil
 	})
@@ -61,7 +61,7 @@ func TestRejectMixedDNSBeforeTransport(t *testing.T) {
 
 func TestRedirectChecksAndQueryPreservation(t *testing.T) {
 	var calls []string
-	c := fixtureClient(func(req *http.Request, ips []netip.Addr) (*http.Response, error) {
+	c := fixtureClient(func(req *http.Request, ips []netip.Addr, policy Policy) (*http.Response, error) {
 		calls = append(calls, req.URL.String())
 		if len(ips) != 1 || ips[0].String() != "8.8.8.8" {
 			t.Fatal("lost pinned target")
@@ -80,7 +80,7 @@ func TestRedirectChecksAndQueryPreservation(t *testing.T) {
 	}
 
 	calls = nil
-	c.transport = func(req *http.Request, _ []netip.Addr) (*http.Response, error) {
+	c.transport = func(req *http.Request, _ []netip.Addr, _ Policy) (*http.Response, error) {
 		calls = append(calls, req.URL.String())
 		return reply(302, http.Header{"Location": {"https://evil.example/"}}, ""), nil
 	}
@@ -92,7 +92,7 @@ func TestRedirectChecksAndQueryPreservation(t *testing.T) {
 
 func TestRedirectBudgetAndNoFollow(t *testing.T) {
 	calls := 0
-	c := fixtureClient(func(*http.Request, []netip.Addr) (*http.Response, error) {
+	c := fixtureClient(func(*http.Request, []netip.Addr, Policy) (*http.Response, error) {
 		calls++
 		return reply(302, http.Header{"Location": {"/loop"}}, ""), nil
 	})
@@ -125,7 +125,7 @@ func TestDecodedAndWireLimits(t *testing.T) {
 }
 
 func TestRequestDeadlineCoversDNS(t *testing.T) {
-	c := fixtureClient(func(*http.Request, []netip.Addr) (*http.Response, error) {
+	c := fixtureClient(func(*http.Request, []netip.Addr, Policy) (*http.Response, error) {
 		t.Fatal("transport called after cancelled DNS")
 		return nil, nil
 	})

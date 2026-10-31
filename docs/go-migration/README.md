@@ -16,7 +16,7 @@ go build -o /tmp/dokitool-go ./cmd/dokitool
 /tmp/dokitool-go serve -listen 127.0.0.1:9082
 ```
 
-catalog 从原路径 `backend/config/platforms.json` 内嵌，公开字段与九平台 PHP 目录保持一致。目录表示项目的平台注册事实；某平台尚未绑定 Go adapter 时，其解析请求明确返回 `503 SERVICE_NOT_CONFIGURED`，不会把空媒体结果当迁移成功。当前 Go 服务不能替代九平台生产入口。
+catalog 从原路径 `backend/config/platforms.json` 内嵌，公开字段与九平台 PHP 目录保持一致。目录表示项目的平台注册事实；某平台尚未绑定 Go adapter 时，其解析请求明确返回 `503 SERVICE_NOT_CONFIGURED`，不会把空媒体结果当迁移成功。当前只有抖音绑定了 Go adapter，仍存在 [未关闭的基线合同问题](known-issues.md)，Go 服务不能替代九平台生产入口。
 
 公开 JSON 仍为 `/api/parse`、`/api/resolve`、`/api/platforms`，需要 `schema_version=1.0`。例如检查目录：
 
@@ -25,6 +25,10 @@ curl 'http://127.0.0.1:9082/api/platforms?schema_version=1.0'
 ```
 
 不接受公开任意 URL 代理、客户端 Cookie/传输配置或 TLS 参数。平台经 `internal/fetch.Executor` 请求上游，实际执行器统一约束目标、DNS、socket 绑定、逐跳校验、读取限额和 context。首次实现采用标准 `net/http`；替换握手/传输实现时须保留同一策略和对应测试。媒体探测及微博流式媒体各自有更严格/独立的预算，不应直接复用普通 JSON 请求预算。
+
+抖音有界 MP4 探测每次最多 1 MiB、12 个请求、6 秒，限制重定向与文件总大小，不下载整片。严格媒体请求使用标准库 HTTP/1.1 传输，并在标准解析器前观察原始头部和 trailer，防止同值重复 `Content-Length` 被合并而丢失原有拒绝证据；正文仍由 `net/http` 解码。普通页面/API 请求保留标准库 HTTP/2 协商。两条路径都将请求取消绑定到底层连接。
+
+Go 对普通请求新增了逐跳目的域、DNS 与连接约束；Live HEAD 重定向只访问已声明媒体主机。这是已批准的出站边界收紧，与旧 PHP 接受任意重定向的行为不同，真实平台兼容性仍须在后续阶段验证。
 
 ## 合同与身份
 
@@ -43,15 +47,21 @@ go test ./internal/unified
 完整离线门禁可一次执行（需要 Go 和既有 Python 校验依赖，无需 PHP）：
 
 ```sh
-python scripts/go-migration/check.py --race
+python scripts/go-migration/check.py --race --check-php-source --report /tmp/dokitool-go-checks.json
+# 已安装 frontend/package-lock.json 中的依赖时，再加入原前端消费和四项续签检查：
+python scripts/go-migration/check.py --race --frontend --report /tmp/dokitool-go-checks.json
 ```
+
+门禁会运行各项独立检查并保存失败明细，任何未通过的公共响应使总结果为 `passed: false`、进程退出 1。当前 fragment 与极限文件大小的基线冲突保留为失败项，没有跳过或白名单放行。
 
 ## 冻结 PHP 对拍
 
-冻结目录：`backend/testdata/php-baseline/`。正常 Go 测试只读已入库的原始输入、期望输出和 manifest，不安装或运行 PHP。
+冻结目录：`backend/testdata/php-baseline/`（公共层）与 `backend/testdata/php-douyin/`（实际抖音 Parse、请求序列、探测及舍入）。正常 Go 测试只读开发分支中冻结的原始输入、期望输出和 manifest，不安装或运行 PHP。
 
 ```sh
 python scripts/go-migration/verify.py
+python scripts/go-migration/verify.py --douyin
+python scripts/go-migration/verify.py --integers
 ```
 
 需要复核 PHP 生成来源时，按该目录 README 从固定 Git commit 重新导出至临时目录，核对差异；生产代码和普通 Go 验收不依赖这个生成器。测试密钥均明确标为公开合成材料，真实密钥只记录受保护来源引用。
@@ -67,6 +77,16 @@ python scripts/validate-unified-schema.py /tmp/dokitool-go-baseline.json
 ```
 
 Python 校验依赖仍由 `scripts/requirements-validation.txt` 声明。导出不覆盖 PHP 期望输出，也不把未知动态字段整批删掉。
+
+抖音实际输出可独立导出后给原前端消费；以下脚本只增加测试生产器，没有修改前端产品代码：
+
+```sh
+cd backend
+DOKITOOL_GO_DOUYIN_OUTPUT=/tmp/dokitool-go-douyin.json \
+  go test ./internal/platform/douyin -run TestPHPDouyinBaseline -count=1
+cd ..
+node frontend/scripts/test-go-media-integration.mjs /tmp/dokitool-go-douyin.json /tmp/dokitool-frontend-go.json
+```
 
 ## 阶段顺序
 

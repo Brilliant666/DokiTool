@@ -21,7 +21,8 @@ func Source(raw any) Object {
 	source := Object{"url": url}
 	for _, field := range []string{"size", "size_bytes"} {
 		if size, ok := Numeric(entry[field]); ok && size > 0 {
-			source["size_bytes"] = int64(size)
+			integer, _ := PHPInt(entry[field])
+			source["size_bytes"] = integer
 		}
 	}
 	for _, field := range []string{"expires_at", "availability", "browser_fetch"} {

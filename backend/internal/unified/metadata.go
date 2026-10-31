@@ -1,7 +1,6 @@
 package unified
 
 import (
-	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -61,7 +60,8 @@ func VideoFacts(raw Object) Object {
 	facts := Object{}
 	for _, field := range []string{"width", "height"} {
 		if n, ok := Numeric(raw[field]); ok && n > 0 {
-			facts[field] = int64(n)
+			integer, _ := PHPInt(raw[field])
+			facts[field] = integer
 		}
 	}
 	for _, field := range []string{"fps", "frameRate", "frame_rate", "video_fps"} {
@@ -88,7 +88,8 @@ func AudioFacts(raw Object) Object {
 	facts := Object{}
 	for _, field := range []string{"audio_channels", "channels", "channel_count"} {
 		if n, ok := Numeric(raw[field]); ok && n > 0 {
-			facts["audio_channels"] = int64(n)
+			integer, _ := PHPInt(raw[field])
+			facts["audio_channels"] = integer
 			break
 		}
 	}
@@ -119,7 +120,7 @@ func CandidateMetadata(raw Object) Object {
 	}
 	for _, field := range []string{"width", "height", "bitrate_bps", "video_bitrate_bps", "audio_bitrate_bps", "sample_rate_hz", "audio_channels"} {
 		if n, ok := Numeric(raw[field]); ok && n > 0 {
-			metadata[field] = int64(math.Round(n))
+			metadata[field] = int64(PHPRound(n, 0))
 		}
 	}
 	if n, ok := Numeric(raw["bit_rate"]); ok && n > 0 {
@@ -127,15 +128,15 @@ func CandidateMetadata(raw Object) Object {
 		if hasString([]string{"mp4", "probe"}, Str(raw["metadata_source"])) || Str(raw["private_delivery_kind"]) == "video_track" {
 			field = "video_bitrate_bps"
 		}
-		metadata[field] = int64(math.Round(n))
+		metadata[field] = int64(PHPRound(n, 0))
 	}
 	if n, ok := Numeric(raw["fps"]); ok && n > 0 {
 		metadata["fps"] = n
 	}
 	if n, ok := Numeric(raw["duration_ms"]); ok && n > 0 {
-		metadata["duration_ms"] = int64(math.Round(n))
+		metadata["duration_ms"] = int64(PHPRound(n, 0))
 	} else if n, ok := Numeric(raw["duration"]); ok && n > 0 {
-		metadata["duration_ms"] = int64(math.Round(n * 1000))
+		metadata["duration_ms"] = int64(PHPRound(n*1000, 0))
 	}
 	for _, pair := range [][2]string{{"codec", "video_codec"}, {"video_codec", "video_codec"}, {"audio_codec", "audio_codec"}, {"container", "container"}, {"extension", "extension"}, {"mime_type", "mime_type"}} {
 		if value, ok := Text(raw[pair[0]]); ok && value != "0" {
